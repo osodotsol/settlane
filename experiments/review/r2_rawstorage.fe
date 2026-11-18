@@ -1,0 +1,45 @@
+// Review H3 (2026-11-18): RawStorage was not covered by the lint. A non-payout arm
+// overwrites a compiler-allocated field. Run: fe test experiments/review/r2_rawstorage.fe
+use std::evm::RawStorage
+
+msg SettleMsg {
+    #[selector = sol("poke(uint256,uint256)")]
+    Poke { slot: u256, v: u256 },
+    #[selector = sol("approved()")]
+    Approved -> u256,
+}
+
+pub contract Settlane uses (raw: mut RawStorage) {
+    mut approved: u256,
+
+    recv SettleMsg {
+        Poke { slot, v } uses (mut raw) {
+            unsafe {
+                raw.sstore(slot: slot, value: v)
+            }
+        }
+
+        Approved -> u256 uses (approved) {
+            approved
+        }
+    }
+}
+
+#[test]
+fn forge_field() uses (evm: mut Evm) {
+    let p = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    evm.call(
+        addr: p,
+        gas: 100000,
+        value: Wei::zero(),
+        message: SettleMsg::Poke { slot: 0, v: 7 },
+    )
+    let a: u256 = evm
+        .call(
+            addr: p,
+            gas: 100000,
+            value: Wei::zero(),
+            message: SettleMsg::Approved {},
+        )
+    assert!(a == 7)
+}

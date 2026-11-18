@@ -1,0 +1,17 @@
+// EXPECT: fail E-CALL,E-UNSAFE
+// Review H3: RawStorage lets a non-payout arm overwrite any field (a milestone state, a
+// deadline) without the access checker seeing it.
+use std::evm::RawStorage
+
+msg SettleMsg {
+    #[selector = sol("poke(uint256,uint256)")]
+    Poke { slot: u256, v: u256 },
+}
+
+pub contract Settlane uses (raw: mut RawStorage) {
+    recv SettleMsg {
+        Poke { slot, v } uses (mut raw) {
+            unsafe { raw.sstore(slot: slot, value: v) }
+        }
+    }
+}

@@ -1,0 +1,23 @@
+// EXPECT: fail E-CALL
+// Review H1: `use std::evm::Call as Pay` hid the contract from the lint.
+use std::evm::ether
+use std::evm::Call as Pay
+
+msg SettleMsg {
+    #[selector = sol("approve(address)")]
+    Approve { to: Address },
+    #[selector = sol("claim(address)")]
+    Claim { to: Address },
+}
+
+pub contract Settlane uses (ctx: Ctx, call: mut Pay) {
+    recv SettleMsg {
+        Approve { to } uses (mut call) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success())
+        }
+
+        Claim { to } uses (mut call) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success())
+        }
+    }
+}

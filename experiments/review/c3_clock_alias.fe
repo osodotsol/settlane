@@ -1,0 +1,47 @@
+// Review H4b (2026-11-18): a type alias for Clock avoids the `Clock {` pattern.
+// Run: fe test experiments/review/c3_clock_alias.fe
+pub struct Clock { pub now: Timestamp }
+
+type Tick = Clock
+
+pub fn delivery_open(deliver_by: Timestamp) -> bool uses (clock: Clock) {
+    clock.now < deliver_by
+}
+
+msg SettleMsg {
+    #[selector = sol("isOpen(uint256,uint256)")]
+    IsOpen { t: Timestamp, deliver_by: Timestamp } -> bool,
+}
+
+pub contract Settlane {
+    recv SettleMsg {
+        IsOpen { t, deliver_by } -> bool {
+            var open = false
+            with (Clock = Tick { now: t }) {
+                open = delivery_open(deliver_by)
+            }
+            open
+        }
+    }
+}
+
+#[test]
+fn user_controls_clock() uses (evm: mut Evm) {
+    let p = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let d = Timestamp::from_seconds(1000)
+    let a: bool = evm
+        .call(
+            addr: p,
+            gas: 100000,
+            value: Wei::zero(),
+            message: SettleMsg::IsOpen { t: Timestamp::from_seconds(1), deliver_by: d },
+        )
+    let b: bool = evm
+        .call(
+            addr: p,
+            gas: 100000,
+            value: Wei::zero(),
+            message: SettleMsg::IsOpen { t: Timestamp::from_seconds(5000), deliver_by: d },
+        )
+    assert!(a && !b)
+}

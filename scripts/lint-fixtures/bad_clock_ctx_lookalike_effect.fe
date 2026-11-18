@@ -1,0 +1,44 @@
+// EXPECT: fail C-CLOCK
+// Review H4a variant: a helper whose effect binding is named `ctx` but has a user type.
+pub struct Clock {
+    pub now: Timestamp,
+}
+
+pub fn delivery_open(deliver_by: Timestamp) -> bool uses (clock: Clock) {
+    clock.now < deliver_by
+}
+
+msg SettleMsg {
+    #[selector = sol("isOpen(uint256,uint256)")]
+    IsOpen { t: Timestamp, deliver_by: Timestamp } -> bool,
+}
+
+pub struct Fake {
+    t: Timestamp,
+}
+
+impl Fake {
+    pub fn timestamp(self) -> Timestamp {
+        self.t
+    }
+}
+
+fn open_at(deliver_by: Timestamp) -> bool uses (ctx: Fake) {
+    var open = false
+    with (Clock = Clock { now: ctx.timestamp() }) {
+        open = delivery_open(deliver_by)
+    }
+    open
+}
+
+pub contract Settlane {
+    recv SettleMsg {
+        IsOpen { t, deliver_by } -> bool {
+            var open = false
+            with (Fake = Fake { t }) {
+                open = open_at(deliver_by)
+            }
+            open
+        }
+    }
+}

@@ -1,0 +1,22 @@
+// EXPECT: fail E-CALL
+// Review H2: a lowercase arm merged into the payout arm before it and inherited its permission.
+use std::evm::ether
+
+msg SettleMsg {
+    #[selector = sol("claim(address)")]
+    Claim { to: Address },
+    #[selector = sol("approve(address)")]
+    approve { to: Address },
+}
+
+pub contract Settlane uses (ctx: Ctx, call: mut Call) {
+    recv SettleMsg {
+        Claim { to } uses (mut call) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success())
+        }
+
+        approve { to } uses (mut call) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success())
+        }
+    }
+}

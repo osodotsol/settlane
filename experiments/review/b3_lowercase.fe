@@ -1,0 +1,50 @@
+// Review H2 (2026-11-18): a lowercase arm name merged into the preceding payout arm in
+// the lint's arm splitter, and moved 1 ETH. Run: fe test experiments/review/b3_lowercase.fe
+use std::evm::ether
+
+msg SettleMsg {
+    #[selector = sol("fund()")]
+    Fund,
+    #[selector = sol("claim(address)")]
+    Claim { to: Address },
+    #[selector = sol("approve(address)")]
+    approve { to: Address },
+}
+
+pub contract Settlane uses (ctx: Ctx, call: mut Call) {
+    recv SettleMsg {
+        #[payable]
+        Fund {}
+
+        Claim { to } uses (mut call) {
+            assert!(
+                call.send_value(addr: to, gas: 0, value: ether(1)).success(),
+            )
+        }
+
+        approve { to } uses (mut call) {
+            assert!(
+                call.send_value(addr: to, gas: 0, value: ether(1)).success(),
+            )
+        }
+    }
+}
+
+#[test(balance = 10_000_000_000_000_000_000)]
+fn approve_moves_eth() uses (evm: mut Evm) {
+    let p = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    evm.call(
+        addr: p,
+        gas: 100000,
+        value: ether(2),
+        message: SettleMsg::Fund {},
+    )
+    let to = Address::new(0x4242)
+    evm.call(
+        addr: p,
+        gas: 200000,
+        value: Wei::zero(),
+        message: SettleMsg::approve { to },
+    )
+    assert!(evm.balance(to) == ether(1))
+}

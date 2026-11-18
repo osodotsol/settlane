@@ -1,0 +1,8 @@
+// EXPECT: fail T-REVERT
+// Review M2: a bare should_revert passes when the setup reverts, before the call under test.
+use std::evm::ether
+
+#[test(should_revert, balance = 10_000_000_000_000_000_000)]
+fn reverts_somewhere() uses (evm: mut Evm) {
+    assert!(evm.balance(evm.address()) == ether(0))
+}

@@ -1,0 +1,51 @@
+// Review H1 (2026-11-18): an import alias for `Call` hid the contract from the
+// lint, and a non-payout arm moved 1 ETH. Run: fe test experiments/review/b2_alias.fe
+use std::evm::ether
+use std::evm::Call as Pay
+
+msg SettleMsg {
+    #[selector = sol("fund()")]
+    Fund,
+    #[selector = sol("approve(address)")]
+    Approve { to: Address },
+    #[selector = sol("claim(address)")]
+    Claim { to: Address },
+}
+
+pub contract Settlane uses (ctx: Ctx, call: mut Pay) {
+    recv SettleMsg {
+        #[payable]
+        Fund {}
+
+        Approve { to } uses (mut call) {
+            assert!(
+                call.send_value(addr: to, gas: 0, value: ether(1)).success(),
+            )
+        }
+
+        Claim { to } uses (mut call) {
+            assert!(
+                call.send_value(addr: to, gas: 0, value: ether(1)).success(),
+            )
+        }
+    }
+}
+
+#[test(balance = 10_000_000_000_000_000_000)]
+fn approve_moves_eth() uses (evm: mut Evm) {
+    let p = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    evm.call(
+        addr: p,
+        gas: 100000,
+        value: ether(2),
+        message: SettleMsg::Fund {},
+    )
+    let to = Address::new(0x4242)
+    evm.call(
+        addr: p,
+        gas: 200000,
+        value: Wei::zero(),
+        message: SettleMsg::Approve { to },
+    )
+    assert!(evm.balance(to) == ether(1))
+}

@@ -33,7 +33,10 @@ fn deposit_is_locked() uses (evm: mut Evm) {
     assert!(stored == unlock)
 }
 
-#[test(should_revert, balance = 10_000_000_000_000_000_000)]
+// Review M2: a bare `should_revert` also passed when the setup itself reverted, so this
+// test never proved that Withdraw is blocked. The setup is now a plain `call` (it must
+// succeed), the positive control checks the deposit landed, and only Withdraw may fail.
+#[test(balance = 10_000_000_000_000_000_000)]
 fn withdraw_before_unlock_reverts() uses (evm: mut Evm) {
     let vault = evm.create2<Vault>(value: Wei::zero(), args: (days(7),), salt: 0)
     let _: Timestamp = evm
@@ -43,13 +46,36 @@ fn withdraw_before_unlock_reverts() uses (evm: mut Evm) {
             value: ether(1),
             message: VaultMsg::Deposit {},
         )
-    let _: Wei = evm
+    let before: Wei = evm
         .call(
+            addr: vault,
+            gas: 100000,
+            value: Wei::zero(),
+            message: VaultMsg::BalanceOf { owner: evm.address() },
+        )
+    assert!(before == ether(1))
+
+    let payee = Address::new(0x1234)
+    assert!(
+        !evm.try_call(
             addr: vault,
             gas: 200000,
             value: Wei::zero(),
-            message: VaultMsg::Withdraw { to: evm.address() },
+            message: VaultMsg::Withdraw { to: payee },
         )
+            .success(),
+    )
+
+    let after: Wei = evm
+        .call(
+            addr: vault,
+            gas: 100000,
+            value: Wei::zero(),
+            message: VaultMsg::BalanceOf { owner: evm.address() },
+        )
+    assert!(after == ether(1))
+    assert!(evm.balance(payee) == Wei::zero())
+    assert!(evm.balance(vault) == ether(1))
 }
 
 #[test(balance = 10_000_000_000_000_000_000)]

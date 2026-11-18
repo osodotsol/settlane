@@ -40,6 +40,10 @@ jobs:
       - name: Tests for both ingots (fails if none run)
         run: python3 scripts/check_tests.py
       # Production build: only the default member, so test contracts must not appear.
+      # `fe build` never clears out/, so start from an empty directory (review M1); the
+      # lint also rejects any file in out/ that is not a fresh deployable artifact.
+      - name: Clean build output
+        run: rm -rf out
       - run: fe build
       # Policy lint (D-012, D-009, D-014). Fe 26.6.0 does not narrow a `recv` arm that
       # lists `call` or `create` read-only, so only payout arms may mention them. Also
@@ -53,3 +57,7 @@ jobs:
       # Remove with experiments/ before the final submission.
       - name: Phase 1 compiler experiments
         run: bash experiments/phase1/run.sh
+      # Review 2026-11-18 regressions: the repros still reproduce on the pinned Fe, and
+      # the lint rejects every one of them (H1-H4, M1).
+      - name: Review regressions
+        run: bash experiments/review/run.sh

@@ -1,0 +1,54 @@
+// Review H4a (2026-11-18): shadowing `ctx` keeps the literal `Clock { now: ctx.timestamp() }`
+// while the time comes from the caller. Run: fe test experiments/review/c2_clock_shadow.fe
+pub struct Clock { pub now: Timestamp }
+
+pub struct Fake { t: Timestamp }
+
+impl Fake {
+    pub fn timestamp(self) -> Timestamp {
+        self.t
+    }
+}
+
+pub fn delivery_open(deliver_by: Timestamp) -> bool uses (clock: Clock) {
+    clock.now < deliver_by
+}
+
+msg SettleMsg {
+    #[selector = sol("isOpen(uint256,uint256)")]
+    IsOpen { t: Timestamp, deliver_by: Timestamp } -> bool,
+}
+
+pub contract Settlane uses (ctx: Ctx) {
+    recv SettleMsg {
+        IsOpen { t, deliver_by } -> bool {
+            let ctx = Fake { t }
+            var open = false
+            with (Clock = Clock { now: ctx.timestamp() }) {
+                open = delivery_open(deliver_by)
+            }
+            open
+        }
+    }
+}
+
+#[test]
+fn user_controls_clock() uses (evm: mut Evm) {
+    let p = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let d = Timestamp::from_seconds(1000)
+    let a: bool = evm
+        .call(
+            addr: p,
+            gas: 100000,
+            value: Wei::zero(),
+            message: SettleMsg::IsOpen { t: Timestamp::from_seconds(1), deliver_by: d },
+        )
+    let b: bool = evm
+        .call(
+            addr: p,
+            gas: 100000,
+            value: Wei::zero(),
+            message: SettleMsg::IsOpen { t: Timestamp::from_seconds(5000), deliver_by: d },
+        )
+    assert!(a && !b)
+}

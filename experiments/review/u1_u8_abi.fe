@@ -1,0 +1,51 @@
+// Review (2026-11-18): is a `u8` field range-checked at ABI decode? Yes: 300 is rejected,
+// and the same call with 2 succeeds. Run: fe test experiments/review/u1_u8_abi.fe
+use std::evm::StorageMap
+
+msg Real {
+    #[selector = 0x12345678]
+    Touch { m: u8 } -> u256,
+}
+
+msg Wide {
+    #[selector = 0x12345678]
+    Touch { m: u256 } -> u256,
+}
+
+pub contract P {
+    mut seen: StorageMap<u8, u256>,
+
+    recv Real {
+        Touch { m } -> u256 uses (mut seen) {
+            seen.set(key: m, value: 1)
+            m as u256
+        }
+    }
+}
+
+#[test]
+fn in_range() uses (evm: mut Evm) {
+    let p = evm.create2<P>(value: Wei::zero(), args: (), salt: 1)
+    let r: u256 = evm.call(
+            addr: p,
+            gas: 100000,
+            value: Wei::zero(),
+            message: Wide::Touch { m: 2 },
+        )
+    assert!(r == 2)
+}
+
+#[test]
+fn out_of_range_300() uses (evm: mut Evm) {
+    let p = evm.create2<P>(value: Wei::zero(), args: (), salt: 1)
+    let ok = evm
+        .try_call(
+            addr: p,
+            gas: 100000,
+            value: Wei::zero(),
+            message: Wide::Touch { m: 300 },
+        )
+        .success()
+    // Prints PASS only if 300 is rejected at decode.
+    assert!(!ok)
+}

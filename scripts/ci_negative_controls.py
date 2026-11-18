@@ -70,6 +70,23 @@ def write(root, rel, text):
     p.write_text(text)
 
 
+FIXTURES = REPO / "scripts/lint-fixtures"
+
+
+def add_fixture(fixture, rel):
+    """Copy a lint fixture (a compiling attack shape) into the workspace copy."""
+    return lambda r: write(r, rel, (FIXTURES / fixture).read_text())
+
+
+def starve_revert_setup(root):
+    """Review M2: give the setup call of the negative Vault test 1 gas, so it reverts early."""
+    p = root / "ingots/settlane/src/tests.fe"
+    s = p.read_text()
+    i = s.index("fn withdraw_before_unlock_reverts")
+    j = s.index("gas: 200000", i)
+    p.write_text(s[:j] + "gas: 1" + s[j + len("gas: 200000") :])
+
+
 def dev_not_default(root):
     p = root / "fe.toml"
     p.write_text(p.read_text().replace('default-members = ["ingots/settlane"]', 'default-members = ["ingots/settlane", "ingots/settlane-dev"]'))
@@ -83,6 +100,15 @@ MUTATIONS = {
     "dev-ingot-in-default-members": ("dev ingot is a default member (cond. 2, 3, 6)", "policy lint (fails", dev_not_default),
     "test-shell-in-production-ingot": ("test-only contract in the production ingot (cond. 1, 3)", "policy lint (fails", lambda r: write(r, "ingots/settlane/src/shell.fe", SHELL_IN_PRODUCTION)),
     "production-clock-from-message": ("production contract takes time from a message argument (cond. 7)", "policy lint (fails", lambda r: write(r, "ingots/settlane/src/clock.fe", CLOCK_FROM_MESSAGE)),
+    # Review 2026-11-18 findings, each as a compiling shape placed in the production ingot.
+    "qualified-call-type-in-production": ("H1: `call: mut std::evm::Call` in a contract header", "policy lint (fails", add_fixture("bad_call_qualified_type.fe", "ingots/settlane/src/attack.fe")),
+    "call-import-alias-in-production": ("H1: `use std::evm::Call as Pay`", "policy lint (fails", add_fixture("bad_call_import_alias.fe", "ingots/settlane/src/attack.fe")),
+    "lowercase-arm-in-production": ("H2: lowercase non-payout arm after a payout arm", "policy lint (fails", add_fixture("bad_lowercase_arm.fe", "ingots/settlane/src/attack.fe")),
+    "raw-storage-in-production": ("H3: RawStorage sstore from a non-payout arm", "policy lint (fails", add_fixture("bad_raw_storage.fe", "ingots/settlane/src/attack.fe")),
+    "shadowed-ctx-clock-in-production": ("H4a: `ctx` shadowed by a lookalike timestamp()", "policy lint (fails", add_fixture("bad_clock_ctx_shadowed.fe", "ingots/settlane/src/attack.fe")),
+    "clock-type-alias-in-production": ("H4b: `type Tick = Clock` built from a message argument", "policy lint (fails", add_fixture("bad_clock_type_alias.fe", "ingots/settlane/src/attack.fe")),
+    "starved-setup-in-negative-test": ("M2: the setup of a negative test reverts before the call under test", "Tests for both ingots", starve_revert_setup),
+    "bare-should-revert-test": ("M2: a bare should_revert test is added", "policy lint (fails", add_fixture("bad_bare_should_revert.fe", "ingots/settlane/src/weak_test.fe")),
     "unformatted-dev-code": ("badly formatted dev code", "Format check", lambda r: write(r, "ingots/settlane-dev/src/messy.fe", "pub fn   messy ( )   ->  u256 {   1 }\n")),
 }
 

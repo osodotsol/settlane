@@ -19,6 +19,8 @@
 ## Milestone stored states
 `Funded`, `Submitted`, `Approved`, `Paid`, `Refunded`. Unused slots are `None`. There is no stored `Rejected` state (D-006b): a rejection returns the milestone to `Funded`.
 
+`None` is the **first** variant of the stored enum (D-017), because an unset storage key reads as the first variant (FE_NOTES E3). Unused slots and unknown agreement ids therefore read as `None`, and every action on them reverts (tested).
+
 ## Derived time predicates (`now` = the production clock, see PC below)
 - `delivery_open := now < deliver_by`
 - `review_open := now < decide_by`
@@ -32,7 +34,7 @@ Expiry is derived rather than stored, so it needs no keeper transaction and cann
 | T1 | — | `Create` | any (becomes the client) | creation validation | each used slot → `Funded` | `deposited += value`, `outstanding += value` |
 | T2 | Funded, Submitted | `Submit(e)` | provider | `delivery_open`, `e != 0` | Submitted(e) | none |
 | T3 | Submitted | `Approve(e)` | verifier | `review_open`, `e == stored evidence` | Approved | none (creates an entitlement) |
-| T4 | Submitted | `Reject` | verifier | `review_open` | Funded (evidence cleared, `rejections += 1`) | none |
+| T4 | Submitted | `Reject(e)` | verifier | `review_open`, `e == stored evidence` (D-015) | Funded (evidence cleared, `rejections += 1`) | none |
 | T5 | Approved | `Claim(to)` | provider | `to != 0` | Paid | `paid += amount`, `outstanding -= amount`, send `amount` to `to` |
 | T6 | Funded or Submitted | `Refund(to)` | client | `expired`, `to != 0` | Refunded | `refunded += amount`, `outstanding -= amount`, send `amount` to `to` |
 
@@ -44,7 +46,7 @@ Every other (state, action, caller, time) combination reverts. `Paid` and `Refun
 - The refunded amount is read from storage, never from the caller. `to != 0`.
 - Refund requires `expired`. It reverts for `Approved`, `Paid`, `Refunded`, and for any `Funded` or `Submitted` milestone that is not expired.
 - The client picks `to`, so a client that is a contract unable to receive a 2300-gas send cannot lock its own funds (FE_NOTES E6).
-- Tests: wrong caller (provider, verifier, stranger), `to == 0`, each non-refundable state, the boundaries d-1, d, d+1 on both clocks, repeated refund, and refund after claim.
+- Tests: wrong caller (provider, verifier, stranger), `to == 0`, each non-refundable state, the boundaries d-1, d, d+1 on both clocks, repeated refund, refund after claim, and refund on an unused slot or unknown id (D-017). Negative tests use `try_call` after a positive control, never a bare `should_revert` (lint `T-REVERT`, review M2).
 
 **DE — Deadline enforcement.**
 - `deliver_by` and `decide_by` are absolute, fixed at creation, and no function changes them. No party can extend a deadline.
@@ -64,6 +66,7 @@ Every other (state, action, caller, time) combination reverts. `Paid` and `Refun
 | F2 | The work is fixably deficient | Same: revision until `deliver_by`. |
 | F3 | Rejection arrives after `deliver_by` (inside the review window) | The milestone is `Funded` with delivery closed, so it is immediately `expired` and refundable. |
 | F4 | The verifier rejects wrongly or dishonestly | No on-chain remedy. Trust assumption, and appeal is out of MVP scope. |
+| F5a | The provider resubmits just before the verifier's `Reject` lands | `Reject(e)` names the evidence it reviewed, so it reverts against the new evidence and the verifier reviews the fix (D-015). |
 | F5 | Endless reject and resubmit cycle | Bounded by the absolute `deliver_by`, so the client's maximum lock is unchanged. |
 | F6 | Rejection one second before `deliver_by` | Effectively final, because the provider has no time to resubmit. Documented. |
 | F7 | The provider abandons the work | Expiry, then refund. |
@@ -74,7 +77,7 @@ Every other (state, action, caller, time) combination reverts. `Paid` and `Refun
 - `Submit` requires `now < deliver_by`, and refunding a `Funded` milestone requires `now >= deliver_by`.
 - Both pairs are disjoint at every timestamp, so contradictory outcomes are impossible.
 - A submission made before `deliver_by` always gets the full review window, even when `decide_by` falls after `deliver_by`.
-- `Approve` restates the evidence hash, so a resubmission landing in the same block cannot be approved by mistake.
+- `Approve` and `Reject` both restate the evidence hash (D-015), so a resubmission landing just before them can be neither approved nor rejected by mistake. Without this, a `Reject` meant for earlier evidence could reject a fix submitted shortly before `deliver_by`, which the verifier never saw, making the milestone immediately refundable (review S-1).
 - `Approved` never expires, and the client can never refund an approved milestone.
 - Inactive verifier: after `decide_by` the client can refund. A dishonest verifier is a trust assumption (`docs/SECURITY.md`).
 

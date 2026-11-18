@@ -1,0 +1,37 @@
+// EXPECT: fail C-CLOCK
+// Review H4a: `ctx` shadowed by a lookalike keeps the literal `Clock { now: ctx.timestamp() }`.
+pub struct Clock {
+    pub now: Timestamp,
+}
+
+pub fn delivery_open(deliver_by: Timestamp) -> bool uses (clock: Clock) {
+    clock.now < deliver_by
+}
+
+msg SettleMsg {
+    #[selector = sol("isOpen(uint256,uint256)")]
+    IsOpen { t: Timestamp, deliver_by: Timestamp } -> bool,
+}
+
+pub struct Fake {
+    t: Timestamp,
+}
+
+impl Fake {
+    pub fn timestamp(self) -> Timestamp {
+        self.t
+    }
+}
+
+pub contract Settlane uses (ctx: Ctx) {
+    recv SettleMsg {
+        IsOpen { t, deliver_by } -> bool {
+            let ctx = Fake { t }
+            var open = false
+            with (Clock = Clock { now: ctx.timestamp() }) {
+                open = delivery_open(deliver_by)
+            }
+            open
+        }
+    }
+}

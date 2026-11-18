@@ -1,0 +1,24 @@
+// EXPECT: fail E-EFFECT
+// Review H1: an effect type the lint cannot resolve in this file (for example an alias
+// defined in another module and imported plainly) fails closed.
+use std::evm::ether
+use ingot::Pay
+
+msg SettleMsg {
+    #[selector = sol("approve(address)")]
+    Approve { to: Address },
+    #[selector = sol("claim(address)")]
+    Claim { to: Address },
+}
+
+pub contract Settlane uses (ctx: Ctx, call: mut Pay) {
+    recv SettleMsg {
+        Approve { to } uses (mut call) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success())
+        }
+
+        Claim { to } uses (mut call) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success())
+        }
+    }
+}

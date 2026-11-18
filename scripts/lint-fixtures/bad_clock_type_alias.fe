@@ -1,0 +1,28 @@
+// EXPECT: fail C-CLOCK
+// Review H4b: `type Tick = Clock` avoided the `Clock {` pattern.
+pub struct Clock {
+    pub now: Timestamp,
+}
+
+pub fn delivery_open(deliver_by: Timestamp) -> bool uses (clock: Clock) {
+    clock.now < deliver_by
+}
+
+msg SettleMsg {
+    #[selector = sol("isOpen(uint256,uint256)")]
+    IsOpen { t: Timestamp, deliver_by: Timestamp } -> bool,
+}
+
+type Tick = Clock
+
+pub contract Settlane {
+    recv SettleMsg {
+        IsOpen { t, deliver_by } -> bool {
+            var open = false
+            with (Clock = Tick { now: t }) {
+                open = delivery_open(deliver_by)
+            }
+            open
+        }
+    }
+}

@@ -1,0 +1,21 @@
+// EXPECT: fail E-PARSE
+// Review H2: an arm that starts on the closing line of the payout arm is merged into it.
+// `fe fmt` would split it, but the lint must not depend on formatting.
+use std::evm::ether
+
+msg SettleMsg {
+    #[selector = sol("approve(address)")]
+    Approve { to: Address },
+    #[selector = sol("claim(address)")]
+    Claim { to: Address },
+}
+
+pub contract Settlane uses (ctx: Ctx, call: mut Call) {
+    recv SettleMsg {
+        Claim { to } uses (mut call) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success())
+        } Approve { to } uses (mut call) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success())
+        }
+    }
+}

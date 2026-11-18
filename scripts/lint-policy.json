@@ -1,9 +1,12 @@
 {
+  "_note": "value_types are the privileged effects: only listed payout arms may name them. RawStorage/RawOps added by review H3 (2026-11-18). benign_contract_effects plus value_types is the fail-closed allowlist of contract-level effect types in the production ingot (E-EFFECT, review H1).",
   "value_types": [
     "Call",
     "Create",
     "Super",
-    "Evm"
+    "Evm",
+    "RawStorage",
+    "RawOps"
   ],
   "ingots": {
     "settlane": "production",
@@ -38,5 +41,9 @@
       "value_rules": "exempt",
       "note": "Dev-ingot helper acting as a separate caller (docs/FE_NOTES.md E4). May move value in tests."
     }
-  }
+  },
+  "benign_contract_effects": [
+    "Ctx",
+    "Log"
+  ]
 }

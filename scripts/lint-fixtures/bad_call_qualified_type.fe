@@ -1,0 +1,22 @@
+// EXPECT: fail E-CALL
+// Review H1: a fully qualified `std::evm::Call` hid the contract from the lint.
+use std::evm::ether
+
+msg SettleMsg {
+    #[selector = sol("approve(address)")]
+    Approve { to: Address },
+    #[selector = sol("claim(address)")]
+    Claim { to: Address },
+}
+
+pub contract Settlane uses (ctx: Ctx, call: mut std::evm::Call) {
+    recv SettleMsg {
+        Approve { to } uses (mut call) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success())
+        }
+
+        Claim { to } uses (mut call) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success())
+        }
+    }
+}

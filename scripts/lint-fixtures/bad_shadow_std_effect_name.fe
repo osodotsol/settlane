@@ -1,0 +1,19 @@
+// EXPECT: fail E-SHADOW
+// A user type named like a std effect could stand in for it (for example a fake Ctx
+// with a settable timestamp()).
+pub struct Ctx {
+    t: Timestamp,
+}
+
+msg SettleMsg {
+    #[selector = sol("ping()")]
+    Ping -> u256,
+}
+
+pub contract Settlane {
+    recv SettleMsg {
+        Ping -> u256 {
+            1
+        }
+    }
+}

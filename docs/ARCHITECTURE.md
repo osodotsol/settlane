@@ -47,11 +47,16 @@ total_outstanding: Wei
 ```
 Fallback if struct or enum map values fail (E2/E3): one `StorageMap` per field, keyed the same way.
 
+`state` is `enum MilestoneState { None, Funded, Submitted, Approved, Paid, Refunded }` with `None` **first** (D-017): an unset key reads as the first variant (E3).
+
+## Handlers (D-016)
+Every `recv` arm body is a shared `pub fn` in the production ingot (for example `refund_handler(id, m, to) uses (clock: Clock, ctx: Ctx, call: mut Call, milestones: mut .., ..)`). Arms in `Settlane` are one line, `with (Clock = Clock { now: ctx.timestamp() }) { refund_handler(..) }`. `SettlaneTestClock` (dev ingot) calls the same handlers with a settable Clock. Pure predicates stay in `rules.fe` and take `clock.now`. Only the `Claim` and `Refund` arms, and the handlers they call, may require `call`. An arm that **omits** `call` cannot call a handler requiring it (`error[8-0036]`, `experiments/review/s2_handler_omit_call.fe`), but an arm listing `call` read-only still can (E7), so the lint remains the guard. Evidence: `experiments/review/s1_shared_arm.fe`.
+
 ## Interface (msg SettlaneMsg; selectors via `sol("...")`)
 | Message | Payable | Returns |
 | --- | --- | --- |
 | `Create { provider, verifier, review_period, n, amount0..2, deliver_by0..2, spec0..2 }` | yes | agreement id |
-| `Submit { id, m, evidence }`, `Approve { id, m, evidence }`, `Reject { id, m }` (returns the milestone to `Funded`, D-006b) | no | — |
+| `Submit { id, m, evidence }`, `Approve { id, m, evidence }`, `Reject { id, m, evidence }` (must match stored evidence, D-015; returns the milestone to `Funded`, D-006b) | no | — |
 | `Claim { id, m, to }`, `Refund { id, m, to }` | no | amount sent |
 | `GetAgreement { id }`, `GetMilestone { id, m }`, `GetAccounting { id }`, `TotalOutstanding` | no | views |
 

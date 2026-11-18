@@ -1,0 +1,31 @@
+// Review H4 note (2026-11-18): a Clock constructor taking a message argument. The old
+// lint caught it only because `impl Clock {` happens to match its regex.
+// Run: fe check --standalone experiments/review/c1_clock_ctor.fe
+pub struct Clock { pub now: Timestamp }
+
+impl Clock {
+    pub fn at(t: Timestamp) -> Self {
+        Self { now: t }
+    }
+}
+
+pub fn delivery_open(deliver_by: Timestamp) -> bool uses (clock: Clock) {
+    clock.now < deliver_by
+}
+
+msg SettleMsg {
+    #[selector = sol("isOpen(uint256,uint256)")]
+    IsOpen { t: Timestamp, deliver_by: Timestamp } -> bool,
+}
+
+pub contract Settlane {
+    recv SettleMsg {
+        IsOpen { t, deliver_by } -> bool {
+            var open = false
+            with (Clock = Clock::at(t)) {
+                open = delivery_open(deliver_by)
+            }
+            open
+        }
+    }
+}

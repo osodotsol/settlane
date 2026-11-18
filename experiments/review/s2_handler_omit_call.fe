@@ -1,0 +1,120 @@
+// D-016 check (2026-11-18): an arm that OMITS `call` cannot call a shared handler that
+// requires `mut Call` (error[8-0036] missing effect). A read-only `call` would still be
+// accepted (E7), which is why the lint stays necessary.
+// Run: fe check --standalone experiments/review/s2_handler_omit_call.fe (expect 8-0036)
+use std::evm::{StorageMap, ether}
+
+pub struct Clock { pub now: Timestamp }
+
+// The whole Refund handler as one shared function: auth, deadline, state, transfer.
+pub fn refund(id: u256, to: Address)
+uses (
+    clock: Clock,
+    ctx: Ctx,
+    call: mut Call,
+    owed: mut StorageMap<u256, Wei>,
+    deadline: StorageMap<u256, Timestamp>,
+)
+{
+    assert!(clock.now >= deadline.get(key: id), "not expired")
+    let amount = owed.get(key: id)
+    assert!(amount > Wei::zero(), "nothing")
+    owed.set(key: id, value: Wei::zero())
+    assert!(call.send_value(addr: to, gas: 0, value: amount).success())
+}
+
+msg M {
+    #[selector = sol("fund(uint256,uint256)")]
+    Fund { id: u256, d: Timestamp },
+    #[selector = sol("refund(uint256,address)")]
+    Refund { id: u256, to: Address },
+    #[selector = sol("setTime(uint256)")]
+    SetTime { t: Timestamp },
+}
+
+pub contract Prod uses (ctx: Ctx, call: mut Call) {
+    mut owed: StorageMap<u256, Wei>,
+    mut deadline: StorageMap<u256, Timestamp>,
+
+    recv M {
+        #[payable]
+        Fund { id, d } uses (ctx, mut owed, mut deadline) {
+            owed.set(key: id, value: ctx.value())
+            deadline.set(key: id, value: d)
+        }
+
+        Refund { id, to } uses (ctx, mut call, mut owed, deadline) {
+            with (Clock = Clock { now: ctx.timestamp() }) {
+                refund(id, to)
+            }
+        }
+
+        SetTime { t } {
+            assert!(false)
+        }
+    }
+}
+
+pub contract Shell uses (ctx: Ctx, call: mut Call) {
+    mut owed: StorageMap<u256, Wei>,
+    mut deadline: StorageMap<u256, Timestamp>,
+    mut now: Timestamp,
+
+    recv M {
+        #[payable]
+        Fund { id, d } uses (ctx, mut owed, mut deadline) {
+            owed.set(key: id, value: ctx.value())
+            deadline.set(key: id, value: d)
+        }
+
+        Refund { id, to } uses (ctx, mut owed, deadline, now) {
+            with (Clock = Clock { now }) {
+                refund(id, to)
+            }
+        }
+
+        SetTime { t } uses (mut now) {
+            now = t
+        }
+    }
+}
+
+#[test(balance = 10_000_000_000_000_000_000)]
+fn shell_crosses_deadline_through_shared_fn() uses (evm: mut Evm) {
+    let s = evm.create2<Shell>(value: Wei::zero(), args: (), salt: 1)
+    let d = Timestamp::from_seconds(1000)
+    evm.call(
+        addr: s,
+        gas: 200000,
+        value: ether(1),
+        message: M::Fund { id: 1, d },
+    )
+    evm.call(
+        addr: s,
+        gas: 100000,
+        value: Wei::zero(),
+        message: M::SetTime { t: Timestamp::from_seconds(999) },
+    )
+    assert!(
+        !evm.try_call(
+            addr: s,
+            gas: 200000,
+            value: Wei::zero(),
+            message: M::Refund { id: 1, to: Address::new(0x77) },
+        )
+            .success(),
+    )
+    evm.call(
+        addr: s,
+        gas: 100000,
+        value: Wei::zero(),
+        message: M::SetTime { t: d },
+    )
+    evm.call(
+        addr: s,
+        gas: 200000,
+        value: Wei::zero(),
+        message: M::Refund { id: 1, to: Address::new(0x77) },
+    )
+    assert!(evm.balance(Address::new(0x77)) == ether(1))
+}

@@ -15,7 +15,8 @@ Settlane is a Fe 26.6 EVM contract for milestone-based settlement. Claude Code i
 fe --version            # expect fe 26.6.0
 fe fmt --check ingots && fe check && fe check ingots/settlane-dev
 python3 scripts/check_tests.py     # runs fe test for BOTH ingots; a bare `fe test` runs only the production ingot
-fe build && python3 scripts/settlane_lint.py ingots --abi-dir out
+rm -rf out && fe build && python3 scripts/settlane_lint.py ingots --abi-dir out
+bash experiments/review/run.sh     # review 2026-11-18 regressions (docs/reviews/2026-11-18-phase1.md)
 ```
 
 Skill: `.agents/skills/independent-review/SKILL.md`.

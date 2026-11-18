@@ -1,0 +1,33 @@
+// EXPECT: fail C-CLOCK
+// Review C1: a constructor on Clock (`Self { now: t }`) builds a Clock from an argument.
+// The old lint caught it only by accident.
+pub struct Clock {
+    pub now: Timestamp,
+}
+
+pub fn delivery_open(deliver_by: Timestamp) -> bool uses (clock: Clock) {
+    clock.now < deliver_by
+}
+
+msg SettleMsg {
+    #[selector = sol("isOpen(uint256,uint256)")]
+    IsOpen { t: Timestamp, deliver_by: Timestamp } -> bool,
+}
+
+impl Clock {
+    pub fn at(t: Timestamp) -> Self {
+        Self { now: t }
+    }
+}
+
+pub contract Settlane {
+    recv SettleMsg {
+        IsOpen { t, deliver_by } -> bool {
+            var open = false
+            with (Clock = Clock::at(t)) {
+                open = delivery_open(deliver_by)
+            }
+            open
+        }
+    }
+}

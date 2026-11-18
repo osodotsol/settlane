@@ -54,6 +54,7 @@ Where the rule *is* and *is not* enforced:
 
 ## Test harness
 - `#[test]` options: `balance = N`, `should_revert`, `panic = 0x..`, `selector = 0x..` [src]. `should_revert, panic = 0x11` works [ran].
+- **A bare `should_revert` passes on any revert, including one in the setup** [ran, review M2]: starving the setup call of gas made the old Vault negative test pass without reaching the call under test. Write negative tests as a plain `evm.call` setup, a positive control, then `assert!(!evm.try_call(..).success())` and unchanged state. Lint rule `T-REVERT` rejects `should_revert` without `panic = ..`.
 - There are no cheatcodes. All calls run from the test contract (`evm.address()`) within **one frozen block** [ran, E4/E5].
 - `evm.try_call(..).success()` asserts a revert without ending the test, and the reverted call's effects are discarded [ran, E1/E6].
 - Plain `#[test] fn` with no `Evm` runs pure logic [ran, E9].
@@ -98,11 +99,25 @@ Verified while building the real workspace (`ingots/settlane`, `ingots/settlane-
 | With the dev tests deleted, `fe test` still reported `ok. 3 passed` and exit 0, with only a `Warning: No tests found`. The gate catches it. | [ran] negative control |
 **Correction:** an earlier note (E10 probe) read `exit=1` from the root `fe fmt --check` as proof that it covers the dev ingot. That exit code was the "No .fe files found" error, so the conclusion was wrong and has been replaced by the rows above.
 
+## Review 2026-11-18 facts
+Evidence in `experiments/review/` (all re-run by `bash experiments/review/run.sh`). Context: `docs/reviews/2026-11-18-phase1.md`.
+| Fact | Evidence |
+| --- | --- |
+| A contract effect type may be written fully qualified (`call: mut std::evm::Call`) or through an import alias (`use std::evm::Call as Pay`). Both compile and send ETH. | `b1_qualified_type.fe`, `b2_alias.fe` [ran] |
+| `msg` variants and `recv` arms may be lowercase (`approve { to: Address }`). | `b3_lowercase.fe` [ran] |
+| A contract may declare `raw: mut RawStorage` (needs `use std::evm::RawStorage`; without the import the arm's `raw` is `error[8-0012] undefined variable`). `unsafe { raw.sstore(slot: 0, value: 7) }` overwrites a compiler-allocated field from any arm listing `mut raw`. | `r2_rawstorage.fe` [ran] |
+| `let ctx = Fake { t }` shadows the `ctx` effect inside an arm, and a user struct can be an effect bound to the name `ctx` (`uses (ctx: Fake)`, provided by `with (Fake = ..)`). A user `struct Ctx` also compiles. So the text `ctx.timestamp()` does not prove the time comes from the block. | `c2_clock_shadow.fe`, lint fixtures `bad_clock_ctx_lookalike_effect.fe`, `bad_shadow_std_effect_name.fe` [ran] |
+| `type Tick = Clock` works, and `Tick { now: t }` builds a Clock. | `c3_clock_alias.fe` [ran] |
+| `#[selector = sol("f(uint8)")]` is type-checked against the fields (`error[9-0006]` on a mismatch). A numeric `#[selector = 0x12345678]` is not, so two messages can share a selector with different field types. | `u1_u8_abi.fe` [ran] |
+| **A `u8` argument out of range is rejected at ABI decode** (300 reverts, 2 succeeds through the same wide message). | `u1_u8_abi.fe` [ran] |
+| A whole handler can be one shared `pub fn` taking contract fields as effects (`owed: mut StorageMap<u256, Wei>`) plus `clock: Clock`, `ctx: Ctx`, `call: mut Call`. Two contracts call it with different Clock sources (D-016). | `s1_shared_arm.fe` [ran] |
+| An arm that **omits** `call` cannot call such a handler (`error[8-0036] missing effect Call`). An arm listing `call` read-only can (E7). | `s2_handler_omit_call.fe` [ran] |
+| **`fe build` never clears `out/`**: a file placed there survives a rebuild. `--emit bytecode,runtime-bytecode` writes `.bin` and `.runtime.bin` with no `.abi.json`. CI therefore runs `rm -rf out` first, and `C-ARTIFACT` checks every file. | review M1 [ran] |
+
 ## Still unverified (Phase 2–4 checks)
 - Is the production contract deployed by the dev-ingot tests byte-identical to the shipped `Prod` artifact? It is the same source and compiler, but `fe` offers no way to compare. Mitigation: all tests that do not need time travel live in the production ingot.
 - A reentrant recipient under the 2300 stipend. EIP-2200 forbids SSTORE when gas is at or below 2300, so reentrancy into a state change should fail. **Inferred, test in Phase 4.**
 - `#[event]` with `Wei` and `u8` fields, and the event ABI.
-- `u8` parameter range checking at the ABI boundary (for example m = 300).
 - Gas and code size of the full contract (`fe build --emit sizes`).
 
 ## Draft upstream report (owner decides whether to file it)

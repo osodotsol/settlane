@@ -1,0 +1,48 @@
+// EXPECT: pass
+// S-2 (D-015): the whole handler is one shared function in the production ingot; the
+// arm only provides the Clock. This shape must stay lint-clean.
+use std::evm::StorageMap
+
+pub struct Clock {
+    pub now: Timestamp,
+}
+
+pub fn refund_handler(id: u256, to: Address) uses (clock: Clock, ctx: Ctx, call: mut Call, owed: mut StorageMap<u256, Wei>, deadline: StorageMap<u256, Timestamp>) {
+    assert!(ctx.caller() != to, "example guard")
+    assert!(clock.now >= deadline.get(key: id), "not expired")
+    let amount = owed.get(key: id)
+    owed.set(key: id, value: Wei::zero())
+    assert!(call.send_value(addr: to, gas: 0, value: amount).success())
+}
+
+msg SettleMsg {
+    #[selector = sol("approve(uint256)")]
+    Approve { id: u256 },
+    #[selector = sol("claim(uint256,address)")]
+    Claim { id: u256, to: Address },
+    #[selector = sol("refund(uint256,address)")]
+    Refund { id: u256, to: Address },
+}
+
+pub contract Settlane uses (ctx: Ctx, call: mut Call, log: mut Log) {
+    mut owed: StorageMap<u256, Wei>,
+    mut deadline: StorageMap<u256, Timestamp>,
+
+    recv SettleMsg {
+        Approve { id } uses (ctx, deadline) {
+            assert!(ctx.timestamp() < deadline.get(key: id))
+        }
+
+        Claim { id, to } uses (ctx, mut call, mut owed) {
+            let amount = owed.get(key: id)
+            owed.set(key: id, value: Wei::zero())
+            assert!(call.send_value(addr: to, gas: 0, value: amount).success())
+        }
+
+        Refund { id, to } uses (ctx, mut call, mut owed, deadline) {
+            with (Clock = Clock { now: ctx.timestamp() }) {
+                refund_handler(id, to)
+            }
+        }
+    }
+}

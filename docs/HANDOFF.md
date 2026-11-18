@@ -36,4 +36,4 @@ Do not modify src/ unless the assignment allows it. Do not commit or push.
 - **Output:** `docs/reviews/2026-11-18-phase1.md`
 
 ## Log
-_(empty)_
+- 2026-11-18: A Claude-side review (not R-001) was run at the owner's request: `docs/reviews/2026-11-18-phase1.md`. H1–H4, M1 and M2 are fixed with regression tests. For R-001 Q6, the bypass shapes already found (qualified or aliased `Call`, lowercase arm, `RawStorage`, shadowed `ctx`, Clock alias) are now fixtures, so look for different ones. R-001 itself is still not run.

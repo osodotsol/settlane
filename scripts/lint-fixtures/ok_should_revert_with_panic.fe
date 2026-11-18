@@ -1,0 +1,30 @@
+// EXPECT: pass
+// A should_revert with a specific panic code names the reason, so T-REVERT allows it.
+use std::evm::wei
+
+msg MathMsg {
+    #[selector = sol("add(uint256,uint256)")]
+    Add { a: Wei, b: Wei } -> Wei,
+}
+
+pub contract Math {
+    recv MathMsg {
+        Add { a, b } -> Wei {
+            a + b
+        }
+    }
+}
+
+const MAX: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+
+#[test(should_revert, panic = 0x11)]
+fn add_overflow_panics() uses (evm: mut Evm) {
+    let m = evm.create2<Math>(value: Wei::zero(), args: (), salt: 1)
+    let _: Wei = evm
+        .call(
+            addr: m,
+            gas: 100000,
+            value: Wei::zero(),
+            message: MathMsg::Add { a: wei(MAX), b: wei(1) },
+        )
+}
