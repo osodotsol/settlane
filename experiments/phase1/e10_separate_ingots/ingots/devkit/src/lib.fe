@@ -1,0 +1,27 @@
+// Dev-only ingot: a shell with a settable clock that reuses the production rule.
+use prod::{Clock, ProdMsg, delivery_open}
+
+pub msg DevMsg {
+    #[selector = sol("setTime(uint256)")]
+    SetTime { now: Timestamp },
+}
+
+pub contract ProdTestClock {
+    mut now: Timestamp,
+
+    recv ProdMsg {
+        IsOpen { deliver_by } -> bool uses (now) {
+            var open = false
+            with (Clock = Clock { now }) {
+                open = delivery_open(deliver_by: deliver_by)
+            }
+            open
+        }
+    }
+
+    recv DevMsg {
+        SetTime { now: t } uses (mut now) {
+            now = t
+        }
+    }
+}

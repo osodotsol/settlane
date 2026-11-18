@@ -1,0 +1,48 @@
+use ingot::{DevMsg, ProdTestClock}
+use prod::{Prod, ProdMsg}
+use std::evm::days
+
+#[test]
+fn shell_crosses_deadline_while_production_cannot_be_moved()
+uses (evm: mut Evm)
+{
+    let prod = evm.create2<Prod>(value: Wei::zero(), args: (), salt: 1)
+    let shell = evm.create2<ProdTestClock>(value: Wei::zero(), args: (), salt: 2)
+    let now = evm.timestamp()
+    let d = now + days(1)
+
+    // Production: block time is before d, and it has no setter.
+    let p_open: bool = evm
+        .call(
+            addr: prod,
+            gas: 100000,
+            value: Wei::zero(),
+            message: ProdMsg::IsOpen { deliver_by: d },
+        )
+    assert!(p_open)
+    assert!(
+        !evm.try_call(
+            addr: prod,
+            gas: 100000,
+            value: Wei::zero(),
+            message: DevMsg::SetTime { now: d },
+        )
+            .success(),
+    )
+
+    // Test shell: set time to d, so delivery is closed.
+    evm.call(
+        addr: shell,
+        gas: 100000,
+        value: Wei::zero(),
+        message: DevMsg::SetTime { now: d },
+    )
+    let s_open: bool = evm
+        .call(
+            addr: shell,
+            gas: 100000,
+            value: Wei::zero(),
+            message: ProdMsg::IsOpen { deliver_by: d },
+        )
+    assert!(!s_open)
+}

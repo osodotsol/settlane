@@ -11,6 +11,10 @@ Rules (a violation exits 1):
               value-moving effect (Call, Create, Super, Evm) or its binding.
   E-BODY      such an arm's body references a value-moving binding.
   E-UNLISTED  a contract with value-moving effects is missing from the policy.
+  E-DUP       a payout arm name (for example `Claim`) is also used by an arm of
+              another message type in the same contract. Payout arms are
+              identified by `Msg::Arm`, so a reused bare name cannot inherit
+              the permission, and the reuse is rejected outright.
   E-PARSE     nothing was scanned (missing path, no .fe files), or a contract
               with value-moving effects has a `recv` but no arms could be
               parsed. The lint fails closed.
@@ -18,6 +22,10 @@ Rules (a violation exits 1):
               `Clock { now: ctx.timestamp() }`, or stores a Clock field.
   C-ABI       a production contract's ABI has a state-changing function whose
               name mentions time or clock (needs the `fe build` output).
+  C-ARTIFACT  the build output directory contains an artifact for a contract
+              marked `test_only` in the policy (for example the test-clock
+              shell), or for a contract the policy does not list, or does
+              not exist. Fails closed.
 
 Usage:
   python3 scripts/settlane_lint.py src [--abi-dir out]
@@ -153,10 +161,12 @@ def lint_text(text, policy, path="<src>"):
                 allowed = set(entry.get("payout_arms", []))
                 forbidden = value_names | {"call", "create"}
                 bodies = re.findall(r"\brecv\b[^{]*\{", body)
-                arms = []
+                arms = []  # (message type, arm name, arm text)
                 for m in re.finditer(r"\brecv\b[^{]*\{", body):
                     open_idx = m.end() - 1
-                    arms += arms_in(body[open_idx + 1 : match_close(body, open_idx)])
+                    mm = re.match(r"\brecv\s+([\w:]+)", m.group(0))
+                    msg = mm.group(1) if mm else "?"
+                    arms += [(msg, n, t) for n, t in arms_in(body[open_idx + 1 : match_close(body, open_idx)])]
                 if bodies and not arms:
                     found.append(("E-PARSE", f"{path}: contract {cname}: recv found but no arms parsed"))
                 for im in re.finditer(r"\binit\s*\(", body):
@@ -165,16 +175,21 @@ def lint_text(text, policy, path="<src>"):
                     bad = [n for n, t in uses_items(head) if n in forbidden or t in value_types]
                     if bad:
                         found.append(("E-CALL", f"{path}: {cname}.init lists {bad}"))
-                for aname, atext in arms:
-                    if aname in allowed:
+                for short in sorted({a.split("::")[-1] for a in allowed}):
+                    owners = sorted(f"{msg}::{n}" for msg, n, _ in arms if n == short)
+                    if len(owners) > 1:
+                        found.append(("E-DUP", f"{path}: {cname}: payout arm name `{short}` is used by {owners}"))
+                for msg, aname, atext in arms:
+                    qualified = f"{msg}::{aname}"
+                    if qualified in allowed:
                         continue
                     bad = [n for n, t in uses_items(atext) if n in forbidden or n in value_types or t in value_types]
                     if bad:
-                        found.append(("E-CALL", f"{path}: {cname}.{aname} lists {bad} but is not a payout arm {sorted(allowed)}"))
+                        found.append(("E-CALL", f"{path}: {cname}.{qualified} lists {bad} but is not a payout arm {sorted(allowed)}"))
                         continue
                     refs = [n for n in sorted(forbidden) if re.search(rf"(?<![\w.]){re.escape(n)}\b", atext)]
                     if refs:
-                        found.append(("E-BODY", f"{path}: {cname}.{aname} references {refs}"))
+                        found.append(("E-BODY", f"{path}: {cname}.{qualified} references {refs}"))
         if production:
             full = header + "{" + body + "}"
             if re.search(r":\s*(?:mut\s+)?Clock\b", full):
@@ -196,6 +211,21 @@ def check_abi(abi, cname):
     return [("C-ABI", f"{cname}: state-changing time/clock functions in ABI: {bad}")] if bad else []
 
 
+def check_artifacts(abi_dir, policy):
+    d = pathlib.Path(abi_dir)
+    if not d.is_dir():
+        return [("C-ARTIFACT", f"{abi_dir}: build output directory missing, run `fe build` first")]
+    found = []
+    for p in sorted(d.glob("*.abi.json")):
+        name = p.name[: -len(".abi.json")]
+        entry = policy["contracts"].get(name)
+        if entry is None:
+            found.append(("C-ARTIFACT", f"{p}: built contract {name} is not listed in the policy"))
+        elif entry.get("test_only"):
+            found.append(("C-ARTIFACT", f"{p}: test-only contract {name} was built into the production output"))
+    return found
+
+
 def lint_tree(src_dir, policy, abi_dir=None):
     found = []
     seen_production = set()
@@ -211,6 +241,8 @@ def lint_tree(src_dir, policy, abi_dir=None):
         for cname, _, _ in contracts_in(strip_noise(text)):
             if policy["contracts"].get(cname, {}).get("production"):
                 seen_production.add(cname)
+    if abi_dir is not None:
+        found += check_artifacts(abi_dir, policy)
     for cname in sorted(seen_production):
         if abi_dir is None:
             continue
@@ -237,7 +269,21 @@ def selftest(policy):
         ok &= good
     abi_bad = check_abi([{"type": "function", "name": "setTime", "stateMutability": "nonpayable"}], "Settlane")
     abi_ok = check_abi([{"type": "function", "name": "getNow", "stateMutability": "view"}, {"type": "function", "name": "approve", "stateMutability": "nonpayable"}], "Settlane")
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        t = pathlib.Path(tmp)
+        (t / "Settlane.abi.json").write_text("[]")
+        clean = check_artifacts(t, policy)
+        (t / "SettlaneTestClock.abi.json").write_text("[]")
+        shell = check_artifacts(t, policy)
+        (t / "SettlaneTestClock.abi.json").unlink()
+        (t / "Rogue.abi.json").write_text("[]")
+        unlisted = check_artifacts(t, policy)
     for label, good in (
+        ("artifacts: Settlane alone accepted", not clean),
+        ("artifacts: test-only shell in output rejected", bool(shell) and "SettlaneTestClock" in shell[0][1]),
+        ("artifacts: unlisted contract in output rejected", bool(unlisted)),
+        ("artifacts: missing output directory rejected", bool(check_artifacts("/nonexistent-settlane-out", policy))),
         ("abi: setTime rejected", bool(abi_bad)),
         ("abi: view getNow and approve accepted", not abi_ok),
         ("fail-closed: missing path is an error", bool(lint_tree("/nonexistent-settlane-path", policy))),

@@ -2,16 +2,17 @@
   "value_types": ["Call", "Create", "Super", "Evm"],
   "contracts": {
     "Vault": {
-      "payout_arms": ["Withdraw"],
+      "payout_arms": ["VaultMsg::Withdraw"],
       "note": "Starter example from the organizers. Remove this entry when the Vault is replaced (Phase 2)."
     },
     "Settlane": {
-      "payout_arms": ["Claim", "Refund"],
+      "payout_arms": ["SettleMsg::Claim", "SettleMsg::Refund"],
       "production": true
     },
     "SettlaneTestClock": {
-      "payout_arms": ["Claim", "Refund"],
-      "note": "Test-only shell with a settable clock. Built by `fe build` but never the deployable (see docs/DECISIONS.md D-009)."
+      "payout_arms": ["SettleMsg::Claim", "SettleMsg::Refund"],
+      "test_only": true,
+      "note": "Test-only shell with a settable clock. Must never appear in the production build output (rule C-ARTIFACT). Keep it in the dev ingot, see docs/DECISIONS.md D-009 and D-014."
     }
   }
 }

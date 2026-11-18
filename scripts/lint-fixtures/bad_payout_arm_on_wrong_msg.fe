@@ -1,0 +1,16 @@
+// EXPECT: fail E-CALL
+// `Claim` exists only on AdminMsg, so `SettleMsg::Claim` is not defined here.
+use std::evm::ether
+
+msg AdminMsg {
+    #[selector = sol("sweep(address)")]
+    Claim { to: Address },
+}
+
+pub contract Settlane uses (ctx: Ctx, call: mut Call) {
+    recv AdminMsg {
+        Claim { to } uses (mut call) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success())
+        }
+    }
+}

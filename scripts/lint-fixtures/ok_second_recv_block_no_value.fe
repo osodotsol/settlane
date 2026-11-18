@@ -1,0 +1,29 @@
+// EXPECT: pass
+// A second message type is fine when it neither reuses a payout name nor moves value.
+use std::evm::ether
+
+msg SettleMsg {
+    #[selector = sol("claim(address)")]
+    Claim { to: Address },
+}
+
+msg InfoMsg {
+    #[selector = sol("paid()")]
+    Paid -> Wei,
+}
+
+pub contract Settlane uses (ctx: Ctx, call: mut Call) {
+    mut paid: Wei,
+
+    recv SettleMsg {
+        Claim { to } uses (ctx, mut call, mut paid) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success())
+        }
+    }
+
+    recv InfoMsg {
+        Paid -> Wei uses (paid) {
+            paid
+        }
+    }
+}

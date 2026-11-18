@@ -16,7 +16,7 @@ Settlane is a Fe 26.6 EVM contract for milestone-based settlement of digital-ser
 ```sh
 fe check && fe fmt --check && fe test   # gate before every commit
 fe build && python3 scripts/settlane_lint.py src --abi-dir out   # policy lint, fails CI on violation
-python3 scripts/settlane_lint.py --selftest                       # lint self-test (18 fixtures)
+python3 scripts/settlane_lint.py --selftest                       # lint self-test (22 fixtures, 8 unit checks)
 bash experiments/phase1/run.sh           # Phase 1 compiler experiments (remove before submission)
 fe test src/<file>.fe                    # focused run
 fe build                                 # artifacts go to out/ (gitignored)

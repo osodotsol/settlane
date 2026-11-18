@@ -69,10 +69,23 @@ Where the rule *is* and *is not* enforced:
 | Struct and enum map values need `impl Copy` | Add it | None |
 
 ## Build finding (2026-11-18)
-**`fe build` emits every `pub contract` in the ingot, including ones defined in `src/tests.fe`.** Verified on a scratch copy: a `TestOnlyShell` contract in the test file produced `out/TestOnlyShell.{bin,runtime.bin,abi.json}`. There is no test-only `cfg` in 26.6 (`#[cfg]` supports `target`, `target_os`, `target_family`). So a test shell for the clock cannot be hidden from the build, and the safeguards are lint rules `C-CLOCK` and `C-ABI`, naming, and documentation (`docs/LIFECYCLE.md` PC). Whether a separate test ingot with a path dependency can keep it out of `out/` is a Phase 2 question.
+**`fe build` emits every `pub contract` in the ingot, including ones defined in `src/tests.fe`.** Verified on a scratch copy: a `TestOnlyShell` contract in the test file produced `out/TestOnlyShell.{bin,runtime.bin,abi.json}`. There is no test-only `cfg` in 26.6 (`#[cfg]` supports `target`, `target_os`, `target_family`). So a test shell for the clock cannot be hidden from the build, and the safeguards are lint rules `C-CLOCK` and `C-ABI`, naming, and documentation (`docs/LIFECYCLE.md` PC). E10 below shows a workspace layout that keeps it out of the production `out/`.
+
+## E10: separating the test-clock shell from production artifacts (2026-11-18)
+Workspace `experiments/phase1/e10_separate_ingots/` with `members = { main = ["ingots/prod"], dev = ["ingots/devkit"] }` and `default-members = ["ingots/prod"]`. `prod` has the `Clock` effect, the rule and the contract `Prod`. `devkit` (`[dependencies] prod = true`) has `ProdTestClock`, which reuses `prod::delivery_open` with a settable clock, plus the integration test.
+| Question | Result | Evidence |
+| --- | --- | --- |
+| Does a dev ingot compile against the production ingot, reusing `pub struct Clock`, a `pub fn ... uses (clock: Clock)` and `pub msg`? | **Yes** (fields need `pub`). | `fe check` exit 0 [ran] |
+| Does `fe build` at the root emit the shell? | **No.** Only `Prod.{bin,runtime.bin,abi.json}`. | [ran] |
+| Can the shell still be built on purpose? | **Yes**: `fe build ingots/devkit --out-dir <dir>` emits `ProdTestClock.*`. | [ran] |
+| Do dev-ingot tests run? | **Yes**, by path: `fe test ingots/devkit`, or both suites: `fe test ingots/prod ingots/devkit`. | [ran] |
+| Does `fe test` at the root run them? | **No.** It runs default members only, and prints `Warning: No tests found` with **exit 0** when `prod` has none (a false green). `fe test -i devkit` fails with "No workspace member named devkit": `dev`-group members are not selectable with `-i`. | [ran] |
+| Alternative: both members as `default-members` | `fe test` then runs the dev tests, but plain `fe build` emits the shell as well. `fe build -i prod` emits `Prod.*` only. | [ran] on a scratch copy |
+| Is the production bytecode that the dev tests deploy identical to the shipped artifact? | **Not verifiable.** `fe build ingots/devkit --contract Prod` fails ("Prod not found, available: ProdTestClock"), so a dependency's contract cannot be built through the dev ingot for a byte comparison. | [ran] |
+Result: separation works. Recommendation is `default-members = [production only]`, because the dangerous command (`fe build`, used to produce deliverables) is then safe by default, and the explicit test command is documented and run in CI (D-014). Lint rule `C-ARTIFACT` fails CI if a test-only or unlisted contract appears in the build output.
 
 ## Still unverified (Phase 2–4 checks)
-- Can a second ingot (tests only) depend on the main ingot via `fe.toml`, so test shells stay out of the main `out/`?
+- Is the production contract deployed by the dev-ingot tests byte-identical to the shipped `Prod` artifact? It is the same source and compiler, but `fe` offers no way to compare. Mitigation: all tests that do not need time travel live in the production ingot.
 - A reentrant recipient under the 2300 stipend. EIP-2200 forbids SSTORE when gas is at or below 2300, so reentrancy into a state change should fail. **Inferred, test in Phase 4.**
 - `#[event]` with `Wei` and `u8` fields, and the event ABI.
 - `u8` parameter range checking at the ABI boundary (for example m = 300).

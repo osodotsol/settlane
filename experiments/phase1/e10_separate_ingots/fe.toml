@@ -1,0 +1,6 @@
+# E10: keep the test-clock shell out of the production build artifacts.
+[workspace]
+name = "e10_separate_ingots"
+version = "0.1.0"
+members = { main = ["ingots/prod"], dev = ["ingots/devkit"] }
+default-members = ["ingots/prod"]

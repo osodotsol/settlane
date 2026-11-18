@@ -54,7 +54,7 @@ Every other (state, action, caller, time) combination reverts. `Paid` and `Refun
 **PC — Production clock that users cannot change.**
 - In `Settlane`, `Clock.now` is only ever `ctx.timestamp()`. It is never stored, never read from a message argument, and there is no setter, owner, or admin path.
 - Enforced by (a) lint rule `C-CLOCK` (the only permitted construction is `Clock { now: ctx.timestamp() }`, and no Clock field), (b) lint rule `C-ABI` (the built `Settlane.abi.json` has no state-changing function whose name mentions time or clock), and (c) a test that calls `SetTime` on the production contract and expects a revert or an absent selector.
-- The test-only shell (`SettlaneTestClock`) has a settable clock. **`fe build` emits every contract in the ingot, including ones defined in test files** (verified 2026-11-18), so the shell is built too. It is never the deployable. Only `Settlane.*` artifacts are deployable, the shell is named so it cannot be mistaken for it, and the README and submission state this. Phase 2 first checks whether a separate test ingot can keep the shell out of `out/`.
+- The test-only shell (`SettlaneTestClock`) has a settable clock. **`fe build` emits every contract in the ingot, including ones defined in test files** (verified 2026-11-18), so a shell placed in the production ingot would be built too. D-014 therefore puts it in a separate dev ingot, which keeps the production `out/` to deployable contracts only. Lint rule `C-ARTIFACT` fails CI if a test-only or unlisted contract appears in the build output, and the README and submission state which artifacts are deployable.
 
 ## Rejection and retry (D-006b)
 `Reject` is a revision request. Scenarios:

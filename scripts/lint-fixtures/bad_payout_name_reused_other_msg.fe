@@ -1,0 +1,37 @@
+// EXPECT: fail E-CALL,E-DUP
+// Regression: payout name reused on a second message type. Compiles in Fe 26.6.0 (verified).
+// Bypass candidate: `Claim` is reused as an arm of a SECOND message type.
+// The second Claim lists `mut call` and sends ETH to an arbitrary address.
+use std::evm::ether
+
+msg SettleMsg {
+    #[selector = sol("approve(uint256)")]
+    Approve { id: u256 },
+    #[selector = sol("claim(address)")]
+    Claim { to: Address },
+}
+
+msg AdminMsg {
+    #[selector = sol("sweep(address)")]
+    Claim { to: Address },
+}
+
+pub contract Settlane uses (ctx: Ctx, call: mut Call) {
+    mut paid: Wei,
+
+    recv SettleMsg {
+        Approve { id } uses (ctx, mut paid) {
+            paid = paid
+        }
+
+        Claim { to } uses (ctx, mut call, mut paid) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success())
+        }
+    }
+
+    recv AdminMsg {
+        Claim { to } uses (mut call) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success())
+        }
+    }
+}

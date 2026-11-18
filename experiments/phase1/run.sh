@@ -52,6 +52,24 @@ for g in e7/b_readonly_call_call.fe e7/c_create_readonly.fe e7/i_contract_arm_re
   expect_compile_error "$g" 8-0066 || echo "            ^ known gap, see docs/FE_NOTES.md E7"
 done
 expect_pass e7/j_runtime.fe
+# E10: workspace layout that keeps the test-clock shell out of the production build.
+e10_check() {
+  d=e10_separate_ingots
+  rm -rf $d/out
+  if ! (cd $d && fe build >/tmp/settlane-e10.$$ 2>&1); then echo "UNEXPECTED  e10 build failed:"; tail -8 /tmp/settlane-e10.$$; fail=1; return; fi
+  if [ -f $d/out/Prod.abi.json ] && [ ! -e $d/out/ProdTestClock.abi.json ] && [ "$(ls $d/out | wc -l)" = 3 ]; then
+    echo "PASS        e10 production build emits only Prod.* (shell absent)"
+  else
+    echo "UNEXPECTED  e10 production output is not exactly Prod.*:"; ls $d/out; fail=1
+  fi
+  if (cd $d && fe test ingots/prod ingots/devkit 2>&1 | grep -q 'test result: ok. 1 passed; 0 failed'); then
+    echo "PASS        e10 dev-ingot test crosses the deadline against the shell"
+  else
+    echo "UNEXPECTED  e10 dev-ingot test did not pass"; fail=1
+  fi
+  rm -rf $d/out /tmp/settlane-e10.$$
+}
+e10_check
 expect_pass e8_wei_overflow.fe
 expect_pass e9_clock_effect.fe
 expect_compile_error e9_fail_missing_clock.fe 8-0036

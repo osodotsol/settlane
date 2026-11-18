@@ -1,0 +1,25 @@
+// Production ingot: the Clock effect, the rule, and the production contract.
+// The production contract only ever provides Clock { now: ctx.timestamp() }.
+
+pub struct Clock { pub now: Timestamp }
+
+pub fn delivery_open(deliver_by: Timestamp) -> bool uses (clock: Clock) {
+    clock.now < deliver_by
+}
+
+pub msg ProdMsg {
+    #[selector = sol("isOpen(uint256)")]
+    IsOpen { deliver_by: Timestamp } -> bool,
+}
+
+pub contract Prod uses (ctx: Ctx) {
+    recv ProdMsg {
+        IsOpen { deliver_by } -> bool uses (ctx) {
+            var open = false
+            with (Clock = Clock { now: ctx.timestamp() }) {
+                open = delivery_open(deliver_by: deliver_by)
+            }
+            open
+        }
+    }
+}
