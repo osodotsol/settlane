@@ -166,8 +166,7 @@ pub fn check_submit(
 // First failed rule of `Approve` (T3) and `Reject` (T4). They share one check, so their guards
 // cannot drift apart: the agreement exists, the caller is the verifier, the milestone exists,
 // it is `Submitted`, the review window is open, and the evidence the verifier names is exactly
-// the stored evidence (D-015). A zero evidence can never match, because a `Submitted`
-// milestone always has nonzero evidence.
+// the stored evidence (D-015), with the same submission revision.
 pub enum ReviewCheck {
     Valid,
     UnknownAgreement,
@@ -176,6 +175,7 @@ pub enum ReviewCheck {
     NotSubmitted,
     ReviewClosed,
     EvidenceMismatch,
+    RevisionMismatch,
 }
 
 impl Copy for ReviewCheck {}
@@ -189,6 +189,7 @@ pub fn review_code(_ c: ReviewCheck) -> u8 {
         ReviewCheck::NotSubmitted => 4,
         ReviewCheck::ReviewClosed => 5,
         ReviewCheck::EvidenceMismatch => 6,
+        ReviewCheck::RevisionMismatch => 7,
     }
 }
 
@@ -201,6 +202,8 @@ pub fn check_review(
     now: Timestamp,
     stored_evidence: u256,
     evidence: u256,
+    stored_revision: u256,
+    revision: u256,
 ) -> ReviewCheck {
     if !agreement_exists {
         return ReviewCheck::UnknownAgreement
@@ -219,6 +222,9 @@ pub fn check_review(
     }
     if evidence != stored_evidence {
         return ReviewCheck::EvidenceMismatch
+    }
+    if revision != stored_revision {
+        return ReviewCheck::RevisionMismatch
     }
     ReviewCheck::Valid
 }

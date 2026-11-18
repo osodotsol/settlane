@@ -142,6 +142,7 @@ uses (
                     spec: specs[k],
                     evidence: 0,
                     rejections: 0,
+                    revision: 0,
                 },
             )
         i += 1
@@ -200,6 +201,9 @@ pub fn require_review(_ c: ReviewCheck) {
         ReviewCheck::EvidenceMismatch => {
             assert!(false, "evidence does not match the submitted evidence")
         },
+        ReviewCheck::RevisionMismatch => {
+            assert!(false, "submission revision does not match")
+        },
     }
 }
 
@@ -228,6 +232,7 @@ uses (
             evidence,
         ),
     )
+    let revision = x.revision + 1
     milestones
         .set(
             key: (id, m),
@@ -239,15 +244,16 @@ uses (
                 spec: x.spec,
                 evidence,
                 rejections: x.rejections,
+                revision,
             },
         )
-    log.emit(MilestoneSubmitted { id, m, evidence })
+    log.emit(MilestoneSubmitted { id, m, evidence, revision })
 }
 
 // T3: the verifier approves the evidence it names. The milestone becomes `Approved`, which no
 // handler can change again, and the evidence stays as it was. No ETH moves: approval only
 // creates the provider's entitlement (it is claimed in a later phase).
-pub fn approve_handler(id: u256, m: u8, evidence: u256)
+pub fn approve_handler(id: u256, m: u8, evidence: u256, revision: u256)
 uses (
     clock: Clock,
     ctx: Ctx,
@@ -268,6 +274,8 @@ uses (
             now: clock.now,
             stored_evidence: x.evidence,
             evidence,
+            stored_revision: x.revision,
+            revision,
         ),
     )
     milestones
@@ -281,15 +289,16 @@ uses (
                 spec: x.spec,
                 evidence: x.evidence,
                 rejections: x.rejections,
+                revision: x.revision,
             },
         )
-    log.emit(MilestoneApproved { id, m, evidence })
+    log.emit(MilestoneApproved { id, m, evidence, revision })
 }
 
 // T4: the verifier asks for a revision of the evidence it names (D-006b, D-015). The milestone
 // returns to `Funded`, the evidence is cleared and the rejection counter goes up. Deadlines are
 // absolute and untouched, so the provider can resubmit only while the delivery window is open.
-pub fn reject_handler(id: u256, m: u8, evidence: u256)
+pub fn reject_handler(id: u256, m: u8, evidence: u256, revision: u256)
 uses (
     clock: Clock,
     ctx: Ctx,
@@ -310,6 +319,8 @@ uses (
             now: clock.now,
             stored_evidence: x.evidence,
             evidence,
+            stored_revision: x.revision,
+            revision,
         ),
     )
     let rejections = x.rejections + 1
@@ -324,9 +335,12 @@ uses (
                 spec: x.spec,
                 evidence: 0,
                 rejections,
+                revision: x.revision,
             },
         )
-    log.emit(MilestoneRejected { id, m, evidence, rejections })
+    log.emit(
+        MilestoneRejected { id, m, evidence, revision, rejections },
+    )
 }
 
 // Parties and review window. Reverts for an unknown agreement id (including 0).
@@ -338,9 +352,18 @@ uses (agreements: StorageMap<u256, Agreement>)
     (a.client, a.provider, a.verifier, a.review_period, a.n)
 }
 
-// (state code, amount, deliver_by, decide_by, spec, evidence, rejections). An unknown agreement id or
+// (state code, amount, deliver_by, decide_by, spec, evidence, rejections, revision). An unknown agreement id or
 // an unused slot reads as state 0 (`None`) with everything zero (D-017). It does not revert.
-pub fn get_milestone_handler(id: u256, m: u8) -> (u8, Wei, Timestamp, Timestamp, u256, u256, u256)
+pub fn get_milestone_handler(id: u256, m: u8) -> (
+    u8,
+    Wei,
+    Timestamp,
+    Timestamp,
+    u256,
+    u256,
+    u256,
+    u256,
+)
 uses (milestones: StorageMap<(u256, u8), Milestone>)
 {
     let x = milestones.get(key: (id, m))
@@ -352,6 +375,7 @@ uses (milestones: StorageMap<(u256, u8), Milestone>)
         x.spec,
         x.evidence,
         x.rejections,
+        x.revision,
     )
 }
 

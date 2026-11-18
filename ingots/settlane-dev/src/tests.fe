@@ -1,3 +1,4 @@
+use std::evm::returndata::decode_error_string
 // Dev-ingot tests for Phase 2A. These need what the production ingot's tests cannot have:
 // a clock that moves (the test-clock shell) and a caller other than the test contract (the
 // Actor). The shell runs the production handlers (D-016), so what is tested here is the
@@ -145,7 +146,16 @@ fn outstanding(_ s: Address) -> Wei uses (evm: mut Evm) {
     )
 }
 
-fn milestone(_ s: Address, _ id: u256, _ m: u8) -> (u8, Wei, Timestamp, Timestamp, u256, u256, u256)
+fn milestone(_ s: Address, _ id: u256, _ m: u8) -> (
+    u8,
+    Wei,
+    Timestamp,
+    Timestamp,
+    u256,
+    u256,
+    u256,
+    u256,
+)
 uses (evm: mut Evm)
 {
     evm.call(
@@ -213,7 +223,8 @@ fn same_state(_ a: Address, _ b: Address, _ id: u256) uses (evm: mut Evm) {
                 && u.3 == v.3
                 && u.4 == v.4
                 && u.5 == v.5
-                && u.6 == v.6,
+                && u.6 == v.6
+                && u.7 == v.7,
             "milestone differs",
         )
         m += 1
@@ -720,6 +731,7 @@ enum Why {
     ReviewClosed,
     ZeroEvidence,
     EvidenceMismatch,
+    RevisionMismatch,
 }
 
 impl Copy for Why {}
@@ -728,21 +740,24 @@ fn because(_ out: CallOutcome, _ why: Why) -> bool {
     if out.success() {
         return false
     }
+    let reason = match decode_error_string(out.returndata()) {
+        Option::Some(reason) => reason,
+        Option::None => {
+            return false
+        },
+    }
     match why {
-        Why::UnknownAgreement => out.returndata().index_of("unknown agreement").is_some(),
-        Why::NotProvider => out.returndata().index_of("caller is not the provider").is_some(),
-        Why::NotVerifier => out.returndata().index_of("caller is not the verifier").is_some(),
-        Why::NoSuchMilestone => out.returndata().index_of("no such milestone").is_some(),
-        Why::WrongState => out.returndata()
-            .index_of("cannot take evidence in this state")
-            .is_some(),
-        Why::NotSubmitted => out.returndata().index_of("milestone is not submitted").is_some(),
-        Why::DeliveryClosed => out.returndata().index_of("delivery window is closed").is_some(),
-        Why::ReviewClosed => out.returndata().index_of("review window is closed").is_some(),
-        Why::ZeroEvidence => out.returndata().index_of("evidence is zero").is_some(),
-        Why::EvidenceMismatch => out.returndata()
-            .index_of("does not match the submitted evidence")
-            .is_some(),
+        Why::UnknownAgreement => reason == "unknown agreement",
+        Why::NotProvider => reason == "caller is not the provider",
+        Why::NotVerifier => reason == "caller is not the verifier",
+        Why::NoSuchMilestone => reason == "no such milestone",
+        Why::WrongState => reason == "milestone cannot take evidence in this state",
+        Why::NotSubmitted => reason == "milestone is not submitted",
+        Why::DeliveryClosed => reason == "delivery window is closed",
+        Why::ReviewClosed => reason == "review window is closed",
+        Why::ZeroEvidence => reason == "evidence is zero",
+        Why::EvidenceMismatch => reason == "evidence does not match the submitted evidence",
+        Why::RevisionMismatch => reason == "submission revision does not match",
     }
 }
 
@@ -769,25 +784,39 @@ uses (evm: mut Evm)
     )
 }
 
-fn approve_out(_ by: Address, _ s: Address, _ id: u256, _ m: u8, _ e: u256) -> CallOutcome
+fn approve_out(
+    _ by: Address,
+    _ s: Address,
+    _ id: u256,
+    _ m: u8,
+    _ e: u256,
+    _ revision: u256,
+) -> CallOutcome
 uses (evm: mut Evm)
 {
     evm.try_call(
         addr: by,
         gas: 2000000,
         value: Wei::zero(),
-        message: ActorMsg::ApproveVia { target: s, id, m, evidence: e },
+        message: ActorMsg::ApproveVia { target: s, id, m, evidence: e, revision },
     )
 }
 
-fn reject_out(_ by: Address, _ s: Address, _ id: u256, _ m: u8, _ e: u256) -> CallOutcome
+fn reject_out(
+    _ by: Address,
+    _ s: Address,
+    _ id: u256,
+    _ m: u8,
+    _ e: u256,
+    _ revision: u256,
+) -> CallOutcome
 uses (evm: mut Evm)
 {
     evm.try_call(
         addr: by,
         gas: 2000000,
         value: Wei::zero(),
-        message: ActorMsg::RejectVia { target: s, id, m, evidence: e },
+        message: ActorMsg::RejectVia { target: s, id, m, evidence: e, revision },
     )
 }
 
@@ -803,25 +832,25 @@ uses (evm: mut Evm)
     )
 }
 
-fn approve_direct(_ s: Address, _ id: u256, _ m: u8, _ e: u256) -> CallOutcome
+fn approve_direct(_ s: Address, _ id: u256, _ m: u8, _ e: u256, _ revision: u256) -> CallOutcome
 uses (evm: mut Evm)
 {
     evm.try_call(
         addr: s,
         gas: 500000,
         value: Wei::zero(),
-        message: SettleMsg::Approve { id, m, evidence: e },
+        message: SettleMsg::Approve { id, m, evidence: e, revision },
     )
 }
 
-fn reject_direct(_ s: Address, _ id: u256, _ m: u8, _ e: u256) -> CallOutcome
+fn reject_direct(_ s: Address, _ id: u256, _ m: u8, _ e: u256, _ revision: u256) -> CallOutcome
 uses (evm: mut Evm)
 {
     evm.try_call(
         addr: s,
         gas: 500000,
         value: Wei::zero(),
-        message: SettleMsg::Reject { id, m, evidence: e },
+        message: SettleMsg::Reject { id, m, evidence: e, revision },
     )
 }
 
@@ -840,16 +869,23 @@ uses (evm: mut Evm)
 }
 
 fn same_milestone(
-    _ a: (u8, Wei, Timestamp, Timestamp, u256, u256, u256),
-    _ b: (u8, Wei, Timestamp, Timestamp, u256, u256, u256),
+    _ a: (u8, Wei, Timestamp, Timestamp, u256, u256, u256, u256),
+    _ b: (u8, Wei, Timestamp, Timestamp, u256, u256, u256, u256),
 ) -> bool {
-    a.0 == b.0 && a.1 == b.1 && a.2 == b.2 && a.3 == b.3 && a.4 == b.4 && a.5 == b.5 && a.6 == b.6
+    a.0 == b.0
+        && a.1 == b.1
+        && a.2 == b.2
+        && a.3 == b.3
+        && a.4 == b.4
+        && a.5 == b.5
+        && a.6 == b.6
+        && a.7 == b.7
 }
 
 // The fields no transition may ever change: amount, both deadlines and the spec.
 fn fixed_fields(
-    _ a: (u8, Wei, Timestamp, Timestamp, u256, u256, u256),
-    _ b: (u8, Wei, Timestamp, Timestamp, u256, u256, u256),
+    _ a: (u8, Wei, Timestamp, Timestamp, u256, u256, u256, u256),
+    _ b: (u8, Wei, Timestamp, Timestamp, u256, u256, u256, u256),
 ) -> bool {
     a.1 == b.1 && a.2 == b.2 && a.3 == b.3 && a.4 == b.4
 }
@@ -894,7 +930,7 @@ uses (evm: mut Evm)
     assert!(state_of(prod, 1, 1) == 1, "milestone 1 is independent")
 
     assert!(
-        approve_out(v, prod, 1, 0, 0xe1).success(),
+        approve_out(v, prod, 1, 0, 0xe1, 1).success(),
         "the verifier approves",
     )
     let approved = milestone(prod, 1, 0)
@@ -908,7 +944,7 @@ uses (evm: mut Evm)
     )
 
     assert!(submit_out(p, prod, 1, 1, 0xe2).success())
-    assert!(approve_out(v, prod, 1, 1, 0xe2).success())
+    assert!(approve_out(v, prod, 1, 1, 0xe2, 1).success())
     assert!(
         state_of(prod, 1, 1) == 3 && evidence_of(prod, 1, 1) == 0xe2,
     )
@@ -951,26 +987,30 @@ uses (evm: mut Evm)
     )
     // Reviewing a Funded milestone: the others lack the role, and the verifier has the wrong state.
     assert!(
-        because(approve_out(p, prod, 1, 0, 0xe1), Why::NotVerifier),
+        because(approve_out(p, prod, 1, 0, 0xe1, 1), Why::NotVerifier),
         "the provider cannot approve",
     )
     assert!(
-        because(approve_out(st, prod, 1, 0, 0xe1), Why::NotVerifier),
+        because(approve_out(st, prod, 1, 0, 0xe1, 1), Why::NotVerifier),
     )
     assert!(
-        because(approve_direct(prod, 1, 0, 0xe1), Why::NotVerifier),
+        because(approve_direct(prod, 1, 0, 0xe1, 1), Why::NotVerifier),
     )
-    assert!(because(reject_out(p, prod, 1, 0, 0xe1), Why::NotVerifier))
     assert!(
-        because(reject_out(st, prod, 1, 0, 0xe1), Why::NotVerifier),
+        because(reject_out(p, prod, 1, 0, 0xe1, 1), Why::NotVerifier),
     )
-    assert!(because(reject_direct(prod, 1, 0, 0xe1), Why::NotVerifier))
     assert!(
-        because(approve_out(v, prod, 1, 0, 0xe1), Why::NotSubmitted),
+        because(reject_out(st, prod, 1, 0, 0xe1, 1), Why::NotVerifier),
+    )
+    assert!(
+        because(reject_direct(prod, 1, 0, 0xe1, 1), Why::NotVerifier),
+    )
+    assert!(
+        because(approve_out(v, prod, 1, 0, 0xe1, 1), Why::NotSubmitted),
         "the verifier, but nothing is submitted",
     )
     assert!(
-        because(reject_out(v, prod, 1, 0, 0xe1), Why::NotSubmitted),
+        because(reject_out(v, prod, 1, 0, 0xe1, 1), Why::NotSubmitted),
     )
     assert!(
         same_milestone(milestone(prod, 1, 0), f0) && same_milestone(milestone(prod, 1, 1), f1),
@@ -990,31 +1030,33 @@ uses (evm: mut Evm)
     )
     assert!(because(submit_direct(prod, 1, 0, 0xe9), Why::NotProvider))
     assert!(
-        because(approve_out(p, prod, 1, 0, 0xe1), Why::NotVerifier),
+        because(approve_out(p, prod, 1, 0, 0xe1, 1), Why::NotVerifier),
         "the provider cannot approve its own work",
     )
     assert!(
-        because(approve_out(st, prod, 1, 0, 0xe1), Why::NotVerifier),
+        because(approve_out(st, prod, 1, 0, 0xe1, 1), Why::NotVerifier),
     )
     assert!(
-        because(approve_direct(prod, 1, 0, 0xe1), Why::NotVerifier),
+        because(approve_direct(prod, 1, 0, 0xe1, 1), Why::NotVerifier),
     )
     assert!(
-        because(reject_out(p, prod, 1, 1, 0xe2), Why::NotVerifier),
+        because(reject_out(p, prod, 1, 1, 0xe2, 1), Why::NotVerifier),
         "the provider cannot reject",
     )
     assert!(
-        because(reject_out(st, prod, 1, 1, 0xe2), Why::NotVerifier),
+        because(reject_out(st, prod, 1, 1, 0xe2, 1), Why::NotVerifier),
     )
-    assert!(because(reject_direct(prod, 1, 1, 0xe2), Why::NotVerifier))
+    assert!(
+        because(reject_direct(prod, 1, 1, 0xe2, 1), Why::NotVerifier),
+    )
     assert!(
         same_milestone(milestone(prod, 1, 0), s0) && same_milestone(milestone(prod, 1, 1), s1),
         "nothing changed",
     )
 
     // The verifier acts (positive controls): approve one, reject the other.
-    assert!(approve_out(v, prod, 1, 0, 0xe1).success())
-    assert!(reject_out(v, prod, 1, 1, 0xe2).success())
+    assert!(approve_out(v, prod, 1, 0, 0xe1, 1).success())
+    assert!(reject_out(v, prod, 1, 1, 0xe2, 1).success())
     assert!(state_of(prod, 1, 0) == 3, "milestone 0 Approved")
     assert!(
         state_of(prod, 1, 1) == 1 && evidence_of(prod, 1, 1) == 0 && rejections_of(prod, 1, 1) == 1,
@@ -1048,18 +1090,21 @@ uses (evm: mut Evm)
 
     // The verifier must name exactly the stored evidence (D-015), for approve and for reject.
     assert!(
-        because(approve_out(v, prod, 1, 0, 0), Why::EvidenceMismatch),
+        because(approve_out(v, prod, 1, 0, 0, 1), Why::EvidenceMismatch),
         "zero never matches",
     )
     assert!(
-        because(approve_out(v, prod, 1, 0, 0x99), Why::EvidenceMismatch),
+        because(
+            approve_out(v, prod, 1, 0, 0x99, 1),
+            Why::EvidenceMismatch,
+        ),
         "a different evidence",
     )
     assert!(
-        because(reject_out(v, prod, 1, 0, 0), Why::EvidenceMismatch),
+        because(reject_out(v, prod, 1, 0, 0, 1), Why::EvidenceMismatch),
     )
     assert!(
-        because(reject_out(v, prod, 1, 0, 0x99), Why::EvidenceMismatch),
+        because(reject_out(v, prod, 1, 0, 0x99, 1), Why::EvidenceMismatch),
     )
     assert!(
         state_of(prod, 1, 0) == 2 && evidence_of(prod, 1, 0) == 0xe1,
@@ -1067,26 +1112,29 @@ uses (evm: mut Evm)
     )
 
     // Reject e1: back to Funded, the evidence is cleared, the counter is 1.
-    assert!(reject_out(v, prod, 1, 0, 0xe1).success())
+    assert!(reject_out(v, prod, 1, 0, 0xe1, 1).success())
     assert!(
         state_of(prod, 1, 0) == 1 && evidence_of(prod, 1, 0) == 0 && rejections_of(prod, 1, 0) == 1,
     )
     assert!(
-        because(approve_out(v, prod, 1, 0, 0xe1), Why::NotSubmitted),
+        because(approve_out(v, prod, 1, 0, 0xe1, 1), Why::NotSubmitted),
         "nothing is submitted any more",
     )
     assert!(
-        because(reject_out(v, prod, 1, 0, 0xe1), Why::NotSubmitted),
+        because(reject_out(v, prod, 1, 0, 0xe1, 1), Why::NotSubmitted),
     )
 
     // The provider resubmits e2. The verifier's old e1 is now stale (the S-1 race of D-015).
     assert!(submit_out(p, prod, 1, 0, 0xe2).success())
     assert!(
-        because(reject_out(v, prod, 1, 0, 0xe1), Why::EvidenceMismatch),
+        because(reject_out(v, prod, 1, 0, 0xe1, 1), Why::EvidenceMismatch),
         "a Reject meant for e1 must not hit e2",
     )
     assert!(
-        because(approve_out(v, prod, 1, 0, 0xe1), Why::EvidenceMismatch),
+        because(
+            approve_out(v, prod, 1, 0, 0xe1, 1),
+            Why::EvidenceMismatch,
+        ),
         "an Approve meant for e1 must not hit e2",
     )
     assert!(
@@ -1099,11 +1147,14 @@ uses (evm: mut Evm)
     assert!(submit_out(p, prod, 1, 0, 0xe3).success())
     assert!(evidence_of(prod, 1, 0) == 0xe3)
     assert!(
-        because(approve_out(v, prod, 1, 0, 0xe2), Why::EvidenceMismatch),
+        because(
+            approve_out(v, prod, 1, 0, 0xe2, 1),
+            Why::EvidenceMismatch,
+        ),
         "e2 was replaced",
     )
     assert!(
-        approve_out(v, prod, 1, 0, 0xe3).success(),
+        approve_out(v, prod, 1, 0, 0xe3, 3).success(),
         "e3 is approved",
     )
     assert!(
@@ -1134,22 +1185,22 @@ uses (evm: mut Evm)
     assert!(submit_out(p, prod, 1, 0, 0xe1).success())
     assert!(
         submit_out(p, prod, 1, 0, 0xe1).success(),
-        "an identical resubmission is idempotent",
+        "an identical resubmission advances the revision",
     )
     assert!(
         state_of(prod, 1, 0) == 2
             && evidence_of(prod, 1, 0) == 0xe1
             && rejections_of(prod, 1, 0) == 0,
     )
-    assert!(approve_out(v, prod, 1, 0, 0xe1).success())
+    assert!(approve_out(v, prod, 1, 0, 0xe1, 2).success())
     let approved = milestone(prod, 1, 0)
     assert!(approved.0 == 3)
     assert!(
-        because(approve_out(v, prod, 1, 0, 0xe1), Why::NotSubmitted),
+        because(approve_out(v, prod, 1, 0, 0xe1, 1), Why::NotSubmitted),
         "replayed approve",
     )
     assert!(
-        because(reject_out(v, prod, 1, 0, 0xe1), Why::NotSubmitted),
+        because(reject_out(v, prod, 1, 0, 0xe1, 1), Why::NotSubmitted),
         "reject after approve",
     )
     assert!(
@@ -1168,21 +1219,21 @@ uses (evm: mut Evm)
 
     // Agreement 2 goes Funded -> Submitted -> Funded (rejected). Replays and wrong-state calls fail.
     assert!(
-        because(approve_out(v, prod, 2, 0, 0xe1), Why::NotSubmitted),
+        because(approve_out(v, prod, 2, 0, 0xe1, 1), Why::NotSubmitted),
         "approve from Funded",
     )
     assert!(
-        because(reject_out(v, prod, 2, 0, 0xe1), Why::NotSubmitted),
+        because(reject_out(v, prod, 2, 0, 0xe1, 1), Why::NotSubmitted),
         "reject from Funded",
     )
     assert!(submit_out(p, prod, 2, 0, 0xe1).success())
-    assert!(reject_out(v, prod, 2, 0, 0xe1).success())
+    assert!(reject_out(v, prod, 2, 0, 0xe1, 1).success())
     assert!(
-        because(reject_out(v, prod, 2, 0, 0xe1), Why::NotSubmitted),
+        because(reject_out(v, prod, 2, 0, 0xe1, 1), Why::NotSubmitted),
         "replayed reject",
     )
     assert!(
-        because(approve_out(v, prod, 2, 0, 0xe1), Why::NotSubmitted),
+        because(approve_out(v, prod, 2, 0, 0xe1, 1), Why::NotSubmitted),
         "approve after reject",
     )
     assert!(
@@ -1256,7 +1307,7 @@ fn the_delivery_window_closes_exactly_at_deliver_by() uses (evm: mut Evm) {
     // A milestone rejected before d and still Funded at d cannot take new evidence: it is stuck.
     set_time(shell, 1999)
     assert!(submit_out(p, shell, 5, 0, 0xe1).success())
-    assert!(reject_out(v, shell, 5, 0, 0xe1).success())
+    assert!(reject_out(v, shell, 5, 0, 0xe1, 1).success())
     set_time(shell, 2000)
     assert!(
         because(submit_out(p, shell, 5, 0, 0xe2), Why::DeliveryClosed),
@@ -1293,34 +1344,34 @@ uses (evm: mut Evm)
     // The delivery window is now closed, but the review window (decide_by = 5600) is whole.
     set_time(shell, 3000)
     assert!(
-        approve_out(v, shell, 1, 0, 0xe1).success(),
+        approve_out(v, shell, 1, 0, 0xe1, 1).success(),
         "approve long after d, before decide_by",
     )
     set_time(shell, 5599)
     assert!(
-        approve_out(v, shell, 2, 0, 0xe2).success(),
+        approve_out(v, shell, 2, 0, 0xe2, 1).success(),
         "decide_by - 1: approve is open",
     )
     assert!(
-        reject_out(v, shell, 3, 0, 0xe3).success(),
+        reject_out(v, shell, 3, 0, 0xe3, 1).success(),
         "decide_by - 1: reject is open",
     )
     set_time(shell, 5600)
     assert!(
-        because(approve_out(v, shell, 4, 0, 0xe4), Why::ReviewClosed),
+        because(approve_out(v, shell, 4, 0, 0xe4, 1), Why::ReviewClosed),
         "decide_by: approve is closed",
     )
     assert!(
-        because(reject_out(v, shell, 4, 0, 0xe4), Why::ReviewClosed),
+        because(reject_out(v, shell, 4, 0, 0xe4, 1), Why::ReviewClosed),
         "decide_by: reject is closed",
     )
     set_time(shell, 5601)
     assert!(
-        because(approve_out(v, shell, 5, 0, 0xe5), Why::ReviewClosed),
+        because(approve_out(v, shell, 5, 0, 0xe5, 1), Why::ReviewClosed),
         "decide_by + 1: closed",
     )
     assert!(
-        because(reject_out(v, shell, 6, 0, 0xe6), Why::ReviewClosed),
+        because(reject_out(v, shell, 6, 0, 0xe6, 1), Why::ReviewClosed),
     )
     // A closed review leaves the milestone Submitted (a refund in a later phase can take it).
     assert!(
@@ -1354,7 +1405,7 @@ uses (evm: mut Evm)
     set_time(shell, 1500)
     assert!(submit_out(p, shell, 1, 0, 0xe1).success())
     set_time(shell, 1600)
-    assert!(approve_out(v, shell, 1, 0, 0xe1).success())
+    assert!(approve_out(v, shell, 1, 0, 0xe1, 1).success())
     let approved = milestone(shell, 1, 0)
     assert!(approved.0 == 3)
 
@@ -1373,11 +1424,11 @@ uses (evm: mut Evm)
             "submit new evidence",
         )
         assert!(
-            because(approve_out(v, shell, 1, 0, 0xe1), Why::NotSubmitted),
+            because(approve_out(v, shell, 1, 0, 0xe1, 1), Why::NotSubmitted),
             "approve",
         )
         assert!(
-            because(reject_out(v, shell, 1, 0, 0xe1), Why::NotSubmitted),
+            because(reject_out(v, shell, 1, 0, 0xe1, 1), Why::NotSubmitted),
             "reject",
         )
         assert!(
@@ -1416,20 +1467,20 @@ uses (evm: mut Evm)
             "id 0",
         )
         assert!(
-            because(approve_out(v, s, 0, 0, 0xe1), Why::UnknownAgreement),
+            because(approve_out(v, s, 0, 0, 0xe1, 1), Why::UnknownAgreement),
         )
         assert!(
-            because(reject_out(v, s, 0, 0, 0xe1), Why::UnknownAgreement),
+            because(reject_out(v, s, 0, 0, 0xe1, 1), Why::UnknownAgreement),
         )
         assert!(
             because(submit_out(p, s, 1, 0, 0xe1), Why::UnknownAgreement),
             "before any agreement",
         )
         assert!(
-            because(approve_out(v, s, 1, 0, 0xe1), Why::UnknownAgreement),
+            because(approve_out(v, s, 1, 0, 0xe1, 1), Why::UnknownAgreement),
         )
         assert!(
-            because(reject_out(v, s, 1, 0, 0xe1), Why::UnknownAgreement),
+            because(reject_out(v, s, 1, 0, 0xe1, 1), Why::UnknownAgreement),
         )
         assert!(
             create(s, parties(single(now + 100), p, v), ether(1)) == 1,
@@ -1441,11 +1492,11 @@ uses (evm: mut Evm)
             "id 2",
         )
         assert!(
-            because(approve_out(v, s, MAX, 0, 0xe1), Why::UnknownAgreement),
+            because(approve_out(v, s, MAX, 0, 0xe1, 1), Why::UnknownAgreement),
             "id 2^256 - 1",
         )
         assert!(
-            because(reject_out(v, s, MAX, 0, 0xe1), Why::UnknownAgreement),
+            because(reject_out(v, s, MAX, 0, 0xe1, 1), Why::UnknownAgreement),
         )
         // Known agreement with one milestone: slots 1, 2, 3 and 255 are unused.
         var slot: u8 = 1
@@ -1455,11 +1506,11 @@ uses (evm: mut Evm)
                 "unused slot, submit",
             )
             assert!(
-                because(approve_out(v, s, 1, slot, 0xe1), Why::NoSuchMilestone),
+                because(approve_out(v, s, 1, slot, 0xe1, 1), Why::NoSuchMilestone),
                 "unused slot, approve",
             )
             assert!(
-                because(reject_out(v, s, 1, slot, 0xe1), Why::NoSuchMilestone),
+                because(reject_out(v, s, 1, slot, 0xe1, 1), Why::NoSuchMilestone),
                 "unused slot, reject",
             )
             if slot == 3 {
@@ -1520,8 +1571,8 @@ uses (evm: mut Evm)
     // Work on agreement 1: m0 approved, m1 submitted then rejected, m2 untouched.
     assert!(submit_out(p1, prod, 1, 0, 0xa0).success())
     assert!(submit_out(p1, prod, 1, 1, 0xa1).success())
-    assert!(approve_out(v1, prod, 1, 0, 0xa0).success())
-    assert!(reject_out(v1, prod, 1, 1, 0xa1).success())
+    assert!(approve_out(v1, prod, 1, 0, 0xa0, 1).success())
+    assert!(reject_out(v1, prod, 1, 1, 0xa1, 1).success())
     assert!(
         state_of(prod, 1, 0) == 3 && state_of(prod, 1, 1) == 1 && state_of(prod, 1, 2) == 1,
         "independent milestones",
@@ -1545,17 +1596,17 @@ uses (evm: mut Evm)
     // Submitted on agreement 2: verifier 1 cannot touch it, verifier 2 can, and 1 is still unchanged.
     assert!(submit_out(p2, prod, 2, 0, 0xb0).success())
     assert!(
-        because(approve_out(v1, prod, 2, 0, 0xb0), Why::NotVerifier),
+        because(approve_out(v1, prod, 2, 0, 0xb0, 1), Why::NotVerifier),
         "verifier 1 on agreement 2",
     )
     assert!(
-        because(reject_out(v1, prod, 2, 0, 0xb0), Why::NotVerifier),
+        because(reject_out(v1, prod, 2, 0, 0xb0, 1), Why::NotVerifier),
     )
     assert!(
-        because(approve_out(v2, prod, 1, 2, 0xb0), Why::NotVerifier),
+        because(approve_out(v2, prod, 1, 2, 0xb0, 1), Why::NotVerifier),
         "verifier 2 holds no role on agreement 1: the role is checked before the state",
     )
-    assert!(approve_out(v2, prod, 2, 0, 0xb0).success())
+    assert!(approve_out(v2, prod, 2, 0, 0xb0, 1).success())
     assert!(
         state_of(prod, 2, 0) == 3 && state_of(prod, 1, 0) == 3,
         "both approved, separately",
@@ -1588,7 +1639,7 @@ uses (evm: mut Evm)
         )
         assert!(evidence_of(shell, 1, 0) == 0xc0 + k)
         assert!(
-            reject_out(v, shell, 1, 0, 0xc0 + k).success(),
+            reject_out(v, shell, 1, 0, 0xc0 + k, k + 1).success(),
             "reject revision k",
         )
         assert!(
@@ -1603,7 +1654,7 @@ uses (evm: mut Evm)
     }
     set_time(shell, 1500)
     assert!(submit_out(p, shell, 1, 0, 0xcf).success())
-    assert!(approve_out(v, shell, 1, 0, 0xcf).success())
+    assert!(approve_out(v, shell, 1, 0, 0xcf, 4).success())
     assert!(
         rejections_of(shell, 1, 0) == 3,
         "approval keeps the count",
@@ -1626,9 +1677,9 @@ uses (evm: mut Evm)
     let st = actor(13)
     let now = evm.timestamp().as_seconds()
     set_time(shell, now)
-    let a = parties(two(now + 100, now + 200), p, v)
-    assert!(create(prod, a, ether(3)) == 1)
-    assert!(create(shell, a, ether(3)) == 1)
+    let a = parties(three(now + 100, now + 200, now + 300), p, v)
+    assert!(create(prod, a, ether(6)) == 1)
+    assert!(create(shell, a, ether(6)) == 1)
 
     // Each step runs on both and must get the same verdict. `true` means it was accepted.
     assert!(agree_submit(p, prod, shell, 1, 0, 0xe1), "submit e1")
@@ -1643,46 +1694,54 @@ uses (evm: mut Evm)
         "unknown agreement",
     )
     assert!(
-        !agree_review(false, p, prod, shell, 1, 0, 0xe1),
+        !agree_review(false, p, prod, shell, 1, 0, 0xe1, 1),
         "approve by the provider",
     )
     assert!(
-        !agree_review(true, v, prod, shell, 1, 0, 0x77),
+        !agree_review(true, v, prod, shell, 1, 0, 0x77, 1),
         "approve wrong evidence",
     )
     assert!(
-        !agree_review(false, v, prod, shell, 1, 0, 0x77),
+        !agree_review(false, v, prod, shell, 1, 0, 0x77, 1),
         "reject wrong evidence",
     )
     assert!(
-        agree_review(false, v, prod, shell, 1, 0, 0xe1),
+        agree_review(false, v, prod, shell, 1, 0, 0xe1, 1),
         "reject e1",
     )
     assert!(
-        !agree_review(false, v, prod, shell, 1, 0, 0xe1),
+        !agree_review(false, v, prod, shell, 1, 0, 0xe1, 1),
         "replayed reject",
     )
     assert!(
-        !agree_review(true, v, prod, shell, 1, 0, 0xe1),
+        !agree_review(true, v, prod, shell, 1, 0, 0xe1, 1),
         "approve after reject",
     )
     assert!(agree_submit(p, prod, shell, 1, 0, 0xe3), "resubmit e3")
     assert!(
-        !agree_review(true, v, prod, shell, 1, 0, 0xe1),
+        !agree_review(true, v, prod, shell, 1, 0, 0xe1, 1),
         "stale approve",
     )
     assert!(
-        agree_review(true, v, prod, shell, 1, 0, 0xe3),
+        agree_review(true, v, prod, shell, 1, 0, 0xe3, 2),
         "approve e3",
     )
     assert!(
         !agree_submit(p, prod, shell, 1, 0, 0xe4),
         "submit after approve",
     )
-    assert!(agree_submit(p, prod, shell, 1, 1, 0xe5), "milestone 1")
+    assert!(agree_submit(p, prod, shell, 1, 2, 0xe5), "milestone 2")
     assert!(
-        agree_review(true, v, prod, shell, 1, 1, 0xe5),
-        "approve milestone 1",
+        agree_review(false, v, prod, shell, 1, 2, 0xe5, 1),
+        "reject milestone 2",
+    )
+    assert!(
+        agree_submit(p, prod, shell, 1, 2, 0xe5),
+        "resubmit milestone 2",
+    )
+    assert!(
+        agree_review(true, v, prod, shell, 1, 2, 0xe5, 2),
+        "approve milestone 2",
     )
     same_state(prod, shell, 1)
     assert!(
@@ -1715,17 +1774,18 @@ fn agree_review(
     _ id: u256,
     _ m: u8,
     _ e: u256,
+    _ revision: u256,
 ) -> bool
 uses (evm: mut Evm)
 {
     var x = false
     var y = false
     if approve {
-        x = approve_out(by, prod, id, m, e).success()
-        y = approve_out(by, shell, id, m, e).success()
+        x = approve_out(by, prod, id, m, e, revision).success()
+        y = approve_out(by, shell, id, m, e, revision).success()
     } else {
-        x = reject_out(by, prod, id, m, e).success()
-        y = reject_out(by, shell, id, m, e).success()
+        x = reject_out(by, prod, id, m, e, revision).success()
+        y = reject_out(by, shell, id, m, e, revision).success()
     }
     assert!(x == y, "shell and production disagree on a review")
     x
@@ -1766,7 +1826,7 @@ fn transitions_are_not_payable_and_never_move_money() uses (evm: mut Evm) {
             addr: v,
             gas: 2000000,
             value: with_value,
-            message: ActorMsg::RejectVia { target: prod, id: 1, m: 0, evidence: 0xe1 },
+            message: ActorMsg::RejectVia { target: prod, id: 1, m: 0, evidence: 0xe1, revision: 1 },
         )
             .success(),
         "reject with value is rejected",
@@ -1777,14 +1837,20 @@ fn transitions_are_not_payable_and_never_move_money() uses (evm: mut Evm) {
             addr: v,
             gas: 2000000,
             value: with_value,
-            message: ActorMsg::ApproveVia { target: prod, id: 1, m: 0, evidence: 0xe1 },
+            message: ActorMsg::ApproveVia {
+                target: prod,
+                id: 1,
+                m: 0,
+                evidence: 0xe1,
+                revision: 1,
+            },
         )
             .success(),
         "approve with value is rejected",
     )
     assert!(state_of(prod, 1, 0) == 2, "still Submitted")
     assert!(
-        approve_out(v, prod, 1, 0, 0xe1).success(),
+        approve_out(v, prod, 1, 0, 0xe1, 1).success(),
         "positive control: approve without value",
     )
     // The contract holds exactly what it did, the totals did not move, and the actors kept their ETH.
@@ -1798,4 +1864,127 @@ fn transitions_are_not_payable_and_never_move_money() uses (evm: mut Evm) {
         evm.balance(p) == Wei::zero() && evm.balance(v) == Wei::zero(),
         "no ETH reached the provider or the verifier",
     )
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn restored_and_identical_evidence_require_a_fresh_review_revision()
+uses (evm: mut Evm)
+{
+    probe()
+    let prod = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let p = actor(11)
+    let v = actor(12)
+    let now = evm.timestamp().as_seconds()
+    assert!(
+        create(prod, parties(single(now + 100), p, v), ether(1)) == 1,
+    )
+    assert!(milestone(prod, 1, 0).7 == 0)
+    assert!(submit_out(p, prod, 1, 0, 0xa1).success())
+    assert!(submit_out(p, prod, 1, 0, 0xb1).success())
+    assert!(submit_out(p, prod, 1, 0, 0xa1).success())
+    let restored = milestone(prod, 1, 0)
+    assert!(restored.7 == 3)
+    assert!(
+        because(
+            approve_out(v, prod, 1, 0, 0xa1, 1),
+            Why::RevisionMismatch,
+        ),
+    )
+    assert!(
+        because(reject_out(v, prod, 1, 0, 0xa1, 1), Why::RevisionMismatch),
+    )
+    assert!(same_milestone(restored, milestone(prod, 1, 0)))
+
+    assert!(reject_out(v, prod, 1, 0, 0xa1, 3).success())
+    assert!(milestone(prod, 1, 0).7 == 3)
+    assert!(submit_out(p, prod, 1, 0, 0xa1).success())
+    assert!(
+        because(reject_out(v, prod, 1, 0, 0xa1, 3), Why::RevisionMismatch),
+    )
+    assert!(submit_out(p, prod, 1, 0, 0xa1).success())
+    let identical = milestone(prod, 1, 0)
+    assert!(
+        identical.7 == 5 && identical.6 == 1 && identical.5 == 0xa1,
+    )
+    assert!(
+        because(
+            approve_out(v, prod, 1, 0, 0xa1, 4),
+            Why::RevisionMismatch,
+        ),
+    )
+    assert!(
+        because(reject_out(v, prod, 1, 0, 0xa1, 4), Why::RevisionMismatch),
+    )
+    assert!(same_milestone(identical, milestone(prod, 1, 0)))
+    assert!(approve_out(v, prod, 1, 0, 0xa1, 5).success())
+    assert!(milestone(prod, 1, 0).7 == 5)
+    assert_money(prod, ether(1))
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn third_slot_revision_lifecycle_at_both_deadlines() uses (evm: mut Evm) {
+    probe()
+    let shell = shell_at_1000()
+    let p = actor(11)
+    let v = actor(12)
+    let args = parties(three(2000, 2000, 2000), p, v)
+    assert!(create(shell, args, ether(6)) == 1)
+    assert!(create(shell, args, ether(6)) == 2)
+    assert!(create(shell, args, ether(6)) == 3)
+    let sibling0 = milestone(shell, 1, 0)
+    let sibling1 = milestone(shell, 1, 1)
+    let original = milestone(shell, 1, 2)
+    set_time(shell, 1999)
+    assert!(submit_out(p, shell, 1, 2, 0xd1).success())
+    assert!(reject_out(v, shell, 1, 2, 0xd1, 1).success())
+    assert!(submit_out(p, shell, 1, 2, 0xd2).success())
+    assert!(submit_out(p, shell, 2, 2, 0xd3).success())
+    assert!(submit_out(p, shell, 3, 2, 0xd5).success())
+    let submitted = milestone(shell, 1, 2)
+    assert!(
+        submitted.0 == 2 && submitted.5 == 0xd2 && submitted.6 == 1 && submitted.7 == 2,
+    )
+    set_time(shell, 2000)
+    assert!(
+        because(submit_out(p, shell, 1, 2, 0xd4), Why::DeliveryClosed),
+    )
+    set_time(shell, 2001)
+    assert!(
+        because(submit_out(p, shell, 1, 2, 0xd4), Why::DeliveryClosed),
+    )
+    assert!(same_milestone(submitted, milestone(shell, 1, 2)))
+    set_time(shell, 5599)
+    assert!(approve_out(v, shell, 1, 2, 0xd2, 2).success())
+    assert!(reject_out(v, shell, 3, 2, 0xd5, 1).success())
+    assert!(
+        because(submit_out(p, shell, 3, 2, 0xd6), Why::DeliveryClosed),
+    )
+    let rejected = milestone(shell, 3, 2)
+    assert!(
+        rejected.0 == 1 && rejected.5 == 0 && rejected.6 == 1 && rejected.7 == 1,
+    )
+    let pending = milestone(shell, 2, 2)
+    set_time(shell, 5600)
+    assert!(
+        because(approve_out(v, shell, 2, 2, 0xd3, 1), Why::ReviewClosed),
+    )
+    assert!(
+        because(reject_out(v, shell, 2, 2, 0xd3, 1), Why::ReviewClosed),
+    )
+    set_time(shell, 5601)
+    assert!(
+        because(approve_out(v, shell, 2, 2, 0xd3, 1), Why::ReviewClosed),
+    )
+    assert!(
+        because(reject_out(v, shell, 2, 2, 0xd3, 1), Why::ReviewClosed),
+    )
+    assert!(same_milestone(pending, milestone(shell, 2, 2)))
+    let approved = milestone(shell, 1, 2)
+    assert!(fixed_fields(original, approved))
+    assert!(
+        approved.0 == 3 && approved.5 == 0xd2 && approved.6 == 1 && approved.7 == 2,
+    )
+    assert!(same_milestone(sibling0, milestone(shell, 1, 0)))
+    assert!(same_milestone(sibling1, milestone(shell, 1, 1)))
+    assert_money(shell, ether(18))
 }

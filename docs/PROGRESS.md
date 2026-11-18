@@ -7,7 +7,7 @@
 | 1 Compiler feasibility | done and committed (`3e91be5`, `a72bebd`); D-014 layout implemented | `experiments/phase1/run.sh` exit 0: 8 PASS (13 tests), 5 compile-errors as expected, 1 known gap (E7 read-only `call`). Root gate still 3/3. CI bumped to 26.6.0. |
 | Review 2026-11-18 | done; H1–H4, M1, M2 fixed | `docs/reviews/2026-11-18-phase1.md`. S-1 approved (D-015), S-2 and S-4 adopted (D-016, D-017), S-3 documented. Lint self-test 64/64, negative controls 15/15, `experiments/review/run.sh` all hold. |
 | 2A Agreement creation and funding | done and committed (`d03eafa`, R-002 `57eb61a`, R-003 `b9e859f`) | 35 tests at the end of R-003. |
-| 2B Evidence submission, approval, rejection | **done locally, awaiting review** | `Submit` (T2), `Approve` (T3) and evidence-matched `Reject` (T4, D-015) with shared handlers and the production clock. 55 tests pass (36 production, 19 dev). Event self-test 62/62, lint self-test 95/95, 14/14 CI steps, negative controls: every Phase 2B mutation fails CI at the expected step. No claims, refunds or outgoing transfers: `Settlane` still declares no `Call`. |
+| 2B Evidence submission, approval, rejection | **R-004 fixes implemented** | `Submit` (T2), `Approve` (T3) and revision-bound `Reject` (T4, D-015/D-021) with shared handlers and the production clock. R-004 adds submission revisions, slot-2 lifecycle and deadline coverage, exact production/shell event sequences, and full decoded revert comparisons. No claims, refunds or outgoing transfers: `Settlane` still declares no `Call`. |
 | 3–8 | not started | Phase 3 (claims, refunds, outgoing ETH) awaits the Phase 2B review. |
 
 ## Milestone plan (times in Africa/Lagos; the internal target is Nov 20)

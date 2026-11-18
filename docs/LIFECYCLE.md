@@ -32,16 +32,16 @@
 | Action | Order of the rules, with the revert reason |
 | --- | --- |
 | `Submit(id, m, e)` | the agreement exists (`unknown agreement`), the caller is the provider (`caller is not the provider`), the milestone exists (`no such milestone`), its state is `Funded` or `Submitted` (`milestone cannot take evidence in this state`), the delivery window is open (`delivery window is closed`), `e != 0` (`evidence is zero`) |
-| `Approve(id, m, e)` and `Reject(id, m, e)` (one shared check, so their guards cannot drift apart) | the agreement exists, the caller is the verifier (`caller is not the verifier`), the milestone exists, its state is `Submitted` (`milestone is not submitted`), the review window is open (`review window is closed`), `e` equals the stored evidence (`evidence does not match the submitted evidence`) |
+| `Approve(id, m, e, revision)` and `Reject(id, m, e, revision)` (one shared check, so their guards cannot drift apart) | the agreement exists, the caller is the verifier (`caller is not the verifier`), the milestone exists, its state is `Submitted` (`milestone is not submitted`), the review window is open (`review window is closed`), `e` equals the stored evidence (`evidence does not match the submitted evidence`), the revision equals the stored revision (`submission revision does not match`) |
 
-- **Role before state.** A caller without the role always gets the role reason, so it learns nothing about the state of a milestone. A caller with the role gets the state reason.
-- **Resubmission.** A `Submit` from `Submitted` replaces the stored evidence, while the delivery window is open. An identical resubmission is accepted (idempotent) and emits the event again. `Submit` from `Approved`, `Paid` or `Refunded` always reverts.
-- **Immutability.** The only fields a transition writes are `state`, `evidence` and `rejections`. Amount, both deadlines and the spec are never rewritten (tested after every transition). `Approved` accepts no transition at all, at any time, and approval never expires (tested at every deadline).
-- **`Reject`** returns the milestone to `Funded`, clears the evidence and adds one to `rejections` (a `u256`, so a long reject and resubmit cycle can never overflow and block a rejection). `Approve` keeps the evidence and the count.
+- **Role before state.** For an existing agreement, the role check precedes the milestone and state checks. Unknown agreements are reported first.
+- **Resubmission.** A `Submit` from `Submitted` replaces the stored evidence while the delivery window is open. Every accepted submission increments that milestone’s checked `u256` revision from its initial value of zero and emits the new revision, including when the evidence hash is identical. `Submit` from `Approved`, `Paid` or `Refunded` always reverts.
+- **Immutability.** Transitions can change `state`, `evidence`, `rejections` and `revision`. Amount, both deadlines and the spec are never rewritten (tested after every transition). `Approved` accepts no transition at all, at any time, and approval never expires (tested at every deadline).
+- **`Reject`** returns the milestone to `Funded`, clears the evidence and adds one to the checked `u256` rejection counter. It preserves the submission revision. `Approve` keeps the evidence and both counters.
 - **Windows.** `Submit` needs `now < deliver_by`. `Approve` and `Reject` need `now < decide_by`. A submission made at `deliver_by - 1` still gets the whole review window (tested). After the delivery window closes a rejected milestone stays `Funded` and can take no new evidence, so only a refund (Phase 3) can settle it.
 - **Money.** None of the three moves ETH, takes ETH (all are non-payable, tested with a zero-value control) or changes any total. `Settlane` still declares no `Call` effect, so the compiler guarantees it cannot send ETH.
-- **Views.** `getMilestone` returns `rejections` as a 7th output. Unknown ids and unused slots still read as state `None`, all zero.
-- **Events.** `MilestoneSubmitted(id, m, evidence)`, `MilestoneApproved(id, m, evidence)` (all three indexed) and `MilestoneRejected(id, m, evidence, rejections)` (the first three indexed, `rejections` is the new total).
+- **Views.** `getMilestone` returns `rejections` as output 7 and the submission `revision` as output 8. Unknown ids and unused slots still read as state `None`, all zero.
+- **Events.** `MilestoneSubmitted(id, m, evidence, revision)`, `MilestoneApproved(id, m, evidence, revision)` and `MilestoneRejected(id, m, evidence, revision, rejections)`. All three index `id`, `m` and `evidence`. The data contains the submission revision and, for rejection, the new rejection count.
 
 ## Milestone stored states
 `Funded`, `Submitted`, `Approved`, `Paid`, `Refunded`. Unused slots are `None`. There is no stored `Rejected` state (D-006b): a rejection returns the milestone to `Funded`.
@@ -59,9 +59,9 @@ Expiry is derived rather than stored, so it needs no keeper transaction and cann
 | # | From | Action | Caller | Guards | To | Funds effect |
 | --- | --- | --- | --- | --- | --- | --- |
 | T1 | — | `Create` | any (becomes the client) | creation validation | each used slot → `Funded` | `deposited += value`, `outstanding += value` |
-| T2 | Funded, Submitted | `Submit(e)` | provider | `delivery_open`, `e != 0` | Submitted(e) | none |
-| T3 | Submitted | `Approve(e)` | verifier | `review_open`, `e == stored evidence` | Approved | none (creates an entitlement) |
-| T4 | Submitted | `Reject(e)` | verifier | `review_open`, `e == stored evidence` (D-015) | Funded (evidence cleared, `rejections += 1`) | none |
+| T2 | Funded, Submitted | `Submit(e)` | provider | `delivery_open`, `e != 0` | Submitted(e), revision += 1 | none |
+| T3 | Submitted | `Approve(e, revision)` | verifier | `review_open`, `e == stored evidence`, `revision == stored revision` | Approved | none (creates an entitlement) |
+| T4 | Submitted | `Reject(e, revision)` | verifier | `review_open`, `e == stored evidence`, `revision == stored revision` (D-015, D-021) | Funded (evidence cleared, `rejections += 1`) | none |
 | T5 | Approved | `Claim(to)` | provider | `to != 0` | Paid | `paid += amount`, `outstanding -= amount`, send `amount` to `to` |
 | T6 | Funded or Submitted | `Refund(to)` | client | `expired`, `to != 0` | Refunded | `refunded += amount`, `outstanding -= amount`, send `amount` to `to` |
 
@@ -93,9 +93,9 @@ Every other (state, action, caller, time) combination reverts. `Paid` and `Refun
 | F2 | The work is fixably deficient | Same: revision until `deliver_by`. |
 | F3 | Rejection arrives after `deliver_by` (inside the review window) | The milestone is `Funded` with delivery closed, so it is immediately `expired` and refundable. |
 | F4 | The verifier rejects wrongly or dishonestly | No on-chain remedy. Trust assumption, and appeal is out of MVP scope. |
-| F5a | The provider resubmits just before the verifier's `Reject` lands | `Reject(e)` names the evidence it reviewed, so it reverts against the new evidence and the verifier reviews the fix (D-015). |
+| F5a | The provider resubmits just before the verifier's `Reject` lands | `Reject(e, revision)` names the evidence and submission revision it reviewed. It reverts after any newer submission, including one with the same hash (D-015, D-021). |
 | F5 | Endless reject and resubmit cycle | Bounded by the absolute `deliver_by`, so the client's maximum lock is unchanged. |
-| F6 | Rejection one second before `deliver_by` | Effectively final, because the provider has no time to resubmit. Documented. |
+| F6 | Rejection one second before `deliver_by` | A later transaction in the same block can still resubmit if the block timestamp is below `deliver_by`. At `deliver_by` and later, submission is closed. |
 | F7 | The provider abandons the work | Expiry, then refund. |
 | F8 | The verifier key is compromised | The attacker can approve or reject anything. Trust assumption. |
 
@@ -104,7 +104,7 @@ Every other (state, action, caller, time) combination reverts. `Paid` and `Refun
 - `Submit` requires `now < deliver_by`, and refunding a `Funded` milestone requires `now >= deliver_by`.
 - Both pairs are disjoint at every timestamp, so contradictory outcomes are impossible.
 - A submission made before `deliver_by` always gets the full review window, even when `decide_by` falls after `deliver_by`.
-- `Approve` and `Reject` both restate the evidence hash (D-015), so a resubmission landing just before them can be neither approved nor rejected by mistake. Without this, a `Reject` meant for earlier evidence could reject a fix submitted shortly before `deliver_by`, which the verifier never saw, making the milestone immediately refundable (review S-1).
+- `Approve` and `Reject` both name the evidence hash and its submission revision (D-015, D-021). A verifier decision for an earlier submission reverts after any later submission, including `A → B → A` and `A → A`. The verifier can read the current revision from `getMilestone` or the submission event.
 - `Approved` never expires, and the client can never refund an approved milestone.
 - Inactive verifier: after `decide_by` the client can refund. A dishonest verifier is a trust assumption (`docs/SECURITY.md`).
 

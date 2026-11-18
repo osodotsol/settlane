@@ -46,7 +46,7 @@ Fe effects give *capability* guarantees, meaning which code can touch which stat
 ```
 totals:     Totals                                   // next_id (last id issued; ids start at 1), outstanding (sum owed)
 agreements: StorageMap<u256, Agreement>              // client, provider, verifier, review_period, n, deposited, paid, refunded
-milestones: StorageMap<(u256, u8), Milestone>        // state, amount, deliver_by, decide_by, spec, evidence, rejections
+milestones: StorageMap<(u256, u8), Milestone>        // state, amount, deliver_by, decide_by, spec, evidence, rejections, revision
 ```
 `Totals` is one struct so the two counters are not bare `u256`/`Wei` effects, which Fe would resolve by type (FE_NOTES). Every key includes the agreement id, so agreements are isolated (I8). An unknown agreement id or an unused slot reads as all zeros, which decodes as `MilestoneState::None` because `None` is the **first** variant (D-017, verified by test).
 
@@ -60,11 +60,11 @@ Implemented in Phase 2A and 2B (the production ABI contains exactly these eight 
 | Message | Payable | Returns |
 | --- | --- | --- |
 | `Create { provider, verifier, review_period, n: u8, amounts: [Wei;3], deliver_by: [Timestamp;3], specs: [u256;3] }` | yes | agreement id (the first is 1) |
-| `Submit { id, m: u8, evidence }` (T2: the provider, `Funded` or `Submitted`, delivery window open, evidence nonzero) | no | none |
-| `Approve { id, m: u8, evidence }` (T3: the verifier, `Submitted`, review window open, evidence equals the stored evidence) | no | none |
-| `Reject { id, m: u8, evidence }` (T4, D-015: the same guards, back to `Funded`, evidence cleared, `rejections + 1`) | no | none |
+| `Submit { id, m: u8, evidence }` (T2: the provider, `Funded` or `Submitted`, delivery window open, evidence nonzero, advances revision) | no | none |
+| `Approve { id, m: u8, evidence, revision }` (T3: the verifier, `Submitted`, review window open, evidence and revision match the stored values) | no | none |
+| `Reject { id, m: u8, evidence, revision }` (T4, D-015: the same guards, back to `Funded`, evidence cleared, `rejections + 1`) | no | none |
 | `GetAgreement { id }` (reverts for an unknown id) | no | `(client, provider, verifier, review_period, n)` |
-| `GetMilestone { id, m: u8 }` (unknown id or unused slot reads as state 0, all zero) | no | `(state, amount, deliver_by, decide_by, spec, evidence, rejections)` |
+| `GetMilestone { id, m: u8 }` (unknown id or unused slot reads as state 0, all zero) | no | `(state, amount, deliver_by, decide_by, spec, evidence, rejections, revision)` |
 | `GetAccounting { id }` (reverts for an unknown id) | no | `(deposited, paid, refunded, outstanding)` |
 | `TotalOutstanding` | no | `Wei` |
 
@@ -75,7 +75,7 @@ Planned for Phase 3, **not implemented**:
 | --- | --- | --- |
 | `Claim { id, m, to }`, `Refund { id, m, to }` | no | amount sent |
 
-Events (implemented): `AgreementCreated` (`id`, `client` and `provider` indexed, plus `verifier`, `total`, `milestones`), `MilestoneSubmitted` and `MilestoneApproved` (`id`, `m`, `evidence`, all indexed) and `MilestoneRejected` (`id`, `m`, `evidence` indexed, plus the new `rejections` total). Phase 3 adds `MilestoneClaimed` and `MilestoneRefunded`. Fe test code cannot read events, but `fe test --show-logs` prints them, and `scripts/check_events.py` decodes every event (topic hash, topics, payload) with an independent encoder, checks exact sequences, **replays each test's events as the milestone state machine of the lifecycle spec** (so the logs alone must obey it), that a rejected creation emits nothing, that the client is the real caller (the test contract emits `CallerProbe` with its own address for direct calls, and the dev Actor emits `Acted` for calls through it), and that production and the test-clock shell emit identical events. The ABI lock fixes the event's signature and indexed flags.
+Events (implemented): `AgreementCreated` (`id`, `client` and `provider` indexed, plus `verifier`, `total`, `milestones`), `MilestoneSubmitted` and `MilestoneApproved` (indexed `id`, `m`, `evidence` and a revision data word) and `MilestoneRejected` (same topics and revision, followed by the new `rejections` total). Phase 3 adds `MilestoneClaimed` and `MilestoneRefunded`. Fe test code cannot read events, but `fe test --show-logs` prints them, and `scripts/check_events.py` decodes every event (topic hash, topics, payload) with an independent encoder, checks exact sequences, **replays each test's events as the milestone state machine of the lifecycle spec** (so the logs alone must obey it), that a rejected creation emits nothing, that the client is the real caller (the test contract emits `CallerProbe` with its own address for direct calls, and the dev Actor emits `Acted` for calls through it), and that production and the test-clock shell emit identical events. The ABI lock fixes the event's signature and indexed flags.
 
 ## Payments
 None yet: Phase 2A has no outgoing transfer, and `Settlane` declares no `Call` effect, so the compiler guarantees it cannot send ETH. The design below is for Phase 3.

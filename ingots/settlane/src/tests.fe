@@ -1,3 +1,4 @@
+use std::evm::returndata::decode_error_string
 // Production-ingot tests for Phase 2A: creation, validation, funding, queries, unknown ids.
 //
 // Every rejection test has a positive control (the same call, valid, succeeds) and checks
@@ -107,7 +108,16 @@ fn outstanding(_ s: Address) -> Wei uses (evm: mut Evm) {
     )
 }
 
-fn milestone(_ s: Address, _ id: u256, _ m: u8) -> (u8, Wei, Timestamp, Timestamp, u256, u256, u256)
+fn milestone(_ s: Address, _ id: u256, _ m: u8) -> (
+    u8,
+    Wei,
+    Timestamp,
+    Timestamp,
+    u256,
+    u256,
+    u256,
+    u256,
+)
 uses (evm: mut Evm)
 {
     evm.call(
@@ -229,6 +239,7 @@ enum Why {
     ReviewClosed,
     ZeroEvidence,
     EvidenceMismatch,
+    RevisionMismatch,
 }
 
 impl Copy for Why {}
@@ -237,21 +248,24 @@ fn because(_ out: CallOutcome, _ why: Why) -> bool {
     if out.success() {
         return false
     }
+    let reason = match decode_error_string(out.returndata()) {
+        Option::Some(reason) => reason,
+        Option::None => {
+            return false
+        },
+    }
     match why {
-        Why::UnknownAgreement => out.returndata().index_of("unknown agreement").is_some(),
-        Why::NotProvider => out.returndata().index_of("caller is not the provider").is_some(),
-        Why::NotVerifier => out.returndata().index_of("caller is not the verifier").is_some(),
-        Why::NoSuchMilestone => out.returndata().index_of("no such milestone").is_some(),
-        Why::WrongState => out.returndata()
-            .index_of("cannot take evidence in this state")
-            .is_some(),
-        Why::NotSubmitted => out.returndata().index_of("milestone is not submitted").is_some(),
-        Why::DeliveryClosed => out.returndata().index_of("delivery window is closed").is_some(),
-        Why::ReviewClosed => out.returndata().index_of("review window is closed").is_some(),
-        Why::ZeroEvidence => out.returndata().index_of("evidence is zero").is_some(),
-        Why::EvidenceMismatch => out.returndata()
-            .index_of("does not match the submitted evidence")
-            .is_some(),
+        Why::UnknownAgreement => reason == "unknown agreement",
+        Why::NotProvider => reason == "caller is not the provider",
+        Why::NotVerifier => reason == "caller is not the verifier",
+        Why::NoSuchMilestone => reason == "no such milestone",
+        Why::WrongState => reason == "milestone cannot take evidence in this state",
+        Why::NotSubmitted => reason == "milestone is not submitted",
+        Why::DeliveryClosed => reason == "delivery window is closed",
+        Why::ReviewClosed => reason == "review window is closed",
+        Why::ZeroEvidence => reason == "evidence is zero",
+        Why::EvidenceMismatch => reason == "evidence does not match the submitted evidence",
+        Why::RevisionMismatch => reason == "submission revision does not match",
     }
 }
 
@@ -274,7 +288,7 @@ uses (evm: mut Evm)
         addr: s,
         gas: 500000,
         value: Wei::zero(),
-        message: SettleMsg::Approve { id, m, evidence: e },
+        message: SettleMsg::Approve { id, m, evidence: e, revision: 1 },
     )
 }
 
@@ -285,15 +299,22 @@ uses (evm: mut Evm)
         addr: s,
         gas: 500000,
         value: Wei::zero(),
-        message: SettleMsg::Reject { id, m, evidence: e },
+        message: SettleMsg::Reject { id, m, evidence: e, revision: 1 },
     )
 }
 
 fn same_milestone(
-    _ a: (u8, Wei, Timestamp, Timestamp, u256, u256, u256),
-    _ b: (u8, Wei, Timestamp, Timestamp, u256, u256, u256),
+    _ a: (u8, Wei, Timestamp, Timestamp, u256, u256, u256, u256),
+    _ b: (u8, Wei, Timestamp, Timestamp, u256, u256, u256, u256),
 ) -> bool {
-    a.0 == b.0 && a.1 == b.1 && a.2 == b.2 && a.3 == b.3 && a.4 == b.4 && a.5 == b.5 && a.6 == b.6
+    a.0 == b.0
+        && a.1 == b.1
+        && a.2 == b.2
+        && a.3 == b.3
+        && a.4 == b.4
+        && a.5 == b.5
+        && a.6 == b.6
+        && a.7 == b.7
 }
 
 // ---------------------------------------------------------------- valid creation
@@ -1501,6 +1522,8 @@ fn review_code_of(
             now: Timestamp::from_seconds(now),
             stored_evidence: stored,
             evidence,
+            stored_revision: 1,
+            revision: 1,
         ),
     )
 }

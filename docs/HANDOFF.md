@@ -19,7 +19,7 @@ Do not modify src/ unless the assignment allows it. Do not commit or push.
 ## Active assignment
 - **ID:** R-004 Phase 2B review (evidence submission, approval, evidence-matched rejection; no payouts yet)
 - **Commit:** the Phase 2B commit on `settlane/dev` (see `git log -1`).
-- **Status: NOT RUN.** Codex is not installed in this environment and has not reviewed Phase 2B.
+- **Status: RUN.** The owner requested implementation of the R-004 findings. The fixes bind reviews to submission revisions, add slot-2 coverage, check exact events and full revert reasons, and clarify the delivery boundary. Phase 3 remains out of scope.
 - **Scope:** `ingots/settlane/src/*.fe` (`rules.fe` `check_submit` and `check_review`, `handlers.fe`, `settlane.fe`, `types.fe`), `ingots/settlane-dev/src/*.fe`, `scripts/*`, `docs/LIFECYCLE.md` (the T2 to T4 rows and the "Phase 2B" implementation notes), `docs/SECURITY.md` ("Phase 2B" coverage table), `docs/DECISIONS.md` D-015 and D-021.
 - **Edit permission:** you may add new files under `experiments/review/` to reproduce a doubt. Do not edit any other file.
 - **Questions:**
