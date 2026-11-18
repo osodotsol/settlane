@@ -1,0 +1,32 @@
+// Dev ingot: test-only helpers. Nothing here is deployable, and `fe build` at the
+// workspace root never emits it (default-members is the production ingot only).
+
+// Mirror of the production Vault's messages (same selectors). The starter's `msg VaultMsg`
+// is not `pub`, and test needs must not force changes to production code.
+pub msg VaultCalls {
+    #[selector = sol("deposit()")]
+    Deposit -> Timestamp,
+    #[selector = sol("balanceOf(address)")]
+    BalanceOf { owner: Address } -> Wei,
+}
+
+msg ActorMsg {
+    #[selector = sol("depositInto(address)")]
+    DepositInto { vault: Address } -> Timestamp,
+}
+
+// Test actor. The harness has no caller impersonation (docs/FE_NOTES.md E4), so a
+// separate contract is the way to be a different `msg.sender`.
+pub contract Actor uses (ctx: Ctx, call: mut Call) {
+    recv ActorMsg {
+        #[payable]
+        DepositInto { vault } -> Timestamp uses (ctx, mut call) {
+            call.call(
+                addr: vault,
+                gas: 200000,
+                value: ctx.value(),
+                message: VaultCalls::Deposit {},
+            )
+        }
+    }
+}

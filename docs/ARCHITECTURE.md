@@ -1,17 +1,25 @@
-# Architecture (proposed, pending human approval)
+# Architecture (provisionally approved; Phase 2 not started)
 
 ## Shape
-A single ingot holding one production contract. There is no backend, database, frontend, or off-chain service.
+A Fe **workspace** with two ingots (D-014, approved with conditions on 2026-11-18). There is no backend, database, frontend, or off-chain service.
 
 ```
-src/
-  rules.fe      pure settlement rules: (state, role, now, deadlines) -> decision. No effects.
-  settlane.fe   msg SettlaneMsg, events, contract Settlane (storage + transfers)
-  lib.fe        module wiring (starter Vault removed in Phase 2, with approval)
-  tests/…       rule tests (plain #[test]) and integration tests (uses Evm)
+fe.toml                  workspace manifest; default-members = ["ingots/settlane"] ONLY
+ingots/settlane/         PRODUCTION ingot: the only thing `fe build` emits
+  fe.toml                [ingot] name = "settlane"
+  src/lib.fe             starter Vault today; Phase 2 adds rules.fe (pure rules) and settlane.fe (msg, events, contract Settlane)
+  src/tests.fe           tests that do not need to cross a deadline or use another caller
+ingots/settlane-dev/     DEV ingot: never built by default
+  fe.toml                [ingot] name = "settlane_dev", depends on `settlane`
+  src/lib.fe             Actor helper contract(s); SettlaneTestClock in Phase 2
+  src/tests.fe           deadline-crossing and multi-caller integration tests
 ```
 
-The module layout is confirmed in Phase 1. Fe maps `src/<name>.fe` to `ingot::<name>`, which the starter's `use ingot::{Vault}` shows working.
+Rules of the layout, each enforced by `scripts/settlane_lint.py` or `scripts/check_tests.py` in CI:
+- Test-only contracts exist only in the dev ingot (`C-LAYOUT`). Deployable and production contracts exist only in the production ingot (`C-LAYOUT`).
+- `fe build` at the root emits only the production ingot, and `out/` must equal the deployable allowlist in `scripts/lint-policy.json` (`C-ARTIFACT`). Adding the dev ingot to `default-members` makes the real build emit the dev contracts and fails CI (verified).
+- Both ingots' tests run explicitly, and CI fails if either ingot runs fewer tests than its floor in `scripts/test-policy.json`.
+- The dev ingot depends on the production ingot, never the reverse. Production code needs no change to be tested: the dev ingot mirrors message selectors where the production message type is not `pub`.
 
 ## Layers and what enforces them
 | Concern | Mechanism | Enforced by |
@@ -62,14 +70,14 @@ Events: `AgreementCreated`, `MilestoneSubmitted`, `MilestoneApproved`, `Mileston
 Only hash commitments (`spec`, `evidence`) go on-chain. Party addresses and amounts are public.
 
 ## Time and the test shell (D-009, provisionally approved)
-Transition rules use `uses (clock: Clock)`. The production contract `Settlane` provides `Clock { now: ctx.timestamp() }` and nothing else. A test-only contract `SettlaneTestClock` provides a settable clock from storage so integration tests can cross deadlines. Verified 2026-11-18: **`fe build` emits every contract in the ingot, including those defined in test files**, so the shell is built alongside `Settlane`. It must never be the deployable. Safeguards: the shell lives in a separate **dev ingot** of a Fe workspace so the production build does not emit it (E10, proposed as D-014, awaiting approval), lint rules `C-CLOCK`, `C-ABI` and `C-ARTIFACT`, its name, and an explicit README statement. Until D-014 is approved the single-ingot layout above remains, and the shell would be built with the production contract.
+Transition rules use `uses (clock: Clock)`. The production contract `Settlane` provides `Clock { now: ctx.timestamp() }` and nothing else. A test-only contract `SettlaneTestClock` provides a settable clock from storage so integration tests can cross deadlines. Verified 2026-11-18: **`fe build` emits every contract in the ingot, including those defined in test files**, so a shell in the production ingot would be built alongside `Settlane`. It must never be the deployable. Safeguards: the shell lives in a separate **dev ingot** of a Fe workspace so the production build does not emit it (E10, D-014 approved with conditions), lint rules `C-CLOCK`, `C-ABI` and `C-ARTIFACT`, its name, and an explicit README statement. D-014 is implemented: the dev ingot exists and the production build output is clean. `SettlaneTestClock` itself is written in Phase 2.
 
 ## Testing architecture
-- **Rule tests.** Plain `#[test]` functions over `rules.fe` with no EVM. They cover the full matrix of (state × action × role × {t < d, t = d, t > d}).
+- **Rule tests.** Plain `#[test]` functions over `rules.fe` with no EVM, in the production ingot. They cover the full matrix of (state × action × role × {t < d, t = d, t > d}).
 - **Integration tests.** `uses (evm: mut Evm)`. The test contract acts as the client. Provider and verifier are small **Actor** contracts that forward calls, because the harness has no caller impersonation (Q4).
 - **Negative tests.** `evm.try_call(...).success() == false`, followed by a state-unchanged check in the same test. `#[test(should_revert)]` is used where a whole-test revert is clearer.
 - **Invariant helper.** Called after every step to check the accounting identity and contract balance.
 - **Time-dependent integration paths** depend on Q5 (frozen test time). See `docs/FE_NOTES.md`.
 
 ## Demo
-A dedicated `fe test` scenario (`demo_three_milestones`) runs the Phase 6 story and asserts balances at each step. It is reproducible with `fe test src/tests/demo.fe`.
+A dedicated `fe test` scenario (`demo_three_milestones`) runs the Phase 6 story and asserts balances at each step. It lives in the dev ingot (it needs the clock shell and actors) and runs with `fe test ingots/settlane-dev` or `python3 scripts/check_tests.py`.

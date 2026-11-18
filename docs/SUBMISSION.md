@@ -8,9 +8,9 @@ Requirements verified against https://fe-lang.org/contest/ and the starter READM
 | Registration email with project ID and private link received | unknown |
 | Public GitHub repo under the owner's account, `origin` repointed | not started (D-010) |
 | OSI license (Apache-2.0 kept, or replaced) | present |
-| `fe.toml` manifest; ingot renamed from `starter` | pending (D-010) |
-| Exact Fe version stated (`fe 26.6.0`), CI on 26.6.0 | pending (D-007) |
-| Reproducible build and test instructions; clean-clone check | not started |
+| `fe.toml` workspace manifest; production ingot named `settlane` | done (D-014). Folder rename and repo remote pending (D-010) |
+| Exact Fe version stated (`fe 26.6.0`), CI on 26.6.0 | CI pinned to v26.6.0 (D-007); has never run on GitHub |
+| Reproducible build and test instructions (`python3 scripts/check_tests.py`, `fe build`); clean-clone check | commands exist; clean-clone check not started |
 | Automated tests appropriate to the project | not started |
 | README covering problem, approach, architecture, limitations | not started |
 | One-sentence pitch and one Fe-specific highlight with a code excerpt | draft pitch in PRODUCT.md |

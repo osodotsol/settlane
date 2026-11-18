@@ -1,0 +1,15 @@
+// EXPECT: fail C-LAYOUT
+// A test-only contract defined in the production ingot would be built into the
+// production output, so its mere presence there is a violation.
+msg SettleMsg {
+    #[selector = sol("ping()")]
+    Ping -> u256,
+}
+
+pub contract SettlaneTestClock {
+    recv SettleMsg {
+        Ping -> u256 {
+            1
+        }
+    }
+}

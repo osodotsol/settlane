@@ -57,7 +57,7 @@ Where the rule *is* and *is not* enforced:
 - There are no cheatcodes. All calls run from the test contract (`evm.address()`) within **one frozen block** [ran, E4/E5].
 - `evm.try_call(..).success()` asserts a revert without ending the test, and the reverted call's effects are discarded [ran, E1/E6].
 - Plain `#[test] fn` with no `Evm` runs pure logic [ran, E9].
-- `fe test <file>.fe` and `fe check --standalone <file>.fe` work on files outside the ingot. The root `fe check`, `fe fmt --check`, and `fe test` do **not** pick up `experiments/` [ran].
+- `fe test <file>.fe` and `fe check --standalone <file>.fe` work on files outside the ingot. Root-level `fe check`, `fe test` and `fe build` do **not** pick up `experiments/` [ran].
 
 ## Limitations and workarounds
 | Limitation | Workaround | Security impact |
@@ -83,6 +83,20 @@ Workspace `experiments/phase1/e10_separate_ingots/` with `members = { main = ["i
 | Alternative: both members as `default-members` | `fe test` then runs the dev tests, but plain `fe build` emits the shell as well. `fe build -i prod` emits `Prod.*` only. | [ran] on a scratch copy |
 | Is the production bytecode that the dev tests deploy identical to the shipped artifact? | **Not verifiable.** `fe build ingots/devkit --contract Prod` fails ("Prod not found, available: ProdTestClock"), so a dependency's contract cannot be built through the dev ingot for a byte comparison. | [ran] |
 Result: separation works. Recommendation is `default-members = [production only]`, because the dangerous command (`fe build`, used to produce deliverables) is then safe by default, and the explicit test command is documented and run in CI (D-014). Lint rule `C-ARTIFACT` fails CI if a test-only or unlisted contract appears in the build output.
+
+### D-014 implementation notes (2026-11-18)
+Verified while building the real workspace (`ingots/settlane`, `ingots/settlane-dev`):
+| Fact | Evidence |
+| --- | --- |
+| A member directory name may differ from the ingot name: `{ path = "ingots/settlane-dev", name = "settlane_dev" }` works, and a hyphenated directory is fine. | [ran] |
+| `[dependencies] settlane = true` in the dev manifest resolves the sibling member, and `use settlane::Vault` works because the contract is `pub`. | [ran] |
+| A `msg` must be `pub` to be used from another ingot (`error[2-0003] VaultMsg is not visible`). Not changing production code for tests, the dev ingot mirrors the selectors in its own `pub msg`. | [ran] |
+| `fe build` at the root emits only the default member (`Vault.*`). With the dev ingot added to `default-members` it also emits `Actor.*`, which `C-ARTIFACT` catches. | [ran], real build |
+| **Root `fe check` does not cover the dev ingot**: a type error planted in it exits 0. Check it by path: `fe check ingots/settlane-dev`. | [ran] |
+| **A bare `fe fmt --check` at the workspace root fails** with `Error: No .fe files found` (exit 1), and `fe fmt --check .` also exits 1. `fe fmt --check ingots` works and fails correctly for a formatting error in either ingot (checked separately). `fe fmt` takes one path only. | [ran] |
+| `fe test <ingot path> <ingot path>` prints per-ingot lines `READY [..]  <ingot> running N test(s)` (`test` is singular for 1) and a summary `test result: ok. P passed; F failed`. `scripts/check_tests.py` parses these. | [ran] |
+| With the dev tests deleted, `fe test` still reported `ok. 3 passed` and exit 0, with only a `Warning: No tests found`. The gate catches it. | [ran] negative control |
+**Correction:** an earlier note (E10 probe) read `exit=1` from the root `fe fmt --check` as proof that it covers the dev ingot. That exit code was the "No .fe files found" error, so the conclusion was wrong and has been replaced by the rows above.
 
 ## Still unverified (Phase 2–4 checks)
 - Is the production contract deployed by the dev-ingot tests byte-identical to the shipped `Prod` artifact? It is the same source and compiler, but `fe` offers no way to compare. Mitigation: all tests that do not need time travel live in the production ingot.

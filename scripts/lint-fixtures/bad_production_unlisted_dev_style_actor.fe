@@ -1,0 +1,17 @@
+// EXPECT: fail E-UNLISTED
+// The dev-ingot exemption does not apply to production code: an unlisted contract
+// with value-moving effects in the production ingot is rejected.
+use std::evm::ether
+
+msg ActorMsg {
+    #[selector = sol("sendTo(address)")]
+    SendTo { to: Address },
+}
+
+pub contract Actor2 uses (ctx: Ctx, call: mut Call) {
+    recv ActorMsg {
+        SendTo { to } uses (ctx, mut call) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success())
+        }
+    }
+}

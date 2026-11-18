@@ -1,0 +1,7 @@
+{
+  "_note": "Floors are a ratchet: raise min_tests when tests are added. Lowering one needs a docs/DECISIONS.md entry.",
+  "ingots": {
+    "settlane": { "path": "ingots/settlane", "min_tests": 3 },
+    "settlane_dev": { "path": "ingots/settlane-dev", "min_tests": 1 }
+  }
+}

@@ -1,0 +1,17 @@
+// EXPECT: pass
+// KIND: dev
+// A dev-ingot helper may move value: it is test code and is never deployable.
+use std::evm::ether
+
+msg ActorMsg {
+    #[selector = sol("sendTo(address)")]
+    SendTo { to: Address },
+}
+
+pub contract Actor uses (ctx: Ctx, call: mut Call) {
+    recv ActorMsg {
+        SendTo { to } uses (ctx, mut call) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success())
+        }
+    }
+}

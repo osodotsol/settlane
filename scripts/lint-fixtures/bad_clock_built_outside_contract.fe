@@ -1,0 +1,18 @@
+// EXPECT: fail C-CLOCK
+// The production ingot may build a Clock only as `Clock { now: ctx.timestamp() }`,
+// even in a free helper function outside any contract.
+pub struct Clock {
+    pub now: Timestamp,
+}
+
+pub fn delivery_open(deliver_by: Timestamp) -> bool uses (clock: Clock) {
+    clock.now < deliver_by
+}
+
+pub fn open_at(t: Timestamp, deliver_by: Timestamp) -> bool {
+    var open = false
+    with (Clock = Clock { now: t }) {
+        open = delivery_open(deliver_by: deliver_by)
+    }
+    open
+}

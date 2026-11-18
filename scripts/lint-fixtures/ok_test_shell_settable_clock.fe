@@ -1,4 +1,5 @@
 // EXPECT: pass
+// KIND: dev
 use std::evm::ether
 
 msg SettleMsg {

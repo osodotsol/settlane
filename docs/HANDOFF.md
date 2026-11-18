@@ -18,8 +18,8 @@ Do not modify src/ unless the assignment allows it. Do not commit or push.
 
 ## Active assignment
 - **ID:** R-001 Phase 1 feasibility evidence and semantics proposals (this replaces R-000, which was never run)
-- **Commit:** _(Phase 1 commit SHA, filled in once committed)_
-- **Scope:** `experiments/phase1/**`, `scripts/settlane_lint.py`, `scripts/lint-policy.json`, `scripts/lint-fixtures/*`, `.github/workflows/ci.yml`, `docs/FE_NOTES.md`, `docs/LIFECYCLE.md`, `docs/SECURITY.md`, `docs/DECISIONS.md` D-005a, D-006b, D-009, D-011, D-012, D-013 (D-005a, D-006b, D-009 and D-011 are provisionally approved)
+- **Commit:** the D-014 commit on `settlane/dev` (see `git log -1`); the Phase 1 base is `3e91be5` and the lint fix is `a72bebd`.
+- **Scope:** `experiments/phase1/**`, `fe.toml`, `ingots/**`, `scripts/settlane_lint.py`, `scripts/lint-policy.json`, `scripts/lint-fixtures/*`, `scripts/check_tests.py`, `scripts/test-policy.json`, `.github/workflows/ci.yml`, `docs/FE_NOTES.md`, `docs/LIFECYCLE.md`, `docs/SECURITY.md`, `docs/DECISIONS.md` D-005a, D-006b, D-009, D-011, D-012, D-013 (D-005a, D-006b, D-009 and D-011 are provisionally approved)
 - **Status: NOT RUN.** Codex is not installed in this environment and has not reviewed anything. Findings files under `docs/reviews/` exist only if the owner runs Codex.
 - **Edit permission:** you may add new files under `experiments/review/` and `scripts/lint-fixtures-review/` to reproduce a doubt. Do not edit any other file.
 - **Questions:**
@@ -31,7 +31,7 @@ Do not modify src/ unless the assignment allows it. Do not commit or push.
   6. Lint: `python3 scripts/settlane_lint.py --selftest` and the policy. Write a Fe contract that **compiles** (`fe check --standalone`) yet moves ETH from a non-payout arm and passes the lint (try: multi-line or unusual `uses` formatting, `with` blocks, trait default methods, generics, macros, non-`Settlane` contract names, `recv` blocks with unusual headers). The reused-payout-name bypass was found by Claude and fixed on 2026-11-18 (`E-DUP`, qualified `Msg::Arm` names), so find a different shape. Each bypass is at least a high finding.
   7. Production clock (PC): any way for a user to influence `Clock.now` in `Settlane` that the `C-CLOCK` and `C-ABI` rules miss?
   8. Deadline enforcement (DE) and refund authorization (RA): do the tests named in `docs/LIFECYCLE.md` cover every boundary and unauthorized caller?
-  9. E10 / D-014: can a dev-ingot contract reach the production `out/` (try every `fe build` form, `--emit`, `-i`, workspace root, a stale `out/`)? Does `C-ARTIFACT` miss any case? Is a root `fe test` that prints "No tests found" with exit 0 a realistic CI false green, and is the proposed explicit command enough?
+  9. D-014 is implemented. Can a dev-ingot contract reach the production `out/` (try every `fe build` form, `--emit`, `-i`, the workspace root, a stale `out/` left from an earlier build)? Does `C-ARTIFACT`/`C-LAYOUT` miss any case? Does `scripts/check_tests.py` have a false-green path (a test count that parses but did not run, an ingot renamed in the manifest, a floor that can be lowered silently)? Is any CI step a false green or a false failure on Fe 26.6.0?
 - **Acceptance:** each finding gives a severity, a concrete sequence, the expected and actual (or predicted) outcome, and a fix or test. Doubts about Fe behavior come with an `fe check` or `fe test` command and its output.
 - **Output:** `docs/reviews/2026-11-18-phase1.md`
 

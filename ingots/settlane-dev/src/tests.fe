@@ -1,0 +1,36 @@
+// Smoke test for the workspace layout: the dev ingot deploys the PRODUCTION Vault
+// through its dependency on `settlane`, and a dev-only Actor acts as a separate caller.
+use ingot::{Actor, ActorMsg, VaultCalls}
+use settlane::Vault
+use std::evm::{days, ether}
+
+#[test(balance = 10_000_000_000_000_000_000)]
+fn actor_is_a_distinct_caller_of_the_production_vault() uses (evm: mut Evm) {
+    let vault = evm.create2<Vault>(value: Wei::zero(), args: (days(7),), salt: 1)
+    let actor = evm.create2<Actor>(value: Wei::zero(), args: (), salt: 2)
+
+    let _: Timestamp = evm
+        .call(
+            addr: actor,
+            gas: 400000,
+            value: ether(1),
+            message: ActorMsg::DepositInto { vault },
+        )
+
+    let actor_balance: Wei = evm
+        .call(
+            addr: vault,
+            gas: 100000,
+            value: Wei::zero(),
+            message: VaultCalls::BalanceOf { owner: actor },
+        )
+    let test_balance: Wei = evm
+        .call(
+            addr: vault,
+            gas: 100000,
+            value: Wei::zero(),
+            message: VaultCalls::BalanceOf { owner: evm.address() },
+        )
+    assert!(actor_balance == ether(1))
+    assert!(test_balance == Wei::zero())
+}

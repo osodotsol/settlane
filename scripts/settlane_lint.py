@@ -18,17 +18,22 @@ Rules (a violation exits 1):
   E-PARSE     nothing was scanned (missing path, no .fe files), or a contract
               with value-moving effects has a `recv` but no arms could be
               parsed. The lint fails closed.
-  C-CLOCK     a production contract builds a Clock from anything other than
-              `Clock { now: ctx.timestamp() }`, or stores a Clock field.
+  C-CLOCK     anywhere in the production ingot, a Clock is built from anything
+              other than `Clock { now: ctx.timestamp() }`, or a production
+              contract stores a Clock field.
+  C-LAYOUT    a test-only contract is defined in the production ingot, a
+              production or deployable contract is defined in the dev ingot,
+              or an ingot directory is not classified in the policy.
   C-ABI       a production contract's ABI has a state-changing function whose
               name mentions time or clock (needs the `fe build` output).
-  C-ARTIFACT  the build output directory contains an artifact for a contract
-              marked `test_only` in the policy (for example the test-clock
-              shell), or for a contract the policy does not list, or does
-              not exist. Fails closed.
+  C-ARTIFACT  the build output is not exactly an allowlist: it contains an
+              artifact for a contract that is not marked `deployable` in the
+              policy (test-only, unlisted or merely listed), or lacks the
+              artifact of a deployable contract defined in the production
+              ingot, or does not exist. Fails closed.
 
 Usage:
-  python3 scripts/settlane_lint.py src [--abi-dir out]
+  python3 scripts/settlane_lint.py ingots [--abi-dir out]
   python3 scripts/settlane_lint.py --selftest
 """
 import json
@@ -144,8 +149,27 @@ def arms_in(recv_body):
     return arms
 
 
-def lint_text(text, policy, path="<src>"):
-    """Return a list of (rule, message) violations for one source text."""
+def classify(path, policy):
+    """Return 'production', 'dev', or None (unclassified ingot) for a source path.
+
+    Paths outside any `ingots/<name>/` directory are treated as production, which is
+    the strict default.
+    """
+    parts = pathlib.PurePath(path).parts
+    if "ingots" in parts:
+        i = len(parts) - 1 - parts[::-1].index("ingots")
+        if i + 1 < len(parts) - 1:
+            return policy.get("ingots", {}).get(parts[i + 1])
+    return "production"
+
+
+def lint_text(text, policy, path="<src>", kind="production"):
+    """Return a list of (rule, message) violations for one source text.
+
+    kind is 'production' (strict) or 'dev' (test helpers). In a dev ingot, contracts the
+    policy does not list, or lists with `value_rules: exempt`, may move value, but a
+    production or deployable contract may not be defined there.
+    """
     text = strip_noise(text)
     value_types = set(policy["value_types"])
     found = []
@@ -154,7 +178,12 @@ def lint_text(text, policy, path="<src>"):
         value_names = {n for n, t in effects if t in value_types}
         entry = policy["contracts"].get(cname)
         production = bool(entry and entry.get("production"))
-        if value_names:
+        if kind == "production" and entry and entry.get("test_only"):
+            found.append(("C-LAYOUT", f"{path}: test-only contract {cname} is defined in the production ingot"))
+        if kind == "dev" and entry and (entry.get("production") or entry.get("deployable")):
+            found.append(("C-LAYOUT", f"{path}: production/deployable contract {cname} is defined in the dev ingot"))
+        dev_exempt = kind == "dev" and (entry is None or entry.get("value_rules") == "exempt")
+        if value_names and not dev_exempt:
             if entry is None:
                 found.append(("E-UNLISTED", f"{path}: contract {cname} has value-moving effects {sorted(value_names)} but is not in the policy"))
             else:
@@ -194,11 +223,14 @@ def lint_text(text, policy, path="<src>"):
             full = header + "{" + body + "}"
             if re.search(r":\s*(?:mut\s+)?Clock\b", full):
                 found.append(("C-CLOCK", f"{path}: production contract {cname} stores or requires a Clock"))
-            for cm in re.finditer(r"\bClock\s*\{", full):
-                open_idx = cm.end() - 1
-                inner = re.sub(r"\s+", "", full[open_idx + 1 : match_close(full, open_idx)]).rstrip(",")
-                if inner != "now:ctx.timestamp()":
-                    found.append(("C-CLOCK", f"{path}: production contract {cname} builds Clock from `{inner}`"))
+    if kind == "production":
+        for cm in re.finditer(r"\bClock\s*\{", text):
+            if re.search(r"struct\s+$", text[: cm.start()]):
+                continue  # the declaration `struct Clock { .. }`
+            open_idx = cm.end() - 1
+            inner = re.sub(r"\s+", "", text[open_idx + 1 : match_close(text, open_idx)]).rstrip(",")
+            if inner != "now:ctx.timestamp()":
+                found.append(("C-CLOCK", f"{path}: production ingot builds Clock from `{inner}`"))
     return found
 
 
@@ -223,6 +255,8 @@ def check_artifacts(abi_dir, policy):
             found.append(("C-ARTIFACT", f"{p}: built contract {name} is not listed in the policy"))
         elif entry.get("test_only"):
             found.append(("C-ARTIFACT", f"{p}: test-only contract {name} was built into the production output"))
+        elif not entry.get("deployable"):
+            found.append(("C-ARTIFACT", f"{p}: contract {name} is not on the deployable allowlist"))
     return found
 
 
@@ -235,22 +269,29 @@ def lint_tree(src_dir, policy, abi_dir=None):
     files = [target] if target.is_file() else sorted(target.rglob("*.fe"))
     if not files:
         return [("E-PARSE", f"{src_dir}: no .fe files found, nothing was scanned")]
+    seen_deployable = set()
     for f in files:
+        kind = classify(f, policy)
+        if kind is None:
+            found.append(("C-LAYOUT", f"{f}: ingot directory is not classified in lint-policy.json"))
+            continue
         text = f.read_text()
-        found += lint_text(text, policy, str(f))
-        for cname, _, _ in contracts_in(strip_noise(text)):
-            if policy["contracts"].get(cname, {}).get("production"):
-                seen_production.add(cname)
+        found += lint_text(text, policy, str(f), kind)
+        if kind == "production":
+            for cname, _, _ in contracts_in(strip_noise(text)):
+                entry = policy["contracts"].get(cname, {})
+                if entry.get("production"):
+                    seen_production.add(cname)
+                if entry.get("deployable"):
+                    seen_deployable.add(cname)
     if abi_dir is not None:
         found += check_artifacts(abi_dir, policy)
-    for cname in sorted(seen_production):
-        if abi_dir is None:
-            continue
-        p = pathlib.Path(abi_dir) / f"{cname}.abi.json"
-        if not p.exists():
-            found.append(("C-ABI", f"{p} missing: run `fe build` before the lint"))
-        else:
-            found += check_abi(json.loads(p.read_text()), cname)
+        for cname in sorted(seen_deployable):
+            p = pathlib.Path(abi_dir) / f"{cname}.abi.json"
+            if not p.exists():
+                found.append(("C-ARTIFACT", f"{p} missing: deployable contract {cname} was not built (run `fe build`)"))
+            elif cname in seen_production:
+                found += check_abi(json.loads(p.read_text()), cname)
     return found
 
 
@@ -260,7 +301,8 @@ def selftest(policy):
         text = f.read_text()
         m = re.match(r"// EXPECT: (pass|fail)(?: ([A-Z,\-]+))?", text)
         assert m, f"{f.name}: missing EXPECT header"
-        rules = {r for r, _ in lint_text(text, policy, f.name)}
+        km = re.search(r"^// KIND: (production|dev)", text, re.M)
+        rules = {r for r, _ in lint_text(text, policy, f.name, km.group(1) if km else "production")}
         if m.group(1) == "pass":
             good = not rules
         else:
@@ -273,14 +315,39 @@ def selftest(policy):
     with tempfile.TemporaryDirectory() as tmp:
         t = pathlib.Path(tmp)
         (t / "Settlane.abi.json").write_text("[]")
+        (t / "Vault.abi.json").write_text("[]")
         clean = check_artifacts(t, policy)
         (t / "SettlaneTestClock.abi.json").write_text("[]")
         shell = check_artifacts(t, policy)
         (t / "SettlaneTestClock.abi.json").unlink()
         (t / "Rogue.abi.json").write_text("[]")
         unlisted = check_artifacts(t, policy)
+    import copy
+    policy2 = copy.deepcopy(policy)
+    policy2["contracts"]["Helper"] = {"note": "listed but not deployable"}
+    with tempfile.TemporaryDirectory() as tmp:
+        t = pathlib.Path(tmp)
+        (t / "Helper.abi.json").write_text("[]")
+        helper = check_artifacts(t, policy2)
+    with tempfile.TemporaryDirectory() as tmp:
+        t = pathlib.Path(tmp)
+        for rel, body in (
+            ("ingots/settlane/src/lib.fe", "pub contract SettlaneTestClock uses (ctx: Ctx) {}\n"),
+            ("ingots/settlane-dev/src/lib.fe", "pub contract Settlane uses (ctx: Ctx) {}\n"),
+            ("ingots/rogue/src/lib.fe", "pub contract Whatever uses (ctx: Ctx) {}\n"),
+        ):
+            (t / rel).parent.mkdir(parents=True, exist_ok=True)
+            (t / rel).write_text(body)
+        layout = {m for r, m in lint_tree(t / "ingots", policy) if r == "C-LAYOUT"}
+    prod_ok = classify("ingots/settlane/src/lib.fe", policy) == "production"
+    dev_ok = classify("ingots/settlane-dev/src/tests.fe", policy) == "dev"
     for label, good in (
-        ("artifacts: Settlane alone accepted", not clean),
+        ("artifacts: Settlane and Vault (deployable) accepted", not clean),
+        ("artifacts: listed but non-deployable contract rejected", bool(helper)),
+        ("layout: test-only contract in the production ingot rejected", any("SettlaneTestClock" in m and "production ingot" in m for m in layout)),
+        ("layout: production contract in the dev ingot rejected", any("Settlane is defined in the dev" in m or "contract Settlane is" in m for m in layout)),
+        ("layout: unclassified ingot directory rejected", any("not classified" in m for m in layout)),
+        ("layout: ingot paths classified production/dev", prod_ok and dev_ok),
         ("artifacts: test-only shell in output rejected", bool(shell) and "SettlaneTestClock" in shell[0][1]),
         ("artifacts: unlisted contract in output rejected", bool(unlisted)),
         ("artifacts: missing output directory rejected", bool(check_artifacts("/nonexistent-settlane-out", policy))),
@@ -301,7 +368,7 @@ def main(argv):
     abi_dir = argv[argv.index("--abi-dir") + 1] if "--abi-dir" in argv else None
     targets = [a for i, a in enumerate(argv) if not a.startswith("--") and (i == 0 or argv[i - 1] != "--abi-dir")]
     found = []
-    for t in targets or ["src"]:
+    for t in targets or ["ingots"]:
         found += lint_tree(t, policy, abi_dir)
     for rule, msg in found:
         print(f"{rule}: {msg}")

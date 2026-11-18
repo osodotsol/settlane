@@ -22,16 +22,33 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/argotorg/fe/master/feup/feup.sh | bash -s -- --version "$FE_VERSION" --no-modify-path
           echo "$HOME/.fe/bin" >> "$GITHUB_PATH"
       - run: fe --version
-      - run: fe fmt --check
-      - run: fe test
+      # Workspace layout (D-014): `ingots/settlane` is the production ingot and the only
+      # default member; `ingots/settlane-dev` holds test helpers. Verified on Fe 26.6.0:
+      # a bare `fe fmt --check` at the workspace root fails with "No .fe files found", while
+      # `fe fmt --check ingots` checks both ingots. `fe check`, `fe test` and `fe build` at
+      # the root see the default member only, so the dev ingot is checked by path.
+      - name: Format check (both ingots)
+        run: fe fmt --check ingots
+      - run: fe check
+      - name: Type-check the dev ingot (not covered by the root `fe check`)
+        run: fe check ingots/settlane-dev
+      # Run the tests of BOTH ingots explicitly and fail if any ingot ran fewer tests than
+      # its floor in scripts/test-policy.json. A bare `fe test` prints "No tests found" and
+      # exits 0 for an empty ingot, which is a silent false green.
+      - name: Test gate self-test
+        run: python3 scripts/check_tests.py --selftest
+      - name: Tests for both ingots (fails if none run)
+        run: python3 scripts/check_tests.py
+      # Production build: only the default member, so test contracts must not appear.
       - run: fe build
-      # Policy lint (docs/DECISIONS.md D-012, D-009). Fe 26.6.0 does not narrow a
-      # `recv` arm that lists `call` or `create` read-only, so only the payout
-      # arms may mention them. Also checks the production clock and its ABI.
+      # Policy lint (D-012, D-009, D-014). Fe 26.6.0 does not narrow a `recv` arm that
+      # lists `call` or `create` read-only, so only payout arms may mention them. Also
+      # checks the production clock, the ingot layout, and that `out/` is exactly the
+      # deployable allowlist.
       - name: Settlane policy lint self-test
         run: python3 scripts/settlane_lint.py --selftest
       - name: Settlane policy lint (fails the build on a violation)
-        run: python3 scripts/settlane_lint.py src --abi-dir out
+        run: python3 scripts/settlane_lint.py ingots --abi-dir out
       # Re-runs the Phase 1 compiler experiments against the pinned Fe version.
       # Remove with experiments/ before the final submission.
       - name: Phase 1 compiler experiments

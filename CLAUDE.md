@@ -6,7 +6,8 @@ Settlane is a Fe 26.6 EVM contract for milestone-based settlement of digital-ser
 - Fe only for the core. No Rust application code, NEAR, mainnet, real funds, or paid infrastructure.
 - Verify Fe syntax against the compiler, never Solidity/Rust intuition. Confirmed facts and open questions live in `docs/FE_NOTES.md`; add to it when you learn something.
 - The settlement rules in `docs/LIFECYCLE.md` are the spec. Do not add transitions that are not listed there. Change the spec only through `docs/DECISIONS.md` with human approval.
-- Do not call code done until `fe check`, `fe fmt --check`, `fe test`, and the policy lint pass. Report failures as they are.
+- Do not call code done until the full gate in Commands passes (format, check for both ingots, tests for both ingots, build, policy lint). Report failures as they are.
+- **Layout (D-014).** Production code lives only in `ingots/settlane`. Test helpers, Actor contracts and deadline-crossing tests live in `ingots/settlane-dev`. `default-members` stays production-only. Never define a test-only contract in the production ingot, and never add the dev ingot to `default-members`: the lint and CI fail on both.
 - Only the `Claim` and `Refund` arms may mention `call` or `create` (Fe does not narrow read-only listings, FE_NOTES E7). The production clock is `ctx.timestamp()` only. The test-clock shell is built by `fe build` but is never the deployable. If you add a payout arm, update `scripts/lint-policy.json` in the same change and say so.
 - Never claim the system is trustless or secure. The verifier is a trusted party.
 - Work on `settlane/dev`. Never push, force-push, rename the workspace, or create remotes without human approval. The `origin` remote is the organizers' starter repo, so do not push to it.
@@ -14,15 +15,20 @@ Settlane is a Fe 26.6 EVM contract for milestone-based settlement of digital-ser
 
 ## Commands
 ```sh
-fe check && fe fmt --check && fe test   # gate before every commit
-fe build && python3 scripts/settlane_lint.py src --abi-dir out   # policy lint, fails CI on violation
-python3 scripts/settlane_lint.py --selftest                       # lint self-test (22 fixtures, 8 unit checks)
-bash experiments/phase1/run.sh           # Phase 1 compiler experiments (remove before submission)
-fe test src/<file>.fe                    # focused run
-fe build                                 # artifacts go to out/ (gitignored)
+fe fmt --check ingots                   # both ingots (a bare `fe fmt --check` at the root errors)
+fe check && fe check ingots/settlane-dev  # root check sees the production ingot only
+python3 scripts/check_tests.py          # fe test for BOTH ingots, fails if too few or no tests ran
+fe build                                # production ingot only; artifacts go to out/ (gitignored)
+python3 scripts/settlane_lint.py ingots --abi-dir out   # policy lint; fails on any violation
+python3 scripts/settlane_lint.py --selftest             # lint self-test (27 fixtures, 13 unit checks)
+python3 scripts/check_tests.py --selftest               # test-gate self-test (10 cases)
+python3 scripts/ci_negative_controls.py # proves CI FAILS for each D-014 mistake (local, ~20 s, needs PyYAML)
+bash experiments/phase1/run.sh          # Phase 1 compiler experiments (remove before submission)
+fe test ingots/settlane-dev             # focused run of one ingot
 ```
 
 ## Where things are
+- Workspace: `fe.toml` (root), `ingots/settlane` (production), `ingots/settlane-dev` (dev). Policy: `scripts/lint-policy.json`, `scripts/test-policy.json`.
 - Product and scope: `docs/PRODUCT.md`. Design: `docs/ARCHITECTURE.md`. States: `docs/LIFECYCLE.md`.
 - Security and test acceptance criteria: `docs/SECURITY.md`.
 - Status: `docs/PROGRESS.md`. Cross-agent work: `docs/HANDOFF.md`. Decisions: `docs/DECISIONS.md`.

@@ -1,4 +1,5 @@
 // EXPECT: fail E-CALL
+// KIND: dev
 use std::evm::ether
 
 msg SettleMsg {

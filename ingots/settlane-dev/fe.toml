@@ -1,0 +1,6 @@
+[ingot]
+name = "settlane_dev"
+version = "0.1.0"
+
+[dependencies]
+settlane = true

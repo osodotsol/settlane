@@ -1,18 +1,42 @@
 {
-  "value_types": ["Call", "Create", "Super", "Evm"],
+  "value_types": [
+    "Call",
+    "Create",
+    "Super",
+    "Evm"
+  ],
+  "ingots": {
+    "settlane": "production",
+    "settlane-dev": "dev"
+  },
   "contracts": {
     "Vault": {
-      "payout_arms": ["VaultMsg::Withdraw"],
-      "note": "Starter example from the organizers. Remove this entry when the Vault is replaced (Phase 2)."
+      "payout_arms": [
+        "VaultMsg::Withdraw"
+      ],
+      "deployable": true,
+      "note": "Starter example from the organizers, kept in the production ingot until Phase 2 replaces it. Remove this entry then."
     },
     "Settlane": {
-      "payout_arms": ["SettleMsg::Claim", "SettleMsg::Refund"],
-      "production": true
+      "payout_arms": [
+        "SettleMsg::Claim",
+        "SettleMsg::Refund"
+      ],
+      "production": true,
+      "deployable": true
     },
     "SettlaneTestClock": {
-      "payout_arms": ["SettleMsg::Claim", "SettleMsg::Refund"],
+      "payout_arms": [
+        "SettleMsg::Claim",
+        "SettleMsg::Refund"
+      ],
       "test_only": true,
-      "note": "Test-only shell with a settable clock. Must never appear in the production build output (rule C-ARTIFACT). Keep it in the dev ingot, see docs/DECISIONS.md D-009 and D-014."
+      "note": "Test shell with a settable clock. Defined only in the dev ingot, and must never appear in the production build output (C-LAYOUT, C-ARTIFACT)."
+    },
+    "Actor": {
+      "test_only": true,
+      "value_rules": "exempt",
+      "note": "Dev-ingot helper acting as a separate caller (docs/FE_NOTES.md E4). May move value in tests."
     }
   }
 }

@@ -1,0 +1,15 @@
+// EXPECT: fail C-LAYOUT
+// KIND: dev
+// A deployable contract must live in the production ingot only.
+msg SettleMsg {
+    #[selector = sol("ping()")]
+    Ping -> u256,
+}
+
+pub contract Settlane {
+    recv SettleMsg {
+        Ping -> u256 {
+            1
+        }
+    }
+}

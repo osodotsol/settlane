@@ -7,7 +7,7 @@ description: Use when assigned an independent review of Settlane via docs/HANDOF
 
 1. Read the active assignment in `docs/HANDOFF.md`. Review only its scope at its commit.
 2. Read `docs/LIFECYCLE.md` (spec) and `docs/SECURITY.md` (invariants I1–I10) before reading the code.
-3. For code reviews, run `fe check && fe test`. For each transition-table row, find its guard in the code and the test that covers it. List any row with no test.
+3. For code reviews, run `fe check`, `fe check ingots/settlane-dev` and `python3 scripts/check_tests.py`. For each transition-table row, find its guard in the code and the test that covers it. List any row with no test.
 4. Try to break it: unauthorized callers, deadline boundaries (d-1, d, d+1), repeated calls, the other terminal path, a reverting or reentrant recipient, cross-agreement interference, overflow, zero values.
 5. If you doubt a Fe construct, check it with `fe check` before reporting. Note confirmed compiler facts for `docs/FE_NOTES.md`.
 

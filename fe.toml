@@ -1,3 +1,10 @@
-[ingot]
-name = "starter"
+# Settlane workspace (D-014).
+#   ingots/settlane      production ingot: the only default member, the only thing `fe build` emits.
+#   ingots/settlane-dev  dev ingot: test helpers and deadline-crossing tests. Never built by default,
+#                        and its contracts must never appear in the production build output.
+# Run tests explicitly for both: `python3 scripts/check_tests.py` (wraps `fe test`, fails if no tests run).
+[workspace]
+name = "settlane_workspace"
 version = "0.1.0"
+members = { main = ["ingots/settlane"], dev = [{ path = "ingots/settlane-dev", name = "settlane_dev" }] }
+default-members = ["ingots/settlane"]
