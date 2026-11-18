@@ -114,6 +114,23 @@ Evidence in `experiments/review/` (all re-run by `bash experiments/review/run.sh
 | An arm that **omits** `call` cannot call such a handler (`error[8-0036] missing effect Call`). An arm listing `call` read-only can (E7). | `s2_handler_omit_call.fe` [ran] |
 | **`fe build` never clears `out/`**: a file placed there survives a rebuild. `--emit bytecode,runtime-bytecode` writes `.bin` and `.runtime.bin` with no `.abi.json`. CI therefore runs `rm -rf out` first, and `C-ARTIFACT` checks every file. | review M1 [ran] |
 
+### Phase 2A facts (2026-11-18, all [ran])
+| Fact | Evidence |
+| --- | --- |
+| Every `.fe` file in a `src/` directory is a module: `use ingot::types::{..}`, `use ingot::handlers`, and from another ingot `use settlane::handlers` and `use settlane::settlane::SettleMsg` (an ingot and a module may share the name). `lib.fe` needs no `mod` lines. | `ingots/settlane*/src` |
+| A shared handler is a `pub fn` whose contract fields arrive as `uses` parameters (`milestones: mut StorageMap<(u256, u8), Milestone>`, `totals: mut Totals`), resolved **by type**. A struct-typed field works as an effect, which is why the two counters live in one `Totals` struct. | `handlers.fe` |
+| Arrays work as message fields and parameters (`[Wei; 3]`, `[Timestamp; 3]`, `[u256; 3]`) and encode as `uint256[3]`. A 6-tuple return works. Array indices must be `usize` (`error[8-0000]` for `u8`): `amounts[i as usize]`, a lossless widening. | `settlane.fe`, ABI |
+| Argument labels are required unless the variable has the parameter's name (`error[8-0024]`): `rules::decide_by(deliver_by: x, review_period: y)`. | compiler |
+| **`own` is a reserved word** (`let own = ..` fails with `expected pattern`). | compiler |
+| **`Timestamp + Duration` and `Wei` arithmetic are checked** by default: overflow reverts with `Panic(0x11)`, so no extra check is needed for `decide_by`. `Duration` is built with the free function `seconds(n)`, not `Duration::from_seconds`. | `rules_decide_by_overflow_panics` |
+| `sol("..")` is **checked against the field types** (`error[9-0006]: selector declares uint8 but field n has ABI type uint256`). A message that mirrors a function with a wider field type must use the raw 4-byte selector, computed with Keccak-256: `create(...)` is `0x75ac1b9d`. | `a_wide_n_is_rejected_at_decode_and_never_truncated` |
+| A `u8` message field is range-checked at ABI decode: `n = 256` and `259` are rejected instead of wrapping. | same test |
+| An unset storage key reads as the first enum variant, so `MilestoneState::None` first makes unknown ids and unused slots read as `None` (D-017). Swapping the order makes the tests fail. | mutation `mut-none-not-first-variant` |
+| `with (Clock = ..) { .. }` is a statement block: a returned value goes through an outer `var`. | `settlane.fe` |
+| **Events cannot be observed from `fe test`.** The Rust harness records logs, but the Fe `Evm` effect exposes only `selector`, `args`, `decode_args` and the std traits. An emitted event shows up in the ABI JSON only. | harness source, `effects.fe` |
+| Production `Settlane` with `uses (ctx: Ctx, log: mut Log)`: runtime 2124 bytes (limit 24576), five functions and one event in the ABI, no constructor arguments. | `fe build` |
+| `rm -rf out` before every `fe build`: it never clears `out/` (review M1). | CLAUDE.md |
+
 ## Still unverified (Phase 2–4 checks)
 - Is the production contract deployed by the dev-ingot tests byte-identical to the shipped `Prod` artifact? It is the same source and compiler, but `fe` offers no way to compare. Mitigation: all tests that do not need time travel live in the production ingot.
 - A reentrant recipient under the 2300 stipend. EIP-2200 forbids SSTORE when gas is at or below 2300, so reentrancy into a state change should fail. **Inferred, test in Phase 4.**

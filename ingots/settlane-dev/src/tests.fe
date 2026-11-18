@@ -1,36 +1,465 @@
-// Smoke test for the workspace layout: the dev ingot deploys the PRODUCTION Vault
-// through its dependency on `settlane`, and a dev-only Actor acts as a separate caller.
-use ingot::{Actor, ActorMsg, VaultCalls}
-use settlane::Vault
-use std::evm::{days, ether}
+// Dev-ingot tests for Phase 2A. These need what the production ingot's tests cannot have:
+// a clock that moves (the test-clock shell) and a caller other than the test contract (the
+// Actor). The shell runs the production handlers (D-016), so what is tested here is the
+// shipped creation logic under other clocks and other callers.
+use ingot::{Actor, ActorMsg, DevMsg, SettlaneTestClock}
+use settlane::settlane::{SettleMsg, Settlane}
+use std::evm::{ether, seconds, wei}
 
-#[test(balance = 10_000_000_000_000_000_000)]
-fn actor_is_a_distinct_caller_of_the_production_vault() uses (evm: mut Evm) {
-    let vault = evm.create2<Vault>(value: Wei::zero(), args: (days(7),), salt: 1)
+const MAX: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+
+struct Args {
+    provider: Address,
+    verifier: Address,
+    review_period: Duration,
+    n: u8,
+    amounts: [Wei; 3],
+    deliver_by: [Timestamp; 3],
+    specs: [u256; 3],
+}
+
+impl Copy for Args {}
+
+fn t(_ secs: u256) -> Timestamp {
+    Timestamp::from_seconds(secs)
+}
+
+// A valid three-milestone agreement (1 + 2 + 3 ETH) with deadlines 100, 200, 300 s after `base`.
+fn valid(_ base: u256) -> Args {
+    Args {
+        provider: Address::new(0xa1),
+        verifier: Address::new(0xa2),
+        review_period: seconds(3600),
+        n: 3,
+        amounts: [ether(1), ether(2), ether(3)],
+        deliver_by: [t(base + 100), t(base + 200), t(base + 300)],
+        specs: [0x51, 0x52, 0x53],
+    }
+}
+
+// A one-milestone agreement of 1 ETH due at `deliver_by`.
+fn single(_ deliver_by: u256) -> Args {
+    Args {
+        provider: Address::new(0xa1),
+        verifier: Address::new(0xa2),
+        review_period: seconds(3600),
+        n: 1,
+        amounts: [ether(1), Wei::zero(), Wei::zero()],
+        deliver_by: [t(deliver_by), t(0), t(0)],
+        specs: [0x51, 0, 0],
+    }
+}
+
+fn try_create(_ s: Address, _ a: Args, _ value: Wei) -> bool
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: s,
+        gas: 1000000,
+        value,
+        message: SettleMsg::Create {
+            provider: a.provider,
+            verifier: a.verifier,
+            review_period: a.review_period,
+            n: a.n,
+            amounts: a.amounts,
+            deliver_by: a.deliver_by,
+            specs: a.specs,
+        },
+    )
+        .success()
+}
+
+fn create(_ s: Address, _ a: Args, _ value: Wei) -> u256 uses (evm: mut Evm) {
+    evm.call(
+        addr: s,
+        gas: 1000000,
+        value,
+        message: SettleMsg::Create {
+            provider: a.provider,
+            verifier: a.verifier,
+            review_period: a.review_period,
+            n: a.n,
+            amounts: a.amounts,
+            deliver_by: a.deliver_by,
+            specs: a.specs,
+        },
+    )
+}
+
+fn set_time(_ shell: Address, _ now: u256) uses (evm: mut Evm) {
+    evm.call(
+        addr: shell,
+        gas: 100000,
+        value: Wei::zero(),
+        message: DevMsg::SetTime { now: t(now) },
+    )
+}
+
+fn outstanding(_ s: Address) -> Wei uses (evm: mut Evm) {
+    evm.call(
+        addr: s,
+        gas: 100000,
+        value: Wei::zero(),
+        message: SettleMsg::TotalOutstanding {},
+    )
+}
+
+fn milestone(_ s: Address, _ id: u256, _ m: u8) -> (u8, Wei, Timestamp, Timestamp, u256, u256)
+uses (evm: mut Evm)
+{
+    evm.call(
+        addr: s,
+        gas: 100000,
+        value: Wei::zero(),
+        message: SettleMsg::GetMilestone { id, m },
+    )
+}
+
+fn agreement(_ s: Address, _ id: u256) -> (Address, Address, Address, Duration, u8)
+uses (evm: mut Evm)
+{
+    evm.call(
+        addr: s,
+        gas: 100000,
+        value: Wei::zero(),
+        message: SettleMsg::GetAgreement { id },
+    )
+}
+
+fn accounting(_ s: Address, _ id: u256) -> (Wei, Wei, Wei, Wei)
+uses (evm: mut Evm)
+{
+    evm.call(
+        addr: s,
+        gas: 100000,
+        value: Wei::zero(),
+        message: SettleMsg::GetAccounting { id },
+    )
+}
+
+fn exists(_ s: Address, _ id: u256) -> bool uses (evm: mut Evm) {
+    evm.try_call(
+        addr: s,
+        gas: 100000,
+        value: Wei::zero(),
+        message: SettleMsg::GetAgreement { id },
+    )
+        .success()
+}
+
+// Both contracts expose identical state for agreement `id` through every public view.
+fn same_state(_ a: Address, _ b: Address, _ id: u256) uses (evm: mut Evm) {
+    let x = agreement(a, id)
+    let y = agreement(b, id)
+    assert!(
+        x.0 == y.0 && x.1 == y.1 && x.2 == y.2 && x.3 == y.3 && x.4 == y.4,
+        "agreement differs",
+    )
+    let p = accounting(a, id)
+    let q = accounting(b, id)
+    assert!(
+        p.0 == q.0 && p.1 == q.1 && p.2 == q.2 && p.3 == q.3,
+        "accounting differs",
+    )
+    var m: u8 = 0
+    while m < 4 {
+        let u = milestone(a, id, m)
+        let v = milestone(b, id, m)
+        assert!(
+            u.0 == v.0 && u.1 == v.1 && u.2 == v.2 && u.3 == v.3 && u.4 == v.4 && u.5 == v.5,
+            "milestone differs",
+        )
+        m += 1
+    }
+}
+
+// Runs the same call on both and requires the same verdict. Returns it.
+fn agree(_ prod: Address, _ shell: Address, _ a: Args, _ value: Wei) -> bool
+uses (evm: mut Evm)
+{
+    let x = try_create(prod, a, value)
+    let y = try_create(shell, a, value)
+    assert!(x == y, "shell and production disagree")
+    x
+}
+
+#[test(balance = 200_000_000_000_000_000_000)]
+fn shell_and_production_agree_when_their_clocks_agree() uses (evm: mut Evm) {
+    let prod = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let shell = evm.create2<SettlaneTestClock>(value: Wei::zero(), args: (), salt: 2)
+    let now = evm.timestamp().as_seconds()
+    set_time(shell, now)
+
+    // Valid creation: same id, same stored state.
+    let good = valid(now)
+    assert!(create(prod, good, ether(6)) == 1)
+    assert!(create(shell, good, ether(6)) == 1)
+    same_state(prod, shell, 1)
+    assert!(outstanding(prod) == outstanding(shell))
+
+    // The same verdict for a spread of invalid inputs (each is rejected by both).
+    var a = good
+    a.provider = Address::zero()
+    assert!(!agree(prod, shell, a, ether(6)), "provider zero")
+    a = good
+    a.provider = evm.address()
+    assert!(!agree(prod, shell, a, ether(6)), "client is provider")
+    a = good
+    a.verifier = good.provider
+    assert!(!agree(prod, shell, a, ether(6)), "provider is verifier")
+    a = good
+    a.n = 4
+    assert!(!agree(prod, shell, a, ether(6)), "n = 4")
+    a = good
+    a.review_period = Duration::zero()
+    assert!(!agree(prod, shell, a, ether(6)), "zero review period")
+    assert!(
+        !agree(prod, shell, good, ether(6) + wei(1)),
+        "one wei too much",
+    )
+    assert!(
+        !agree(prod, shell, good, ether(6) - wei(1)),
+        "one wei too little",
+    )
+    a = good
+    a.deliver_by = [t(now), t(now + 200), t(now + 300)]
+    assert!(!agree(prod, shell, a, ether(6)), "deliver_by == now")
+    a = single(MAX - 999)
+    a.review_period = seconds(1000)
+    assert!(!agree(prod, shell, a, ether(1)), "decide_by overflow")
+    a = single(now + 1)
+    assert!(
+        agree(prod, shell, a, ether(1)),
+        "now + 1 accepted by both",
+    )
+
+    // Unknown ids behave alike: agreements revert, milestones read as None.
+    assert!(exists(prod, 1) && exists(shell, 1))
+    assert!(!exists(prod, 3) && !exists(shell, 3))
+    assert!(!exists(prod, 0) && !exists(shell, 0))
+    same_state(prod, shell, 2)
+    assert!(
+        milestone(prod, 3, 0).0 == 0 && milestone(shell, 3, 0).0 == 0,
+    )
+    assert!(
+        outstanding(prod) == ether(7) && outstanding(shell) == ether(7),
+    )
+    assert!(
+        evm.balance(prod) == ether(7) && evm.balance(shell) == ether(7),
+    )
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn the_shell_crosses_creation_deadlines_that_a_frozen_block_cannot()
+uses (evm: mut Evm)
+{
+    let shell = evm.create2<SettlaneTestClock>(value: Wei::zero(), args: (), salt: 1)
+
+    // Clock at 1000: deliver_by 1000 is rejected, 1001 is accepted (strict `>`).
+    set_time(shell, 1000)
+    assert!(
+        !try_create(shell, single(1000), ether(1)),
+        "deliver_by == now",
+    )
+    assert!(
+        !try_create(shell, single(999), ether(1)),
+        "deliver_by == now - 1",
+    )
+    assert!(
+        outstanding(shell) == Wei::zero(),
+        "rejections leave nothing behind",
+    )
+    assert!(
+        try_create(shell, single(1001), ether(1)),
+        "deliver_by == now + 1",
+    )
+    assert!(milestone(shell, 1, 0).2 == t(1001))
+    assert!(milestone(shell, 1, 0).3 == t(1001 + 3600), "decide_by")
+
+    // Move the clock past that deadline: the same input is now in the past.
+    set_time(shell, 1001)
+    assert!(
+        !try_create(shell, single(1001), ether(1)),
+        "now caught up with 1001",
+    )
+    set_time(shell, 5000)
+    assert!(
+        !try_create(shell, single(1001), ether(1)),
+        "1001 is long past",
+    )
+    assert!(
+        try_create(shell, single(5001), ether(1)),
+        "5001 is after 5000",
+    )
+
+    // A deadline is judged against the clock at creation only. Agreement 1 is stored as created.
+    assert!(
+        milestone(shell, 1, 0).2 == t(1001),
+        "stored deadlines never change",
+    )
+    assert!(milestone(shell, 1, 0).0 == 1, "still Funded")
+
+    // Time zero: a used slot with deliver_by 0 is never in the future.
+    set_time(shell, 0)
+    assert!(
+        !try_create(shell, single(0), ether(1)),
+        "deliver_by 0 at time 0",
+    )
+    assert!(
+        try_create(shell, single(1), ether(1)),
+        "deliver_by 1 at time 0",
+    )
+
+    // The sum is exact at any clock, and the three-milestone shape works at a late clock.
+    set_time(shell, 10000)
+    assert!(!try_create(shell, valid(10000), ether(6) + wei(1)))
+    assert!(try_create(shell, valid(10000), ether(6)))
+    assert!(outstanding(shell) == ether(9), "1 + 1 + 1 + 6 ETH")
+    assert!(evm.balance(shell) == ether(9))
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn production_has_no_way_to_set_its_clock() uses (evm: mut Evm) {
+    let prod = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let shell = evm.create2<SettlaneTestClock>(value: Wei::zero(), args: (), salt: 2)
+    let now = evm.timestamp().as_seconds()
+
+    // Positive control: the same `setTime` call works on the shell.
+    assert!(
+        evm.try_call(
+            addr: shell,
+            gas: 100000,
+            value: Wei::zero(),
+            message: DevMsg::SetTime { now: t(now + 10000) },
+        )
+            .success(),
+    )
+    // Production rejects it: the selector does not exist there. Several forms of the attempt.
+    assert!(
+        !evm.try_call(
+            addr: prod,
+            gas: 100000,
+            value: Wei::zero(),
+            message: DevMsg::SetTime { now: t(now + 10000) },
+        )
+            .success(),
+    )
+    assert!(
+        !evm.try_call(
+            addr: prod,
+            gas: 100000,
+            value: Wei::zero(),
+            message: DevMsg::SetTime { now: t(0) },
+        )
+            .success(),
+    )
+    assert!(
+        !evm.try_call(
+            addr: prod,
+            gas: 100000,
+            value: ether(1),
+            message: DevMsg::SetTime { now: t(now + 10000) },
+        )
+            .success(),
+    )
+
+    // And production time still follows the block: the boundary has not moved.
+    assert!(
+        !try_create(prod, single(now), ether(1)),
+        "deliver_by == block time is still rejected",
+    )
+    assert!(
+        try_create(prod, single(now + 1000), ether(1)),
+        "now + 1000 is still accepted",
+    )
+    assert!(outstanding(prod) == ether(1))
+    // The shell's clock was moved far ahead, production's was not affected by it.
+    assert!(
+        try_create(prod, single(now + 1), ether(1)),
+        "now + 1 is still accepted by production",
+    )
+    assert!(
+        !try_create(shell, single(now + 1), ether(1)),
+        "the same input is past on the moved shell",
+    )
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn the_client_is_the_caller_and_never_a_parameter() uses (evm: mut Evm) {
+    let s = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
     let actor = evm.create2<Actor>(value: Wei::zero(), args: (), salt: 2)
+    let now = evm.timestamp().as_seconds()
+    let a = valid(now)
 
-    let _: Timestamp = evm
+    // Created through the actor, the actor is the client and the test contract is not.
+    let id: u256 = evm
         .call(
             addr: actor,
-            gas: 400000,
-            value: ether(1),
-            message: ActorMsg::DepositInto { vault },
+            gas: 2000000,
+            value: ether(6),
+            message: ActorMsg::CreateVia {
+                target: s,
+                provider: a.provider,
+                verifier: a.verifier,
+                review_period: a.review_period,
+                n: a.n,
+                amounts: a.amounts,
+                deliver_by: a.deliver_by,
+                specs: a.specs,
+            },
         )
+    assert!(id == 1)
+    let ag = agreement(s, 1)
+    assert!(ag.0 == actor, "the actor is the client")
+    assert!(ag.0 != evm.address())
+    assert!(evm.balance(s) == ether(6) && outstanding(s) == ether(6))
 
-    let actor_balance: Wei = evm
-        .call(
-            addr: vault,
-            gas: 100000,
-            value: Wei::zero(),
-            message: VaultCalls::BalanceOf { owner: actor },
+    // Distinctness is judged against the real caller: the actor as its own provider is
+    // rejected, while the test contract (a different address) as provider is accepted.
+    let by_itself = evm
+        .try_call(
+            addr: actor,
+            gas: 2000000,
+            value: ether(6),
+            message: ActorMsg::CreateVia {
+                target: s,
+                provider: actor,
+                verifier: a.verifier,
+                review_period: a.review_period,
+                n: a.n,
+                amounts: a.amounts,
+                deliver_by: a.deliver_by,
+                specs: a.specs,
+            },
         )
-    let test_balance: Wei = evm
-        .call(
-            addr: vault,
-            gas: 100000,
-            value: Wei::zero(),
-            message: VaultCalls::BalanceOf { owner: evm.address() },
+    assert!(
+        !by_itself.success(),
+        "the actor cannot be its own provider",
+    )
+    assert!(
+        outstanding(s) == ether(6),
+        "the rejected call left nothing behind",
+    )
+    let other = evm
+        .try_call(
+            addr: actor,
+            gas: 2000000,
+            value: ether(6),
+            message: ActorMsg::CreateVia {
+                target: s,
+                provider: evm.address(),
+                verifier: a.verifier,
+                review_period: a.review_period,
+                n: a.n,
+                amounts: a.amounts,
+                deliver_by: a.deliver_by,
+                specs: a.specs,
+            },
         )
-    assert!(actor_balance == ether(1))
-    assert!(test_balance == Wei::zero())
+    assert!(other.success(), "a different provider is accepted")
+    assert!(
+        agreement(s, 2).0 == actor && agreement(s, 2).1 == evm.address(),
+    )
+    assert!(outstanding(s) == ether(12))
 }

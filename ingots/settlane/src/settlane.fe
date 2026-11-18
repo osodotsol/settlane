@@ -1,0 +1,84 @@
+// The Settlane contract and its message type. Every arm is one line of glue (D-016): it
+// provides the Clock and calls a shared handler.
+//
+// Declared effects: `Ctx` and `Log` only. There is no `Call` and no `Create`, so this
+// contract cannot send ETH. Phase 3 adds `Call`, in the payout arms only (lint E-CALL).
+use ingot::handlers
+use ingot::types::{Agreement, Clock, Milestone, Totals}
+use std::evm::StorageMap
+
+// `pub` so the dev ingot's test-clock shell can serve the identical message set.
+pub msg SettleMsg {
+    // Creates and funds an agreement. `msg.value` must equal the sum of the first `n`
+    // amounts. The caller is the client. Returns the agreement id (the first is 1).
+    #[selector = sol(
+        "create(address,address,uint256,uint8,uint256[3],uint256[3],uint256[3])",
+    )]
+    Create {
+        provider: Address,
+        verifier: Address,
+        review_period: Duration,
+        n: u8,
+        amounts: [Wei; 3],
+        deliver_by: [Timestamp; 3],
+        specs: [u256; 3],
+    } -> u256,
+    #[selector = sol("getAgreement(uint256)")]
+    GetAgreement { id: u256 } -> (Address, Address, Address, Duration, u8),
+    #[selector = sol("getMilestone(uint256,uint8)")]
+    GetMilestone { id: u256, m: u8 } -> (u8, Wei, Timestamp, Timestamp, u256, u256),
+    #[selector = sol("getAccounting(uint256)")]
+    GetAccounting { id: u256 } -> (Wei, Wei, Wei, Wei),
+    #[selector = sol("totalOutstanding()")]
+    TotalOutstanding -> Wei,
+}
+
+pub contract Settlane uses (ctx: Ctx, log: mut Log) {
+    mut totals: Totals,
+    mut agreements: StorageMap<u256, Agreement>,
+    mut milestones: StorageMap<(u256, u8), Milestone>,
+
+    recv SettleMsg {
+        #[payable]
+        Create { provider, verifier, review_period, n, amounts, deliver_by, specs } -> u256
+        uses (ctx, mut log, mut totals, mut agreements, mut milestones)
+        {
+            var id: u256 = 0
+            // The production clock: block time, and nothing else (lint C-CLOCK).
+            with (Clock = Clock { now: ctx.timestamp() }) {
+                id = handlers::create_handler(
+                    provider,
+                    verifier,
+                    review_period,
+                    n,
+                    amounts,
+                    deliver_by,
+                    specs,
+                )
+            }
+            id
+        }
+
+        GetAgreement { id } -> (Address, Address, Address, Duration, u8)
+        uses (agreements)
+        {
+            handlers::get_agreement_handler(id)
+        }
+
+        GetMilestone { id, m } -> (u8, Wei, Timestamp, Timestamp, u256, u256)
+        uses (milestones)
+        {
+            handlers::get_milestone_handler(id, m)
+        }
+
+        GetAccounting { id } -> (Wei, Wei, Wei, Wei)
+        uses (agreements)
+        {
+            handlers::get_accounting_handler(id)
+        }
+
+        TotalOutstanding -> Wei uses (totals) {
+            handlers::total_outstanding_handler()
+        }
+    }
+}

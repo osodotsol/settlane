@@ -66,16 +66,15 @@ rules.
 | Path | Contents |
 | --- | --- |
 | `fe.toml` | The workspace manifest (Settlane, D-014). `default-members` is the production ingot only. |
-| `ingots/settlane/` | Production ingot (named `settlane`, still holding the starter vault until Phase 2). Only this ingot is built by `fe build`. |
-| `ingots/settlane/src/lib.fe` | A time-locked vault contract: accounts deposit ETH and withdraw it after a lock period. |
-| `ingots/settlane/src/tests.fe` | Tests that deploy the vault and call it. |
-| `ingots/settlane-dev/` | Dev ingot: test helper contracts and a cross-ingot smoke test. Never built by default. |
+| `ingots/settlane/` | Production ingot: the `Settlane` contract (agreement creation and funding so far). Only this ingot is built by `fe build`. |
+| `ingots/settlane/src/` | `types.fe` (storage types, the `Clock` effect, events), `rules.fe` (pure rules), `handlers.fe` (shared handler bodies), `settlane.fe` (messages and the contract), `tests.fe`. |
+| `ingots/settlane-dev/` | Dev ingot: the test-clock shell (`SettlaneTestClock`), an `Actor` helper and their tests. Never built by default and never deployable. |
 | `scripts/` | Policy lint and test gate used by CI. Run the tests with `python3 scripts/check_tests.py` (a bare `fe test` runs only the production ingot). |
 | `.github/workflows/ci.yml` | Checks formatting, runs both ingots' tests, builds, and runs the policy lint with Fe 26.6.0 on every push. |
 | `SUBMISSION.md` | A template for the README the jury reads. |
 | `LICENSE` | Apache-2.0. |
 
-The vault is only an example. Replace it with your own project; it does not
+The starter's vault example has been replaced by Settlane. Replace it with your own project; it does not
 need to be a contract. Native programs, libraries, and developer tools are
 welcome too, as long as the core technical contribution is written in Fe. The
 [Fe guide](https://fe-lang.org/getting-started/what-is-fe/) is a good place to

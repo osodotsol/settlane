@@ -1,0 +1,65 @@
+// Shared types. Everything here is plain data: no behavior, no effects.
+
+// The clock effect (D-009, D-016). Handlers read time only through it. The production
+// contract provides it as `Clock { now: ctx.timestamp() }` and nothing else (lint C-CLOCK).
+pub struct Clock { pub now: Timestamp }
+
+// Global counters, grouped in one struct so each is not a bare `u256`/`Wei` effect.
+// `next_id` is the id of the last agreement created: ids start at 1 and 0 is never valid.
+pub struct Totals { pub next_id: u256, pub outstanding: Wei }
+
+impl Copy for Totals {}
+
+// `None` is FIRST (D-017): an unset storage key reads as the first variant (FE_NOTES E3),
+// so unused slots and unknown agreement ids read as `None`, and every action rejects them.
+pub enum MilestoneState {
+    None,
+    Funded,
+    Submitted,
+    Approved,
+    Paid,
+    Refunded,
+}
+
+impl Copy for MilestoneState {}
+
+// Parties, review window and accounting counters of one agreement. Immutable after
+// creation except `paid` and `refunded`, which later phases update.
+pub struct Agreement {
+    pub client: Address,
+    pub provider: Address,
+    pub verifier: Address,
+    pub review_period: Duration,
+    pub n: u8,
+    pub deposited: Wei,
+    pub paid: Wei,
+    pub refunded: Wei,
+}
+
+impl Copy for Agreement {}
+
+// One milestone. `deliver_by` and `decide_by` are absolute and fixed at creation.
+// `spec` commits to the off-chain specification, `evidence` to the delivered work.
+pub struct Milestone {
+    pub state: MilestoneState,
+    pub amount: Wei,
+    pub deliver_by: Timestamp,
+    pub decide_by: Timestamp,
+    pub spec: u256,
+    pub evidence: u256,
+}
+
+impl Copy for Milestone {}
+
+#[event]
+pub struct AgreementCreated {
+    #[indexed]
+    pub id: u256,
+    #[indexed]
+    pub client: Address,
+    #[indexed]
+    pub provider: Address,
+    pub verifier: Address,
+    pub total: Wei,
+    pub milestones: u8,
+}

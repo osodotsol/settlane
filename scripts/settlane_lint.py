@@ -47,7 +47,9 @@ Rules (a violation exits 1):
   C-LAYOUT    a test-only contract is defined in the production ingot, a
               production or deployable contract is defined in the dev ingot,
               or an ingot directory is not classified in the policy.
-  C-ABI       a production contract's ABI has a state-changing function whose
+  C-ABI       a production contract's ABI differs from its policy allowlist (every
+              function with its mutability, every event with its indexed flags;
+              any receive/fallback/error entry), or has a state-changing function whose
               name mentions time or clock (needs the `fe build` output).
   C-ARTIFACT  the build output is not exactly an allowlist: ANY file in it
               (.bin, .runtime.bin, .abi.json or other) belongs to a contract
@@ -353,7 +355,49 @@ def production_text_rules(text, aliases, reserved, path):
     return found
 
 
-def check_abi(abi, cname):
+def abi_surface(abi):
+    """(functions {signature: mutability}, events {signature}, other entry types) of an ABI."""
+    funcs, events, other = {}, set(), []
+    for item in abi:
+        kind = item.get("type")
+        if kind == "function":
+            sig = f"{item['name']}({','.join(i['type'] for i in item.get('inputs', []))})"
+            funcs[sig] = item.get("stateMutability")
+        elif kind == "event":
+            args = ",".join(i["type"] + (" indexed" if i.get("indexed") else "") for i in item.get("inputs", []))
+            events.add(f"{item['name']}({args})")
+        else:
+            other.append(kind)
+    return funcs, events, other
+
+
+def check_abi_lock(abi, cname, lock):
+    """The production ABI must equal the policy allowlist exactly (functions with their
+    mutability, events with their indexed flags). A new entry point, a `view` that became
+    `payable`, or a `receive`/`fallback`/`error` entry is a violation until the policy is
+    changed in a reviewed change (docs/DECISIONS.md D-018 item 7)."""
+    funcs, events, other = abi_surface(abi)
+    want_f, want_e = lock.get("functions", {}), set(lock.get("events", []))
+    found = []
+    for sig in sorted(set(funcs) - set(want_f)):
+        found.append(("C-ABI", f"{cname}: function {sig} ({funcs[sig]}) is not in the ABI allowlist"))
+    for sig in sorted(set(want_f) - set(funcs)):
+        found.append(("C-ABI", f"{cname}: allowlisted function {sig} is missing from the ABI"))
+    for sig in sorted(set(funcs) & set(want_f)):
+        if funcs[sig] != want_f[sig]:
+            found.append(("C-ABI", f"{cname}: {sig} is {funcs[sig]}, the allowlist says {want_f[sig]}"))
+    for sig in sorted(events - want_e):
+        found.append(("C-ABI", f"{cname}: event {sig} is not in the ABI allowlist"))
+    for sig in sorted(want_e - events):
+        found.append(("C-ABI", f"{cname}: allowlisted event {sig} is missing from the ABI"))
+    allowed_other = {"constructor"} if lock.get("constructor") else set()
+    for kind in other:
+        if kind not in allowed_other:
+            found.append(("C-ABI", f"{cname}: ABI entry of type `{kind}` is not allowed"))
+    return found
+
+
+def check_abi(abi, cname, lock=None):
     bad = []
     for item in abi:
         if item.get("type") == "function" and item.get("stateMutability") not in ("view", "pure"):
@@ -361,7 +405,8 @@ def check_abi(abi, cname):
                 bad.append(item["name"])
             # A time-like input on a state-changing function is a clock from the caller (review H4).
             bad += [f"{item.get('name')}({i.get('name')})" for i in item.get("inputs", []) if TIME_NAME.search(i.get("name", ""))]
-    return [("C-ABI", f"{cname}: state-changing time/clock functions or inputs in ABI: {bad}")] if bad else []
+    found = [("C-ABI", f"{cname}: state-changing time/clock functions or inputs in ABI: {bad}")] if bad else []
+    return found + (check_abi_lock(abi, cname, lock) if lock else [])
 
 
 ARTIFACT_SUFFIXES = (".runtime.bin", ".abi.json", ".bin", ".metadata.json", ".sizes.txt")
@@ -441,7 +486,7 @@ def lint_tree(src_dir, policy, abi_dir=None):
             p = pathlib.Path(abi_dir) / f"{cname}.abi.json"
             found += check_fresh(abi_dir, cname, newest_source)
             if p.exists() and cname in seen_production:
-                found += check_abi(json.loads(p.read_text()), cname)
+                found += check_abi(json.loads(p.read_text()), cname, policy["contracts"].get(cname, {}).get("abi"))
     return found
 
 
@@ -465,7 +510,6 @@ def selftest(policy):
     with tempfile.TemporaryDirectory() as tmp:
         t = pathlib.Path(tmp)
         (t / "Settlane.abi.json").write_text("[]")
-        (t / "Vault.abi.json").write_text("[]")
         clean = check_artifacts(t, policy)
         (t / "SettlaneTestClock.abi.json").write_text("[]")
         shell = check_artifacts(t, policy)
@@ -495,14 +539,14 @@ def selftest(policy):
     with tempfile.TemporaryDirectory() as tmp:
         t = pathlib.Path(tmp)
         for suffix in REQUIRED_SUFFIXES:
-            (t / f"Vault{suffix}").write_text("00")
-        complete = check_artifacts(t, policy) + check_fresh(t, "Vault", time.time() - 60)
-        (t / "Vault.bin").unlink()
-        missing_bin = check_fresh(t, "Vault", None)
-        (t / "Vault.bin").write_text("00")
+            (t / f"Settlane{suffix}").write_text("00")
+        complete = check_artifacts(t, policy) + check_fresh(t, "Settlane", time.time() - 60)
+        (t / "Settlane.bin").unlink()
+        missing_bin = check_fresh(t, "Settlane", None)
+        (t / "Settlane.bin").write_text("00")
         past = time.time() - 3600
-        os.utime(t / "Vault.abi.json", (past, past))
-        stale = check_fresh(t, "Vault", time.time() - 60)
+        os.utime(t / "Settlane.abi.json", (past, past))
+        stale = check_fresh(t, "Settlane", time.time() - 60)
         (t / "Actor.bin").write_text("00")
         (t / "Actor.runtime.bin").write_text("00")
         dev_bytecode = check_artifacts(t, policy)
@@ -514,11 +558,11 @@ def selftest(policy):
         (t / "nested").mkdir()
         subdir = check_artifacts(t, policy)
     m1_checks = (
-        ("artifacts: complete, fresh Vault output accepted", not complete),
+        ("artifacts: complete, fresh Settlane output accepted", not complete),
         ("artifacts: dev .bin/.runtime.bin without an ABI rejected (M1)", len(dev_bytecode) == 2 and all("Actor" in m for _, m in dev_bytecode)),
         ("artifacts: unknown file in output rejected (M1)", any("Stale.marker" in m for _, m in unknown_file)),
         ("artifacts: directory in output rejected (M1)", any("nested" in m for _, m in subdir)),
-        ("artifacts: deployable missing its .bin rejected (M1)", any("Vault.bin missing" in m for _, m in missing_bin)),
+        ("artifacts: deployable missing its .bin rejected (M1)", any("Settlane.bin missing" in m for _, m in missing_bin)),
         ("artifacts: artifact older than the newest source rejected (M1)", any("older than" in m for _, m in stale)),
     )
     # Review H1: effect types are normalised before classification.
@@ -530,8 +574,28 @@ def selftest(policy):
     )
     prod_ok = classify("ingots/settlane/src/lib.fe", policy) == "production"
     dev_ok = classify("ingots/settlane-dev/src/tests.fe", policy) == "dev"
+    base = {"type": "function", "inputs": [], "outputs": []}
+    lock = {"functions": {"a()": "view", "b(uint256)": "payable"}, "events": ["E(uint256 indexed,address)"]}
+    good_abi = [dict(base, name="a", stateMutability="view"), dict(base, name="b", inputs=[{"type": "uint256", "name": "x"}], stateMutability="payable"), {"type": "event", "name": "E", "inputs": [{"type": "uint256", "indexed": True, "name": "i"}, {"type": "address", "indexed": False, "name": "o"}]}]
+    def abi_with(extra=(), drop=(), edit=None):
+        out = [x for x in good_abi if x.get("name") not in drop] + list(extra)
+        return [dict(x, **(edit or {})) if x.get("name") == "a" else x for x in out]
+    lock_checks = (
+        ("abi lock: exact match accepted", not check_abi_lock(good_abi, "S", lock)),
+        ("abi lock: an extra harmless function rejected", any("ping()" in m for _, m in check_abi_lock(abi_with([dict(base, name="ping", stateMutability="view")]), "S", lock))),
+        ("abi lock: a view that became payable rejected", any("payable" in m for _, m in check_abi_lock(abi_with(edit={"stateMutability": "payable"}), "S", lock))),
+        ("abi lock: a missing function rejected", any("missing" in m for _, m in check_abi_lock(abi_with(drop=("b",)), "S", lock))),
+        ("abi lock: an extra event rejected", any("event F" in m for _, m in check_abi_lock(abi_with([{"type": "event", "name": "F", "inputs": []}]), "S", lock))),
+        ("abi lock: an event whose indexed flag changed rejected", bool(check_abi_lock([x for x in good_abi if x.get("type") != "event"] + [{"type": "event", "name": "E", "inputs": [{"type": "uint256", "indexed": False, "name": "i"}, {"type": "address", "indexed": False, "name": "o"}]}], "S", lock))),
+        ("abi lock: a receive entry rejected", any("receive" in m for _, m in check_abi_lock(abi_with([{"type": "receive", "stateMutability": "payable"}]), "S", lock))),
+        ("abi lock: a fallback entry rejected", any("fallback" in m for _, m in check_abi_lock(abi_with([{"type": "fallback", "stateMutability": "payable"}]), "S", lock))),
+        ("abi lock: wired through check_abi", any("ping()" in m for _, m in check_abi(abi_with([dict(base, name="ping", stateMutability="view")]), "S", lock))),
+    )
+    for label, good in lock_checks:
+        print(("ok    " if good else "WRONG ") + label)
+        ok &= good
     for label, good in (
-        ("artifacts: Settlane and Vault (deployable) accepted", not clean),
+        ("artifacts: Settlane (deployable) accepted", not clean),
         ("artifacts: listed but non-deployable contract rejected", bool(helper)),
         ("layout: test-only contract in the production ingot rejected", any("SettlaneTestClock" in m and "production ingot" in m for m in layout)),
         ("layout: production contract in the dev ingot rejected", any("Settlane is defined in the dev" in m or "contract Settlane is" in m for m in layout)),

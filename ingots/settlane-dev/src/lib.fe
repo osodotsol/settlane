@@ -1,31 +1,122 @@
-// Dev ingot: test-only helpers. Nothing here is deployable, and `fe build` at the
-// workspace root never emits it (default-members is the production ingot only).
+// Dev ingot: test-only contracts. Nothing here is deployable, and `fe build` at the
+// workspace root never emits it (default-members is the production ingot only, D-014).
+use settlane::handlers
+use settlane::settlane::SettleMsg
+use settlane::types::{Agreement, Clock, Milestone, Totals}
+use std::evm::StorageMap
 
-// Mirror of the production Vault's messages (same selectors). The starter's `msg VaultMsg`
-// is not `pub`, and test needs must not force changes to production code.
-pub msg VaultCalls {
-    #[selector = sol("deposit()")]
-    Deposit -> Timestamp,
-    #[selector = sol("balanceOf(address)")]
-    BalanceOf { owner: Address } -> Wei,
+// The only message the shell has that the production contract does not.
+pub msg DevMsg {
+    #[selector = sol("setTime(uint256)")]
+    SetTime { now: Timestamp },
 }
 
-msg ActorMsg {
-    #[selector = sol("depositInto(address)")]
-    DepositInto { vault: Address } -> Timestamp,
+// The production contract with a settable clock (D-009, D-016). It serves the identical
+// `SettleMsg` and every arm calls the same shared handler as `Settlane`. The two differ in
+// exactly one thing: where `Clock.now` comes from. Production reads the block, this reads
+// the `now` field, so tests can cross deadlines that a frozen test block never reaches.
+pub contract SettlaneTestClock uses (ctx: Ctx, log: mut Log) {
+    mut now: Timestamp,
+    mut totals: Totals,
+    mut agreements: StorageMap<u256, Agreement>,
+    mut milestones: StorageMap<(u256, u8), Milestone>,
+
+    recv SettleMsg {
+        #[payable]
+        Create { provider, verifier, review_period, n, amounts, deliver_by, specs } -> u256
+        uses (ctx, mut log, mut totals, mut agreements, mut milestones, now)
+        {
+            var id: u256 = 0
+            with (Clock = Clock { now }) {
+                id = handlers::create_handler(
+                    provider,
+                    verifier,
+                    review_period,
+                    n,
+                    amounts,
+                    deliver_by,
+                    specs,
+                )
+            }
+            id
+        }
+
+        GetAgreement { id } -> (Address, Address, Address, Duration, u8)
+        uses (agreements)
+        {
+            handlers::get_agreement_handler(id)
+        }
+
+        GetMilestone { id, m } -> (u8, Wei, Timestamp, Timestamp, u256, u256)
+        uses (milestones)
+        {
+            handlers::get_milestone_handler(id, m)
+        }
+
+        GetAccounting { id } -> (Wei, Wei, Wei, Wei)
+        uses (agreements)
+        {
+            handlers::get_accounting_handler(id)
+        }
+
+        TotalOutstanding -> Wei uses (totals) {
+            handlers::total_outstanding_handler()
+        }
+    }
+
+    recv DevMsg {
+        SetTime { now: t } uses (mut now) {
+            now = t
+        }
+    }
 }
 
-// Test actor. The harness has no caller impersonation (docs/FE_NOTES.md E4), so a
-// separate contract is the way to be a different `msg.sender`.
+// A separate address that calls Settlane on someone's behalf. The harness has no caller
+// impersonation (FE_NOTES E4), so a contract is how a test gets a different `msg.sender`.
+pub msg ActorMsg {
+    #[selector = sol(
+        "createVia(address,address,address,uint256,uint8,uint256[3],uint256[3],uint256[3])",
+    )]
+    CreateVia {
+        target: Address,
+        provider: Address,
+        verifier: Address,
+        review_period: Duration,
+        n: u8,
+        amounts: [Wei; 3],
+        deliver_by: [Timestamp; 3],
+        specs: [u256; 3],
+    } -> u256,
+}
+
 pub contract Actor uses (ctx: Ctx, call: mut Call) {
     recv ActorMsg {
         #[payable]
-        DepositInto { vault } -> Timestamp uses (ctx, mut call) {
+        CreateVia {
+            target,
+            provider,
+            verifier,
+            review_period,
+            n,
+            amounts,
+            deliver_by,
+            specs,
+        } -> u256
+        uses (ctx, mut call)
+        {
             call.call(
-                addr: vault,
-                gas: 200000,
+                addr: target,
+                gas: 1000000,
                 value: ctx.value(),
-                message: VaultCalls::Deposit {},
+                message: SettleMsg::Create {
+                    provider,
+                    verifier,
+                    review_period,
+                    n,
+                    amounts,
+                    deliver_by,
+                    specs,
+                },
             )
         }
     }

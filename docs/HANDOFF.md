@@ -17,6 +17,24 @@ Do not modify src/ unless the assignment allows it. Do not commit or push.
 ```
 
 ## Active assignment
+- **ID:** R-002 Phase 2A review (agreement creation, funding, queries; no transitions yet)
+- **Commit:** the Phase 2A commit on `settlane/dev` (see `git log -1`).
+- **Status: NOT RUN.** Codex is not installed in this environment and has not reviewed anything. Findings files under `docs/reviews/` exist only if the owner runs Codex.
+- **Scope:** `ingots/settlane/src/*.fe`, `ingots/settlane-dev/src/*.fe`, `scripts/*` (lint, policy, test gate, negative controls), `docs/LIFECYCLE.md` ("Creation validation" and its implementation notes), `docs/SECURITY.md` ("Phase 2A coverage"), `docs/DECISIONS.md` D-016, D-017, D-018.
+- **Edit permission:** you may add new files under `experiments/review/` to reproduce a doubt. Do not edit any other file.
+- **Questions:**
+  1. Does `rules::check_create` implement "Creation validation" exactly: no rule missing, extra, or in a different order? Find an input that should be rejected but is accepted (multi-fault inputs, unusual `n` and slot combinations, equal addresses, zero values).
+  2. Funding: can a call succeed with `msg.value != Σ amounts[0..n]`, or can ETH end up held with no agreement? `Settlane` has no `receive` or `fallback`. What do forced ETH (selfdestruct, coinbase) and `evm.balance == outstanding` (I9) imply?
+  3. `Settlane` declares no `Call` or `Create`. Find any way for it to send ETH, or to emit anything other than the one event.
+  4. Storage: can two agreements or two milestones collide (tuple key `(id, m)`, the 26.6 packed layout of `Agreement` and `Milestone`, id 0)? Can a field of one struct overlap another?
+  5. D-016: diff the `SettlaneTestClock` arms against the `Settlane` arms. Is anything other than the `Clock` source different? Can the shell hide a bug the production contract has?
+  6. Production clock and deadlines (PC, DE, I12, I13): any way for a user to influence `Clock.now`, or to change a stored deadline after creation? Try to bypass the exact ABI allowlist (lint `C-ABI`).
+  7. Tests: is any assertion vacuous, or any negative test missing its positive control? Run `python3 scripts/ci_negative_controls.py` and propose mutations the tests would miss.
+  8. Anything in `docs/SECURITY.md` "Phase 2A coverage" that overclaims?
+- **Acceptance:** each finding gives a severity, a concrete sequence, the expected and actual (or predicted) outcome, and a fix or test. Doubts about Fe behavior come with an `fe check` or `fe test` command and its output.
+- **Output:** `docs/reviews/2026-11-18-phase2a.md`
+
+## Previous assignment (never run)
 - **ID:** R-001 Phase 1 feasibility evidence and semantics proposals (this replaces R-000, which was never run)
 - **Commit:** the D-014 commit on `settlane/dev` (see `git log -1`); the Phase 1 base is `3e91be5` and the lint fix is `a72bebd`.
 - **Scope:** `experiments/phase1/**`, `fe.toml`, `ingots/**`, `scripts/settlane_lint.py`, `scripts/lint-policy.json`, `scripts/lint-fixtures/*`, `scripts/check_tests.py`, `scripts/test-policy.json`, `.github/workflows/ci.yml`, `docs/FE_NOTES.md`, `docs/LIFECYCLE.md`, `docs/SECURITY.md`, `docs/DECISIONS.md` D-005a, D-006b, D-009, D-011, D-012, D-013 (D-005a, D-006b, D-009 and D-011 are provisionally approved)

@@ -79,12 +79,53 @@ def add_fixture(fixture, rel):
 
 
 def starve_revert_setup(root):
-    """Review M2: give the setup call of the negative Vault test 1 gas, so it reverts early."""
+    """Review M2: give the shared `try_create` helper 1 gas, so every call reverts early.
+
+    A negative test that only checks "the call failed" would still pass. The positive
+    controls (`assert!(try_create(valid))`) are what make CI fail here."""
     p = root / "ingots/settlane/src/tests.fe"
     s = p.read_text()
-    i = s.index("fn withdraw_before_unlock_reverts")
-    j = s.index("gas: 200000", i)
-    p.write_text(s[:j] + "gas: 1" + s[j + len("gas: 200000") :])
+    i = s.index("fn try_create")
+    j = s.index("gas: 1000000", i)
+    p.write_text(s[:j] + "gas: 1" + s[j + len("gas: 1000000") :])
+
+
+def replace_in(rel, old, new):
+    """Mutation: replace `old` with `new` once. Refuses to run if `old` is not found, so a
+    refactor can never silently turn a control into a no-op."""
+
+    def mutate(root):
+        p = root / rel
+        s = p.read_text()
+        assert old in s, f"mutation target not found in {rel}: {old!r}"
+        p.write_text(s.replace(old, new, 1))
+
+    return mutate
+
+
+def add_production_entry_point(variant_decl, arm):
+    """Add a second message type `Admin` to the production contract (its own message type, so
+    the dev ingot still compiles). `variant_decl` is the message variant, `arm` its handler."""
+
+    def mutate(root):
+        p = root / "ingots/settlane/src/settlane.fe"
+        s = p.read_text()
+        assert "    recv SettleMsg {" in s
+        s = s.replace("    recv SettleMsg {", "    recv Admin {\n        " + arm + "\n    }\n\n    recv SettleMsg {", 1)
+        s += "\npub msg Admin {\n    " + variant_decl + "\n}\n"
+        p.write_text(s)
+
+    return mutate
+
+
+SET_TIME = add_production_entry_point('#[selector = sol("setTime(uint256)")]\n    SetTime { now: Timestamp },', "SetTime { now } uses (ctx) {\n            assert!(ctx.value() == Wei::zero())\n        }")
+WARP = add_production_entry_point('#[selector = sol("warp(uint256)")]\n    Warp { to: Timestamp },', "Warp { to } uses (ctx) {\n            assert!(ctx.value() == Wei::zero())\n        }")
+PING = add_production_entry_point('#[selector = sol("ping()")]\n    Ping -> u256,', "Ping -> u256 {\n            1\n        }")
+
+
+RULES = "ingots/settlane/src/rules.fe"
+HANDLERS = "ingots/settlane/src/handlers.fe"
+TYPES = "ingots/settlane/src/types.fe"
 
 
 def dev_not_default(root):
@@ -109,6 +150,25 @@ MUTATIONS = {
     "clock-type-alias-in-production": ("H4b: `type Tick = Clock` built from a message argument", "policy lint (fails", add_fixture("bad_clock_type_alias.fe", "ingots/settlane/src/attack.fe")),
     "starved-setup-in-negative-test": ("M2: the setup of a negative test reverts before the call under test", "Tests for both ingots", starve_revert_setup),
     "bare-should-revert-test": ("M2: a bare should_revert test is added", "policy lint (fails", add_fixture("bad_bare_should_revert.fe", "ingots/settlane/src/weak_test.fe")),
+    # Phase 2A behavior mutations: each breaks one rule of docs/LIFECYCLE.md, and the tests must catch it.
+    "mut-client-may-be-provider": ("creation allows client == provider (D-011)", "Tests for both ingots", replace_in(RULES, "if client == provider {", "if client == provider && false {")),
+    "mut-verifier-may-be-provider": ("creation allows provider == verifier (D-011)", "Tests for both ingots", replace_in(RULES, "if provider == verifier {", "if provider == verifier && false {")),
+    "mut-deliver-by-boundary-off-by-one": ("deliver_by == now accepted (DE boundary)", "Tests for both ingots", replace_in(RULES, "if !(deliver_by[k] > now) {", "if !(deliver_by[k] >= now) {")),
+    "mut-funding-not-checked": ("msg.value need not equal the milestone total", "Tests for both ingots", replace_in(RULES, "if value != total_amount(n, amounts) {", "if false {")),
+    "mut-decide-by-ignores-review-period": ("decide_by == deliver_by", "Tests for both ingots", replace_in(RULES, "    deliver_by + review_period\n}", "    deliver_by\n}")),
+    "mut-zero-review-period-allowed": ("review_period == 0 accepted", "Tests for both ingots", replace_in(RULES, "if review_period == Duration::zero() {", "if false {")),
+    "mut-unused-slot-not-checked": ("a non-empty unused slot is accepted", "Tests for both ingots", replace_in(RULES, "return CreateCheck::UnusedSlotNotEmpty", "i += 0")),
+    "mut-none-not-first-variant": ("MilestoneState::None is not the first variant (D-017)", "Tests for both ingots", replace_in(TYPES, "    None,\n    Funded,", "    Funded,\n    None,")),
+    "mut-ids-do-not-advance": ("every agreement gets the same id", "Tests for both ingots", replace_in(HANDLERS, "let id = totals.next_id + 1", "let id = totals.next_id")),
+    "mut-outstanding-not-updated": ("total outstanding is not increased by a creation", "Tests for both ingots", replace_in(HANDLERS, "totals.outstanding = totals.outstanding + total", "totals.outstanding = totals.outstanding")),
+    "mut-wrong-initial-state": ("milestones start Submitted instead of Funded", "Tests for both ingots", replace_in(HANDLERS, "state: MilestoneState::Funded,", "state: MilestoneState::Submitted,")),
+    "mut-unknown-agreement-view-does-not-revert": ("getAgreement on an unknown id returns zeros", "Tests for both ingots", replace_in(HANDLERS, 'assert!(a.n != 0, "unknown agreement")', 'assert!(true, "unknown agreement")')),
+    "mut-production-clock-frozen-at-zero": ("production Clock is not the block time (PC)", "Tests for both ingots", replace_in("ingots/settlane/src/settlane.fe", "Clock { now: ctx.timestamp() }", "Clock { now: Timestamp::from_seconds(0) }")),
+    # A production time setter is caught by two independent layers; each control isolates one.
+    "mut-production-time-setter": ("a production setTime(uint256) exists (PC): the explicit selector probe in the tests catches it", "Tests for both ingots", SET_TIME),
+    "mut-production-time-setter-other-name": ("a production warp(uint256) exists (PC): no test probes it, so the lint (C-ABI) must", "policy lint (fails", WARP),
+    "mut-production-extra-entry-point": ("a harmless-looking production ping() exists: only the exact ABI allowlist (C-ABI) can catch it", "policy lint (fails", PING),
+    "mut-view-becomes-payable": ("getAgreement is made payable: the only-create-is-payable test catches it", "Tests for both ingots", replace_in("ingots/settlane/src/settlane.fe", "        GetAgreement { id } ->", "        #[payable]\n        GetAgreement { id } ->")),
     "unformatted-dev-code": ("badly formatted dev code", "Format check", lambda r: write(r, "ingots/settlane-dev/src/messy.fe", "pub fn   messy ( )   ->  u256 {   1 }\n")),
 }
 

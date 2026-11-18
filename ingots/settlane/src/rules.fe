@@ -1,0 +1,138 @@
+// Pure settlement rules. No `uses`: nothing here reads storage, time or value. The current
+// time always arrives as the `now` argument, so the same rules run under the production
+// clock and under the dev ingot's settable clock (D-016).
+use ingot::types::MilestoneState
+
+// First failed creation rule, in the order the rules are checked. `Valid` means all passed.
+pub enum CreateCheck {
+    Valid,
+    ProviderZero,
+    VerifierZero,
+    ClientIsProvider,
+    ClientIsVerifier,
+    ProviderIsVerifier,
+    BadMilestoneCount,
+    UnusedSlotNotEmpty,
+    ZeroAmount,
+    ZeroSpec,
+    DeliveryNotInFuture,
+    ZeroReviewPeriod,
+    ValueMismatch,
+}
+
+impl Copy for CreateCheck {}
+
+pub fn check_code(_ c: CreateCheck) -> u8 {
+    match c {
+        CreateCheck::Valid => 0,
+        CreateCheck::ProviderZero => 1,
+        CreateCheck::VerifierZero => 2,
+        CreateCheck::ClientIsProvider => 3,
+        CreateCheck::ClientIsVerifier => 4,
+        CreateCheck::ProviderIsVerifier => 5,
+        CreateCheck::BadMilestoneCount => 6,
+        CreateCheck::UnusedSlotNotEmpty => 7,
+        CreateCheck::ZeroAmount => 8,
+        CreateCheck::ZeroSpec => 9,
+        CreateCheck::DeliveryNotInFuture => 10,
+        CreateCheck::ZeroReviewPeriod => 11,
+        CreateCheck::ValueMismatch => 12,
+    }
+}
+
+// Stable numeric code of a milestone state, as returned by `getMilestone`.
+pub fn state_code(_ s: MilestoneState) -> u8 {
+    match s {
+        MilestoneState::None => 0,
+        MilestoneState::Funded => 1,
+        MilestoneState::Submitted => 2,
+        MilestoneState::Approved => 3,
+        MilestoneState::Paid => 4,
+        MilestoneState::Refunded => 5,
+    }
+}
+
+// Sum of the used milestone amounts. Checked: an overflow reverts with Panic(0x11).
+pub fn total_amount(n: u8, amounts: [Wei; 3]) -> Wei {
+    var total = Wei::zero()
+    var i: u8 = 0
+    while i < n && i < 3 {
+        total = total + amounts[i as usize]
+        i += 1
+    }
+    total
+}
+
+// `deliver_by + review_period`. Checked: an overflow reverts with Panic(0x11), so no
+// milestone can be created whose review window wraps around.
+pub fn decide_by(deliver_by: Timestamp, review_period: Duration) -> Timestamp {
+    deliver_by + review_period
+}
+
+// `open` predicates are strict `<` and expiry is `>=` (docs/LIFECYCLE.md, DE). Later
+// phases use them for submission, review and refunds, and they are tested at d-1, d, d+1.
+pub fn delivery_open(now: Timestamp, deliver_by: Timestamp) -> bool {
+    now < deliver_by
+}
+
+// All creation rules (docs/LIFECYCLE.md "Creation validation"). `client` is the caller.
+// Checked in this order, and the first failure is returned. Unused slots (index >= n)
+// must be completely empty. `now` is the clock, `value` is the ETH sent with the call.
+pub fn check_create(
+    client: Address,
+    provider: Address,
+    verifier: Address,
+    review_period: Duration,
+    n: u8,
+    amounts: [Wei; 3],
+    deliver_by: [Timestamp; 3],
+    specs: [u256; 3],
+    value: Wei,
+    now: Timestamp,
+) -> CreateCheck {
+    if provider == Address::zero() {
+        return CreateCheck::ProviderZero
+    }
+    if verifier == Address::zero() {
+        return CreateCheck::VerifierZero
+    }
+    if client == provider {
+        return CreateCheck::ClientIsProvider
+    }
+    if client == verifier {
+        return CreateCheck::ClientIsVerifier
+    }
+    if provider == verifier {
+        return CreateCheck::ProviderIsVerifier
+    }
+    if n < 1 || n > 3 {
+        return CreateCheck::BadMilestoneCount
+    }
+    var i: u8 = 0
+    while i < 3 {
+        let k = i as usize
+        if i < n {
+            if amounts[k] == Wei::zero() {
+                return CreateCheck::ZeroAmount
+            }
+            if specs[k] == 0 {
+                return CreateCheck::ZeroSpec
+            }
+            if !(deliver_by[k] > now) {
+                return CreateCheck::DeliveryNotInFuture
+            }
+        } else if amounts[k] != Wei::zero()
+            || specs[k] != 0
+            || deliver_by[k] != Timestamp::from_seconds(0) {
+            return CreateCheck::UnusedSlotNotEmpty
+        }
+        i += 1
+    }
+    if review_period == Duration::zero() {
+        return CreateCheck::ZeroReviewPeriod
+    }
+    if value != total_amount(n, amounts) {
+        return CreateCheck::ValueMismatch
+    }
+    CreateCheck::Valid
+}

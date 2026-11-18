@@ -1,111 +1,1025 @@
-// Run the tests with `fe test`.
+// Production-ingot tests for Phase 2A: creation, validation, funding, queries, unknown ids.
+//
+// Every rejection test has a positive control (the same call, valid, succeeds) and checks
+// that the rejected call changed nothing. There is no bare `#[test(should_revert)]`: it
+// would also pass on a revert in the setup (lint T-REVERT, review M2). Tests that need a
+// different caller or a movable clock are in the dev ingot (ingots/settlane-dev).
+use ingot::rules
+use ingot::rules::CreateCheck
+use ingot::settlane::{SettleMsg, Settlane}
+use ingot::types::MilestoneState
+use std::evm::{ether, seconds, wei}
 
-use ingot::{Vault, VaultMsg}
-use std::evm::{days, ether}
+const MAX: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 
-#[test(balance = 10_000_000_000_000_000_000)]
-fn deposit_is_locked() uses (evm: mut Evm) {
-    let vault = evm.create2<Vault>(value: Wei::zero(), args: (days(7),), salt: 0)
-
-    let unlock: Timestamp = evm
-        .call(
-            addr: vault,
-            gas: 200000,
-            value: ether(1),
-            message: VaultMsg::Deposit {},
-        )
-    let balance: Wei = evm
-        .call(
-            addr: vault,
-            gas: 100000,
-            value: Wei::zero(),
-            message: VaultMsg::BalanceOf { owner: evm.address() },
-        )
-    assert!(balance == ether(1))
-
-    let stored: Timestamp = evm
-        .call(
-            addr: vault,
-            gas: 100000,
-            value: Wei::zero(),
-            message: VaultMsg::UnlockTime { owner: evm.address() },
-        )
-    assert!(stored == unlock)
+// Everything `create` takes except the funding value.
+struct Args {
+    provider: Address,
+    verifier: Address,
+    review_period: Duration,
+    n: u8,
+    amounts: [Wei; 3],
+    deliver_by: [Timestamp; 3],
+    specs: [u256; 3],
 }
 
-// Review M2: a bare `should_revert` also passed when the setup itself reverted, so this
-// test never proved that Withdraw is blocked. The setup is now a plain `call` (it must
-// succeed), the positive control checks the deposit landed, and only Withdraw may fail.
-#[test(balance = 10_000_000_000_000_000_000)]
-fn withdraw_before_unlock_reverts() uses (evm: mut Evm) {
-    let vault = evm.create2<Vault>(value: Wei::zero(), args: (days(7),), salt: 0)
-    let _: Timestamp = evm
-        .call(
-            addr: vault,
-            gas: 200000,
-            value: ether(1),
-            message: VaultMsg::Deposit {},
-        )
-    let before: Wei = evm
-        .call(
-            addr: vault,
-            gas: 100000,
-            value: Wei::zero(),
-            message: VaultMsg::BalanceOf { owner: evm.address() },
-        )
-    assert!(before == ether(1))
+impl Copy for Args {}
 
-    let payee = Address::new(0x1234)
+fn at(_ now: Timestamp, _ secs: u256) -> Timestamp {
+    Timestamp::from_seconds(now.as_seconds() + secs)
+}
+
+// A valid three-milestone agreement: 1 + 2 + 3 ETH, deadlines 100, 200, 300 s from now.
+fn valid(_ now: Timestamp) -> Args {
+    Args {
+        provider: Address::new(0xa1),
+        verifier: Address::new(0xa2),
+        review_period: seconds(3600),
+        n: 3,
+        amounts: [ether(1), ether(2), ether(3)],
+        deliver_by: [at(now, 100), at(now, 200), at(now, 300)],
+        specs: [0x51, 0x52, 0x53],
+    }
+}
+
+fn total_of(_ a: Args) -> Wei {
+    rules::total_amount(n: a.n, amounts: a.amounts)
+}
+
+fn deploy() -> Address uses (evm: mut Evm) {
+    evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+}
+
+fn try_create(_ s: Address, _ a: Args, _ value: Wei) -> bool
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: s,
+        gas: 1000000,
+        value,
+        message: SettleMsg::Create {
+            provider: a.provider,
+            verifier: a.verifier,
+            review_period: a.review_period,
+            n: a.n,
+            amounts: a.amounts,
+            deliver_by: a.deliver_by,
+            specs: a.specs,
+        },
+    )
+        .success()
+}
+
+fn create(_ s: Address, _ a: Args, _ value: Wei) -> u256 uses (evm: mut Evm) {
+    evm.call(
+        addr: s,
+        gas: 1000000,
+        value,
+        message: SettleMsg::Create {
+            provider: a.provider,
+            verifier: a.verifier,
+            review_period: a.review_period,
+            n: a.n,
+            amounts: a.amounts,
+            deliver_by: a.deliver_by,
+            specs: a.specs,
+        },
+    )
+}
+
+fn outstanding(_ s: Address) -> Wei uses (evm: mut Evm) {
+    evm.call(
+        addr: s,
+        gas: 100000,
+        value: Wei::zero(),
+        message: SettleMsg::TotalOutstanding {},
+    )
+}
+
+fn milestone(_ s: Address, _ id: u256, _ m: u8) -> (u8, Wei, Timestamp, Timestamp, u256, u256)
+uses (evm: mut Evm)
+{
+    evm.call(
+        addr: s,
+        gas: 100000,
+        value: Wei::zero(),
+        message: SettleMsg::GetMilestone { id, m },
+    )
+}
+
+fn accounting(_ s: Address, _ id: u256) -> (Wei, Wei, Wei, Wei)
+uses (evm: mut Evm)
+{
+    evm.call(
+        addr: s,
+        gas: 100000,
+        value: Wei::zero(),
+        message: SettleMsg::GetAccounting { id },
+    )
+}
+
+fn agreement(_ s: Address, _ id: u256) -> (Address, Address, Address, Duration, u8)
+uses (evm: mut Evm)
+{
+    evm.call(
+        addr: s,
+        gas: 100000,
+        value: Wei::zero(),
+        message: SettleMsg::GetAgreement { id },
+    )
+}
+
+fn exists(_ s: Address, _ id: u256) -> bool uses (evm: mut Evm) {
+    evm.try_call(
+        addr: s,
+        gas: 100000,
+        value: Wei::zero(),
+        message: SettleMsg::GetAgreement { id },
+    )
+        .success()
+}
+
+// The accounting invariants (docs/SECURITY.md I1, I2, I9) for agreements 1..=last_id, and
+// that agreement last_id + 1 does not exist. Called after every state-changing step.
+fn check_invariants(_ s: Address, _ last_id: u256) uses (evm: mut Evm) {
+    var id: u256 = 1
+    var sum = Wei::zero()
+    while id <= last_id {
+        let acc = accounting(s, id)
+        // I1: deposited == paid + refunded + outstanding.
+        assert!(acc.0 == acc.1 + acc.2 + acc.3, "I1 conservation")
+        var live = Wei::zero()
+        var m: u8 = 0
+        while m < 3 {
+            let x = milestone(s, id, m)
+            // states 1..=3 (Funded, Submitted, Approved) are still owed.
+            if x.0 >= 1 && x.0 <= 3 {
+                live = live + x.1
+            }
+            m += 1
+        }
+        assert!(
+            live == acc.3,
+            "outstanding equals the live milestone amounts",
+        )
+        sum = sum + acc.3
+        id += 1
+    }
+    assert!(
+        outstanding(s) == sum,
+        "total outstanding equals the per-agreement sum",
+    )
+    assert!(
+        evm.balance(s) == sum,
+        "I9 the contract holds exactly what it owes",
+    )
+    assert!(!exists(s, last_id + 1), "no agreement beyond last_id")
+}
+
+// After a rejected call: nothing changed (same total owed, same balance, no new agreement).
+fn assert_untouched(_ s: Address, _ last_id: u256, _ owed: Wei)
+uses (evm: mut Evm)
+{
+    assert!(
+        outstanding(s) == owed,
+        "rejected call changed total outstanding",
+    )
+    assert!(
+        evm.balance(s) == owed,
+        "rejected call changed the contract balance",
+    )
+    assert!(
+        !exists(s, last_id + 1),
+        "rejected call created an agreement",
+    )
+}
+
+// ---------------------------------------------------------------- valid creation
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn creates_a_single_milestone_agreement() uses (evm: mut Evm) {
+    let s = deploy()
+    let now = evm.timestamp()
+    var a = valid(now)
+    a.n = 1
+    a.amounts = [ether(2), Wei::zero(), Wei::zero()]
+    a.deliver_by = [at(now, 100), Timestamp::from_seconds(0), Timestamp::from_seconds(0)]
+    a.specs = [0x51, 0, 0]
+
+    let id = create(s, a, ether(2))
+    assert!(id == 1, "the first id is 1")
+
+    let ag = agreement(s, id)
+    assert!(ag.0 == evm.address(), "the caller is the client")
+    assert!(ag.1 == Address::new(0xa1))
+    assert!(ag.2 == Address::new(0xa2))
+    assert!(ag.3 == seconds(3600))
+    assert!(ag.4 == 1)
+
+    let m0 = milestone(s, id, 0)
+    assert!(m0.0 == 1, "slot 0 is Funded")
+    assert!(m0.1 == ether(2))
+    assert!(m0.2 == at(now, 100))
+    assert!(
+        m0.3 == at(now, 3700),
+        "decide_by is deliver_by plus the review period",
+    )
+    assert!(m0.4 == 0x51)
+    assert!(m0.5 == 0, "no evidence yet")
+    // Unused slots read as None with everything zero (D-017).
+    let m1 = milestone(s, id, 1)
+    assert!(
+        m1.0 == 0 && m1.1 == Wei::zero() && m1.2.as_seconds() == 0 && m1.4 == 0,
+    )
+    assert!(milestone(s, id, 2).0 == 0)
+
+    let acc = accounting(s, id)
+    assert!(
+        acc.0 == ether(2) && acc.1 == Wei::zero() && acc.2 == Wei::zero() && acc.3 == ether(2),
+    )
+    check_invariants(s, 1)
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn creates_a_three_milestone_agreement_with_every_field_stored()
+uses (evm: mut Evm)
+{
+    let s = deploy()
+    let now = evm.timestamp()
+    let a = valid(now)
+    let id = create(s, a, ether(6))
+    assert!(id == 1)
+
+    let ag = agreement(s, id)
+    assert!(
+        ag.0 == evm.address() && ag.1 == a.provider && ag.2 == a.verifier,
+    )
+    assert!(ag.3 == a.review_period && ag.4 == 3)
+
+    var m: u8 = 0
+    while m < 3 {
+        let k = m as usize
+        let x = milestone(s, id, m)
+        assert!(x.0 == 1, "every used slot is Funded")
+        assert!(x.1 == a.amounts[k])
+        assert!(x.2 == a.deliver_by[k])
+        assert!(x.3 == a.deliver_by[k] + a.review_period, "decide_by")
+        assert!(x.4 == a.specs[k])
+        assert!(x.5 == 0)
+        m += 1
+    }
+    let acc = accounting(s, id)
+    assert!(acc.0 == ether(6) && acc.3 == ether(6))
+    assert!(outstanding(s) == ether(6))
+    assert!(evm.balance(s) == ether(6))
+    check_invariants(s, 1)
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn ids_increment_and_agreements_are_isolated() uses (evm: mut Evm) {
+    let s = deploy()
+    let now = evm.timestamp()
+    let a = valid(now)
+    var b = valid(now)
+    b.provider = Address::new(0xb1)
+    b.verifier = Address::new(0xb2)
+    b.n = 2
+    b.amounts = [ether(4), ether(5), Wei::zero()]
+    b.deliver_by = [at(now, 500), at(now, 600), Timestamp::from_seconds(0)]
+    b.specs = [0x61, 0x62, 0]
+
+    assert!(create(s, a, ether(6)) == 1)
+    let first_before = milestone(s, 1, 2)
+    assert!(create(s, b, ether(9)) == 2)
+
+    // Agreement 2 has its own parties and amounts, agreement 1 is untouched (I8).
+    assert!(agreement(s, 2).1 == Address::new(0xb1))
+    assert!(agreement(s, 1).1 == Address::new(0xa1))
+    assert!(milestone(s, 2, 1).1 == ether(5))
+    assert!(
+        milestone(s, 2, 2).0 == 0,
+        "agreement 2 has no third milestone",
+    )
+    assert!(
+        milestone(s, 1, 2).1 == first_before.1 && milestone(s, 1, 2).4 == first_before.4,
+    )
+    assert!(
+        accounting(s, 1).3 == ether(6) && accounting(s, 2).3 == ether(9),
+    )
+    assert!(outstanding(s) == ether(15))
+    check_invariants(s, 2)
+}
+
+// ------------------------------------------------------------- invalid creation inputs
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn rejects_invalid_parties_and_leaves_no_trace() uses (evm: mut Evm) {
+    let s = deploy()
+    let now = evm.timestamp()
+    let good = valid(now)
+    assert!(try_create(s, good, ether(6)), "positive control")
+    let owed = ether(6)
+
+    var a = good
+    a.provider = Address::zero()
+    assert!(!try_create(s, a, ether(6)), "provider is zero")
+    a = good
+    a.verifier = Address::zero()
+    assert!(!try_create(s, a, ether(6)), "verifier is zero")
+    a = good
+    a.provider = evm.address()
+    assert!(!try_create(s, a, ether(6)), "client is provider")
+    a = good
+    a.verifier = evm.address()
+    assert!(!try_create(s, a, ether(6)), "client is verifier")
+    a = good
+    a.verifier = good.provider
+    assert!(!try_create(s, a, ether(6)), "provider is verifier")
+    a = good
+    a.provider = Address::zero()
+    a.verifier = Address::zero()
+    assert!(!try_create(s, a, ether(6)), "both zero")
+    a = good
+    a.provider = evm.address()
+    a.verifier = evm.address()
+    assert!(!try_create(s, a, ether(6)), "all three the same")
+
+    assert_untouched(s, 1, owed)
+    check_invariants(s, 1)
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn rejects_a_milestone_count_outside_one_to_three() uses (evm: mut Evm) {
+    let s = deploy()
+    let now = evm.timestamp()
+    let good = valid(now)
+    assert!(try_create(s, good, ether(6)), "positive control")
+
+    var a = good
+    a.n = 0
+    assert!(!try_create(s, a, Wei::zero()), "n = 0")
+    assert!(!try_create(s, a, ether(6)), "n = 0 with value")
+    a.n = 4
+    assert!(!try_create(s, a, ether(6)), "n = 4")
+    a.n = 255
+    assert!(!try_create(s, a, ether(6)), "n = 255")
+
+    assert_untouched(s, 1, ether(6))
+    check_invariants(s, 1)
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn rejects_non_empty_unused_slots() uses (evm: mut Evm) {
+    let s = deploy()
+    let now = evm.timestamp()
+    let zero_t = Timestamp::from_seconds(0)
+
+    // n = 1 with a clean slot 1 and 2 is the positive control.
+    var one = valid(now)
+    one.n = 1
+    one.amounts = [ether(1), Wei::zero(), Wei::zero()]
+    one.deliver_by = [at(now, 100), zero_t, zero_t]
+    one.specs = [0x51, 0, 0]
+    assert!(try_create(s, one, ether(1)), "positive control")
+    let owed = ether(1)
+
+    var a = one
+    a.amounts = [ether(1), wei(1), Wei::zero()]
+    assert!(
+        !try_create(s, a, ether(1) + wei(1)),
+        "slot 1 has an amount",
+    )
+    a = one
+    a.specs = [0x51, 7, 0]
+    assert!(!try_create(s, a, ether(1)), "slot 1 has a spec")
+    a = one
+    a.deliver_by = [at(now, 100), at(now, 100), zero_t]
+    assert!(!try_create(s, a, ether(1)), "slot 1 has a deadline")
+    a = one
+    a.amounts = [ether(1), Wei::zero(), wei(1)]
+    assert!(
+        !try_create(s, a, ether(1) + wei(1)),
+        "slot 2 has an amount",
+    )
+    a = one
+    a.specs = [0x51, 0, 7]
+    assert!(!try_create(s, a, ether(1)), "slot 2 has a spec")
+    a = one
+    a.deliver_by = [at(now, 100), zero_t, at(now, 100)]
+    assert!(!try_create(s, a, ether(1)), "slot 2 has a deadline")
+
+    // n = 2 with a dirty slot 2.
+    var two = valid(now)
+    two.n = 2
+    two.amounts = [ether(1), ether(2), wei(1)]
+    two.specs = [0x51, 0x52, 0]
+    two.deliver_by = [at(now, 100), at(now, 200), zero_t]
+    assert!(
+        !try_create(s, two, ether(3) + wei(1)),
+        "n = 2 with an amount in slot 2",
+    )
+
+    assert_untouched(s, 1, owed)
+    check_invariants(s, 1)
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn rejects_zero_amount_or_zero_spec_in_any_used_slot() uses (evm: mut Evm) {
+    let s = deploy()
+    let now = evm.timestamp()
+    let good = valid(now)
+    assert!(try_create(s, good, ether(6)), "positive control")
+
+    var k: u8 = 0
+    while k < 3 {
+        let i = k as usize
+        var a = good
+        var amounts = good.amounts
+        amounts[i] = Wei::zero()
+        a.amounts = amounts
+        assert!(
+            !try_create(s, a, total_of(a)),
+            "zero amount in a used slot",
+        )
+
+        var b = good
+        var specs = good.specs
+        specs[i] = 0
+        b.specs = specs
+        assert!(!try_create(s, b, ether(6)), "zero spec in a used slot")
+        k += 1
+    }
+    assert_untouched(s, 1, ether(6))
+    check_invariants(s, 1)
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn enforces_deliver_by_strictly_after_the_production_clock()
+uses (evm: mut Evm)
+{
+    let s = deploy()
+    let now = evm.timestamp()
+
+    // Boundary: deliver_by == now is rejected, now + 1 is accepted (docs/LIFECYCLE.md DE).
+    var a = valid(now)
+    a.n = 1
+    a.amounts = [ether(1), Wei::zero(), Wei::zero()]
+    a.specs = [0x51, 0, 0]
+    a.deliver_by = [now, Timestamp::from_seconds(0), Timestamp::from_seconds(0)]
+    assert!(!try_create(s, a, ether(1)), "deliver_by == now")
+    a.deliver_by = [
+        Timestamp::from_seconds(now.as_seconds() - 1),
+        Timestamp::from_seconds(0),
+        Timestamp::from_seconds(0),
+    ]
+    assert!(!try_create(s, a, ether(1)), "deliver_by == now - 1")
+    a.deliver_by = [
+        Timestamp::from_seconds(0),
+        Timestamp::from_seconds(0),
+        Timestamp::from_seconds(0),
+    ]
+    assert!(!try_create(s, a, ether(1)), "deliver_by == 0")
+    assert_untouched(s, 0, Wei::zero())
+
+    a.deliver_by = [at(now, 1), Timestamp::from_seconds(0), Timestamp::from_seconds(0)]
+    assert!(
+        try_create(s, a, ether(1)),
+        "deliver_by == now + 1 is the accepted boundary",
+    )
+    assert!(milestone(s, 1, 0).2 == at(now, 1))
+
+    // Every used slot is checked, not only the first.
+    var b = valid(now)
+    b.deliver_by = [at(now, 100), at(now, 200), now]
+    assert!(!try_create(s, b, ether(6)), "third deadline == now")
+    b.deliver_by = [at(now, 100), now, at(now, 300)]
+    assert!(!try_create(s, b, ether(6)), "second deadline == now")
+    b.deliver_by = [at(now, 100), at(now, 200), at(now, 300)]
+    assert!(try_create(s, b, ether(6)), "all deadlines after now")
+
+    // Deadlines need not be ordered, and are stored as given (immutable once created).
+    var c = valid(now)
+    c.deliver_by = [at(now, 300), at(now, 100), at(now, 200)]
+    assert!(
+        try_create(s, c, ether(6)),
+        "unordered deadlines are allowed",
+    )
+    assert!(
+        milestone(s, 3, 0).2 == at(now, 300) && milestone(s, 3, 1).2 == at(now, 100),
+    )
+    check_invariants(s, 3)
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn rejects_a_zero_review_period() uses (evm: mut Evm) {
+    let s = deploy()
+    let now = evm.timestamp()
+    var a = valid(now)
+    a.review_period = seconds(1)
+    assert!(
+        try_create(s, a, ether(6)),
+        "positive control: one second is the minimum",
+    )
+    a.review_period = Duration::zero()
+    assert!(!try_create(s, a, ether(6)), "zero review period")
+    assert_untouched(s, 1, ether(6))
+    check_invariants(s, 1)
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn requires_exact_funding() uses (evm: mut Evm) {
+    let s = deploy()
+    let now = evm.timestamp()
+    let a = valid(now)
+    assert!(
+        try_create(s, a, ether(6)),
+        "positive control: exactly 6 ETH",
+    )
+    let owed = ether(6)
+
+    assert!(!try_create(s, a, ether(6) - wei(1)), "one wei too little")
+    assert!(!try_create(s, a, ether(6) + wei(1)), "one wei too much")
+    assert!(!try_create(s, a, Wei::zero()), "no value")
+    assert!(!try_create(s, a, ether(3)), "half")
+    assert!(!try_create(s, a, ether(12)), "double")
+
+    // n = 2 must be funded with the first two amounts only.
+    var b = a
+    b.n = 2
+    b.amounts = [ether(1), ether(2), Wei::zero()]
+    b.deliver_by = [at(now, 100), at(now, 200), Timestamp::from_seconds(0)]
+    b.specs = [0x51, 0x52, 0]
+    assert!(!try_create(s, b, ether(6)), "value for three funds two")
+    assert!(!try_create(s, b, ether(1)), "value for one funds two")
+    assert_untouched(s, 1, owed)
+    check_invariants(s, 1)
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn rejects_arithmetic_overflow_in_the_amount_sum() uses (evm: mut Evm) {
+    let s = deploy()
+    let now = evm.timestamp()
+    var a = valid(now)
+    a.n = 2
+    a.amounts = [wei(MAX), wei(1), Wei::zero()]
+    a.deliver_by = [at(now, 100), at(now, 200), Timestamp::from_seconds(0)]
+    a.specs = [0x51, 0x52, 0]
+    assert!(
+        !try_create(s, a, ether(1)),
+        "MAX + 1 overflows the sum (Panic 0x11)",
+    )
+    assert!(!try_create(s, a, Wei::zero()), "overflow with no value")
+    assert_untouched(s, 0, Wei::zero())
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn rejects_decide_by_overflow_and_accepts_the_exact_boundary()
+uses (evm: mut Evm)
+{
+    let s = deploy()
+    let now = evm.timestamp()
+    var a = valid(now)
+    a.n = 1
+    a.review_period = seconds(1000)
+    a.amounts = [ether(1), Wei::zero(), Wei::zero()]
+    a.specs = [0x51, 0, 0]
+
+    // deliver_by + review_period == MAX fits, one more second does not.
+    a.deliver_by = [
+        Timestamp::from_seconds(MAX - 1000),
+        Timestamp::from_seconds(0),
+        Timestamp::from_seconds(0),
+    ]
+    assert!(
+        try_create(s, a, ether(1)),
+        "decide_by == MAX is the accepted boundary",
+    )
+    assert!(
+        milestone(s, 1, 0).3.as_seconds() == MAX,
+        "decide_by stored exactly",
+    )
+    a.deliver_by = [
+        Timestamp::from_seconds(MAX - 999),
+        Timestamp::from_seconds(0),
+        Timestamp::from_seconds(0),
+    ]
+    assert!(!try_create(s, a, ether(1)), "decide_by would overflow")
+    a.deliver_by = [
+        Timestamp::from_seconds(MAX),
+        Timestamp::from_seconds(0),
+        Timestamp::from_seconds(0),
+    ]
+    assert!(!try_create(s, a, ether(1)), "deliver_by == MAX overflows")
+    assert_untouched(s, 1, ether(1))
+    check_invariants(s, 1)
+}
+
+// A `u8` field is range-checked at ABI decode (experiments/review/u1_u8_abi.fe). If it were
+// truncated instead, n = 257 would silently become n = 1. This mirrors the message with a
+// wide `n` and the same selector.
+msg WideCreate {
+    // keccak256("create(address,address,uint256,uint8,uint256[3],uint256[3],uint256[3])")[:4].
+    // `sol(..)` cannot be used here: the compiler checks it against the `u256` field type.
+    #[selector = 0x75ac1b9d]
+    Create {
+        provider: Address,
+        verifier: Address,
+        review_period: Duration,
+        n: u256,
+        amounts: [Wei; 3],
+        deliver_by: [Timestamp; 3],
+        specs: [u256; 3],
+    } -> u256,
+}
+
+fn try_wide(_ s: Address, _ a: Args, _ n: u256, _ value: Wei) -> bool
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: s,
+        gas: 1000000,
+        value,
+        message: WideCreate::Create {
+            provider: a.provider,
+            verifier: a.verifier,
+            review_period: a.review_period,
+            n,
+            amounts: a.amounts,
+            deliver_by: a.deliver_by,
+            specs: a.specs,
+        },
+    )
+        .success()
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn a_wide_n_is_rejected_at_decode_and_never_truncated() uses (evm: mut Evm) {
+    let s = deploy()
+    let now = evm.timestamp()
+    let a = valid(now)
+    assert!(
+        try_wide(s, a, 3, ether(6)),
+        "positive control: the wide mirror works with n = 3",
+    )
+    assert!(
+        !try_wide(s, a, 256, ether(6)),
+        "n = 256 must not wrap to 0",
+    )
+    assert!(
+        !try_wide(s, a, 259, ether(6)),
+        "n = 259 must not wrap to 3",
+    )
+    assert!(!try_wide(s, a, MAX, ether(6)), "n = 2^256 - 1")
+    assert_untouched(s, 1, ether(6))
+    check_invariants(s, 1)
+}
+
+// ------------------------------------------------------------------- unknown ids
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn unknown_agreement_ids_revert_or_read_as_none() uses (evm: mut Evm) {
+    let s = deploy()
+    // Nothing created yet: ids 0 and 1 are unknown.
+    assert!(!exists(s, 0), "id 0 is never valid")
+    assert!(!exists(s, 1))
+    assert!(!exists(s, MAX))
     assert!(
         !evm.try_call(
-            addr: vault,
-            gas: 200000,
+            addr: s,
+            gas: 100000,
             value: Wei::zero(),
-            message: VaultMsg::Withdraw { to: payee },
+            message: SettleMsg::GetAccounting { id: 0 },
         )
             .success(),
     )
-
-    let after: Wei = evm
-        .call(
-            addr: vault,
+    assert!(
+        !evm.try_call(
+            addr: s,
             gas: 100000,
             value: Wei::zero(),
-            message: VaultMsg::BalanceOf { owner: evm.address() },
+            message: SettleMsg::GetAccounting { id: 1 },
         )
-    assert!(after == ether(1))
-    assert!(evm.balance(payee) == Wei::zero())
-    assert!(evm.balance(vault) == ether(1))
+            .success(),
+    )
+    // A milestone of an unknown agreement reads as None, all zero (D-017).
+    let none = milestone(s, 1, 0)
+    assert!(
+        none.0 == 0
+            && none.1 == Wei::zero()
+            && none.2.as_seconds() == 0
+            && none.3.as_seconds() == 0,
+    )
+    assert!(none.4 == 0 && none.5 == 0)
+    assert!(milestone(s, 0, 0).0 == 0)
+    assert!(outstanding(s) == Wei::zero())
+
+    let now = evm.timestamp()
+    var a = valid(now)
+    a.n = 1
+    a.amounts = [ether(1), Wei::zero(), Wei::zero()]
+    a.deliver_by = [at(now, 100), Timestamp::from_seconds(0), Timestamp::from_seconds(0)]
+    a.specs = [0x51, 0, 0]
+    assert!(create(s, a, ether(1)) == 1, "positive control")
+
+    assert!(exists(s, 1))
+    assert!(!exists(s, 0))
+    assert!(!exists(s, 2))
+    assert!(!exists(s, MAX))
+    assert!(
+        !evm.try_call(
+            addr: s,
+            gas: 100000,
+            value: Wei::zero(),
+            message: SettleMsg::GetAccounting { id: 2 },
+        )
+            .success(),
+    )
+    assert!(
+        milestone(s, 2, 0).0 == 0,
+        "unknown agreement 2 reads as None",
+    )
+    // Unused slots of a known agreement read as None, including slots beyond 2.
+    assert!(milestone(s, 1, 1).0 == 0)
+    assert!(milestone(s, 1, 2).0 == 0)
+    assert!(milestone(s, 1, 3).0 == 0)
+    assert!(milestone(s, 1, 255).0 == 0)
+    assert!(milestone(s, 1, 0).0 == 1, "slot 0 is Funded")
+    check_invariants(s, 1)
 }
 
-#[test(balance = 10_000_000_000_000_000_000)]
-fn withdraw_after_unlock() uses (evm: mut Evm) {
-    // Without a lock period, a deposit can be withdrawn right away.
-    let vault = evm.create2<Vault>(value: Wei::zero(), args: (Duration::zero(),), salt: 0)
-    let _: Timestamp = evm
-        .call(
-            addr: vault,
-            gas: 200000,
-            value: ether(1),
-            message: VaultMsg::Deposit {},
-        )
+#[test(balance = 100_000_000_000_000_000_000)]
+fn only_create_is_payable() uses (evm: mut Evm) {
+    let s = deploy()
+    let now = evm.timestamp()
+    var a = valid(now)
+    a.n = 1
+    a.amounts = [ether(1), Wei::zero(), Wei::zero()]
+    a.deliver_by = [at(now, 100), Timestamp::from_seconds(0), Timestamp::from_seconds(0)]
+    a.specs = [0x51, 0, 0]
+    assert!(create(s, a, ether(1)) == 1, "positive control")
 
-    let payee = Address::new(0x1234)
-    let withdrawn: Wei = evm
-        .call(
-            addr: vault,
-            gas: 200000,
-            value: Wei::zero(),
-            message: VaultMsg::Withdraw { to: payee },
-        )
-    assert!(withdrawn == ether(1))
-    assert!(evm.balance(payee) == ether(1))
-    let balance: Wei = evm
-        .call(
-            addr: vault,
+    // The same views succeed with no value, and are rejected when value is attached.
+    assert!(
+        evm.try_call(
+            addr: s,
             gas: 100000,
             value: Wei::zero(),
-            message: VaultMsg::BalanceOf { owner: evm.address() },
+            message: SettleMsg::GetAgreement { id: 1 },
         )
-    assert!(balance == Wei::zero())
+            .success(),
+    )
+    assert!(
+        !evm.try_call(
+            addr: s,
+            gas: 100000,
+            value: wei(1),
+            message: SettleMsg::GetAgreement { id: 1 },
+        )
+            .success(),
+    )
+    assert!(
+        !evm.try_call(
+            addr: s,
+            gas: 100000,
+            value: wei(1),
+            message: SettleMsg::GetMilestone { id: 1, m: 0 },
+        )
+            .success(),
+    )
+    assert!(
+        !evm.try_call(
+            addr: s,
+            gas: 100000,
+            value: wei(1),
+            message: SettleMsg::GetAccounting { id: 1 },
+        )
+            .success(),
+    )
+    assert!(
+        !evm.try_call(
+            addr: s,
+            gas: 100000,
+            value: wei(1),
+            message: SettleMsg::TotalOutstanding {},
+        )
+            .success(),
+    )
+    assert!(evm.balance(s) == ether(1), "rejected value was not kept")
+    check_invariants(s, 1)
+}
+
+// ------------------------------------------------------------ pure rules (no EVM)
+
+fn rule_code(_ a: Args, _ client: Address, _ value: Wei, _ now: Timestamp) -> u8 {
+    rules::check_code(
+        rules::check_create(
+            client,
+            provider: a.provider,
+            verifier: a.verifier,
+            review_period: a.review_period,
+            n: a.n,
+            amounts: a.amounts,
+            deliver_by: a.deliver_by,
+            specs: a.specs,
+            value,
+            now,
+        ),
+    )
+}
+
+#[test]
+fn rules_accept_a_valid_agreement_and_report_each_failure() {
+    let now = Timestamp::from_seconds(1000)
+    let client = Address::new(0xc1)
+    let a = valid(now)
+    assert!(rule_code(a, client, ether(6), now) == 0, "valid")
+
+    var b = a
+    b.provider = Address::zero()
+    assert!(rule_code(b, client, ether(6), now) == 1, "ProviderZero")
+    b = a
+    b.verifier = Address::zero()
+    assert!(rule_code(b, client, ether(6), now) == 2, "VerifierZero")
+    b = a
+    b.provider = client
+    assert!(
+        rule_code(b, client, ether(6), now) == 3,
+        "ClientIsProvider",
+    )
+    b = a
+    b.verifier = client
+    assert!(
+        rule_code(b, client, ether(6), now) == 4,
+        "ClientIsVerifier",
+    )
+    b = a
+    b.verifier = a.provider
+    assert!(
+        rule_code(b, client, ether(6), now) == 5,
+        "ProviderIsVerifier",
+    )
+    b = a
+    b.n = 0
+    assert!(
+        rule_code(b, client, ether(6), now) == 6,
+        "BadMilestoneCount 0",
+    )
+    b.n = 4
+    assert!(
+        rule_code(b, client, ether(6), now) == 6,
+        "BadMilestoneCount 4",
+    )
+    b = a
+    b.n = 2
+    b.amounts = [ether(1), ether(2), wei(1)]
+    assert!(
+        rule_code(b, client, ether(3), now) == 7,
+        "UnusedSlotNotEmpty",
+    )
+    b = a
+    b.amounts = [Wei::zero(), ether(2), ether(3)]
+    assert!(rule_code(b, client, ether(5), now) == 8, "ZeroAmount")
+    b = a
+    b.specs = [0x51, 0, 0x53]
+    assert!(rule_code(b, client, ether(6), now) == 9, "ZeroSpec")
+    b = a
+    b.deliver_by = [at(now, 100), now, at(now, 300)]
+    assert!(
+        rule_code(b, client, ether(6), now) == 10,
+        "DeliveryNotInFuture",
+    )
+    b = a
+    b.review_period = Duration::zero()
+    assert!(
+        rule_code(b, client, ether(6), now) == 11,
+        "ZeroReviewPeriod",
+    )
+    assert!(
+        rule_code(a, client, ether(6) + wei(1), now) == 12,
+        "ValueMismatch",
+    )
+    assert!(
+        rule_code(a, client, ether(6) - wei(1), now) == 12,
+        "ValueMismatch",
+    )
+}
+
+#[test]
+fn rules_report_the_first_failure_in_a_fixed_order() {
+    let now = Timestamp::from_seconds(1000)
+    let client = Address::new(0xc1)
+    // Several faults at once: parties first, then count, slots, review period, funding.
+    var a = valid(now)
+    a.provider = Address::zero()
+    a.n = 0
+    a.review_period = Duration::zero()
+    assert!(
+        rule_code(a, client, Wei::zero(), now) == 1,
+        "provider before count",
+    )
+    a.provider = Address::new(0xa1)
+    assert!(
+        rule_code(a, client, Wei::zero(), now) == 6,
+        "count before review period",
+    )
+    a.n = 3
+    assert!(
+        rule_code(a, client, Wei::zero(), now) == 11,
+        "review period before funding",
+    )
+    a.review_period = seconds(10)
+    assert!(
+        rule_code(a, client, Wei::zero(), now) == 12,
+        "funding last",
+    )
+}
+
+#[test]
+fn rules_deadline_boundaries_at_d_minus_1_d_and_d_plus_1() {
+    let now = Timestamp::from_seconds(1000)
+    let client = Address::new(0xc1)
+    var a = valid(now)
+    a.n = 1
+    a.amounts = [ether(1), Wei::zero(), Wei::zero()]
+    a.specs = [0x51, 0, 0]
+    let zero_t = Timestamp::from_seconds(0)
+    a.deliver_by = [Timestamp::from_seconds(999), zero_t, zero_t]
+    assert!(rule_code(a, client, ether(1), now) == 10, "d = now - 1")
+    a.deliver_by = [Timestamp::from_seconds(1000), zero_t, zero_t]
+    assert!(rule_code(a, client, ether(1), now) == 10, "d = now")
+    a.deliver_by = [Timestamp::from_seconds(1001), zero_t, zero_t]
+    assert!(rule_code(a, client, ether(1), now) == 0, "d = now + 1")
+
+    // The same boundary expressed as the open predicate used by later phases.
+    let d = Timestamp::from_seconds(1000)
+    assert!(
+        rules::delivery_open(now: Timestamp::from_seconds(999), deliver_by: d),
+    )
+    assert!(
+        !rules::delivery_open(now: Timestamp::from_seconds(1000), deliver_by: d),
+    )
+    assert!(
+        !rules::delivery_open(now: Timestamp::from_seconds(1001), deliver_by: d),
+    )
+}
+
+#[test]
+fn rules_total_amount_sums_only_the_used_slots() {
+    assert!(
+        rules::total_amount(n: 0, amounts: [ether(1), ether(2), ether(3)]) == Wei::zero(),
+    )
+    assert!(
+        rules::total_amount(n: 1, amounts: [ether(1), ether(2), ether(3)]) == ether(1),
+    )
+    assert!(
+        rules::total_amount(n: 2, amounts: [ether(1), ether(2), ether(3)]) == ether(3),
+    )
+    assert!(
+        rules::total_amount(n: 3, amounts: [ether(1), ether(2), ether(3)]) == ether(6),
+    )
+    assert!(
+        rules::total_amount(n: 3, amounts: [wei(MAX - 2), wei(1), wei(1)]) == wei(MAX),
+    )
+}
+
+#[test(should_revert, panic = 0x11)]
+fn rules_total_amount_overflow_panics() {
+    let _ = rules::total_amount(n: 2, amounts: [wei(MAX), wei(1), Wei::zero()])
+}
+
+#[test]
+fn rules_decide_by_is_deliver_by_plus_the_review_period() {
+    let d = Timestamp::from_seconds(5000)
+    assert!(
+        rules::decide_by(deliver_by: d, review_period: seconds(60))
+            == Timestamp::from_seconds(5060),
+    )
+    assert!(
+        rules::decide_by(
+                deliver_by: Timestamp::from_seconds(MAX - 5),
+                review_period: seconds(5),
+            )
+                .as_seconds()
+            == MAX,
+    )
+}
+
+#[test(should_revert, panic = 0x11)]
+fn rules_decide_by_overflow_panics() {
+    let _ = rules::decide_by(
+        deliver_by: Timestamp::from_seconds(MAX - 4),
+        review_period: seconds(5),
+    )
+}
+
+#[test]
+fn the_none_state_is_first_and_codes_are_stable() {
+    // D-017: an unset storage key reads as the first variant, so `None` must be code 0.
+    assert!(rules::state_code(MilestoneState::None) == 0)
+    assert!(rules::state_code(MilestoneState::Funded) == 1)
+    assert!(rules::state_code(MilestoneState::Submitted) == 2)
+    assert!(rules::state_code(MilestoneState::Approved) == 3)
+    assert!(rules::state_code(MilestoneState::Paid) == 4)
+    assert!(rules::state_code(MilestoneState::Refunded) == 5)
+    assert!(rules::check_code(CreateCheck::Valid) == 0)
 }

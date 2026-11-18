@@ -13,20 +13,25 @@
     "settlane-dev": "dev"
   },
   "contracts": {
-    "Vault": {
-      "payout_arms": [
-        "VaultMsg::Withdraw"
-      ],
-      "deployable": true,
-      "note": "Starter example from the organizers, kept in the production ingot until Phase 2 replaces it. Remove this entry then."
-    },
     "Settlane": {
       "payout_arms": [
         "SettleMsg::Claim",
         "SettleMsg::Refund"
       ],
       "production": true,
-      "deployable": true
+      "deployable": true,
+      "abi": {
+        "functions": {
+          "create(address,address,uint256,uint8,uint256[3],uint256[3],uint256[3])": "payable",
+          "getAgreement(uint256)": "view",
+          "getMilestone(uint256,uint8)": "view",
+          "getAccounting(uint256)": "view",
+          "totalOutstanding()": "view"
+        },
+        "events": [
+          "AgreementCreated(uint256 indexed,address indexed,address indexed,address,uint256,uint8)"
+        ]
+      }
     },
     "SettlaneTestClock": {
       "payout_arms": [

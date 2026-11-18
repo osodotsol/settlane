@@ -1,6 +1,6 @@
 # Lifecycle specification
 
-**Status:** provisionally approved by the owner on 2026-11-18 (D-005a refund, D-006b revision-request rejection, D-009 Clock effect, D-011 distinct verifier). Final approval is at the Phase 2 review. This document is authoritative for settlement behavior, and any transition not listed here **must revert**.
+**Status:** Phase 2A implements T1 and the queries only (T2 to T6 are Phase 3). Provisionally approved by the owner on 2026-11-18 (D-005a refund, D-006b revision-request rejection, D-009 Clock effect, D-011 distinct verifier). Final approval is at the Phase 2 review. This document is authoritative for settlement behavior, and any transition not listed here **must revert**.
 
 ## Agreement
 - Creation and funding are one payable call (D-003), so an unfunded or partially funded agreement cannot exist on-chain.
@@ -15,6 +15,15 @@
 | Amounts | Every used milestone has `amount > 0`. The sum is checked. `msg.value == Σ amount_i` exactly. |
 | Time | Every used milestone has `deliver_by > now`. `review_period > 0`. `decide_by = deliver_by + review_period` is overflow-checked and stored. |
 | Spec | `spec_i != 0`, a hash commitment to the off-chain milestone specification. |
+
+### Implementation notes (Phase 2A, T1 only)
+- Rules are checked in the order of the table above, and the first failure is reported. All of them run before any storage write, so a rejected creation leaves no trace (tested).
+- Agreement ids start at 1 and `0` is never valid. `getAgreement` and `getAccounting` revert for an unknown id. `getMilestone` does not revert: an unknown id or an unused slot reads as state `None` (code 0) with every field zero (D-017).
+- `decide_by = deliver_by + review_period` uses checked arithmetic, so a window that would wrap past 2^256 - 1 reverts, and `decide_by == 2^256 - 1` is accepted exactly (boundary tested).
+- Deadlines are stored once and no function can change them (DE, I13). Only creation writes `deliver_by` and `decide_by`.
+- `n` is a `u8`. A wider value is rejected by the ABI decoder, so `n = 256` can never wrap to 0 (tested).
+- Deadlines need not be ordered across milestones, and are stored as given.
+- The funding check uses the amounts of the first `n` slots only, and unused slots must be completely empty.
 
 ## Milestone stored states
 `Funded`, `Submitted`, `Approved`, `Paid`, `Refunded`. Unused slots are `None`. There is no stored `Rejected` state (D-006b): a rejection returns the milestone to `Funded`.

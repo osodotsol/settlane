@@ -64,7 +64,10 @@ test result: ok. 4 passed; 0 failed
 """
 
 
-def selftest(policy):
+def selftest(_real_policy):
+    # A fixed policy, so the checker's logic is tested independently of the real floors in
+    # scripts/test-policy.json (which are a ratchet and change whenever tests are added).
+    policy = {"ingots": {"settlane": {"min_tests": 3}, "settlane_dev": {"min_tests": 1}}}
     cases = [
         ("good run", GOOD, 0, True),
         ("exit code nonzero", GOOD, 1, False),

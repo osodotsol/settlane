@@ -20,9 +20,9 @@ fe check && fe check ingots/settlane-dev  # root check sees the production ingot
 python3 scripts/check_tests.py          # fe test for BOTH ingots, fails if too few or no tests ran
 rm -rf out && fe build                  # production ingot only; `fe build` never clears out/ (gitignored)
 python3 scripts/settlane_lint.py ingots --abi-dir out   # policy lint; fails on any violation
-python3 scripts/settlane_lint.py --selftest             # lint self-test (41 fixtures, 23 unit checks)
+python3 scripts/settlane_lint.py --selftest             # lint self-test (41 fixtures, 32 unit checks)
 python3 scripts/check_tests.py --selftest               # test-gate self-test (10 cases)
-python3 scripts/ci_negative_controls.py # proves CI FAILS for each D-014 mistake and review finding (local, needs PyYAML)
+python3 scripts/ci_negative_controls.py # proves CI FAILS for each D-014 mistake, review finding and broken Phase 2A rule (local, ~6 min, needs PyYAML)
 bash experiments/review/run.sh          # review 2026-11-18 repros still reproduce and the lint rejects them
 bash experiments/phase1/run.sh          # Phase 1 compiler experiments (remove before submission)
 fe test ingots/settlane-dev             # focused run of one ingot
