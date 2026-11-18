@@ -7,7 +7,7 @@ description: Use when writing, modifying, or testing Fe (.fe) code in Settlane, 
 
 1. Before writing Fe, check `docs/FE_NOTES.md` for confirmed syntax and APIs. Copy patterns from the existing compiling code in `src/` rather than from memory.
 2. If a construct is not in FE_NOTES, write the smallest experiment, run `fe check` on it, and record the pass or fail result in FE_NOTES. Do not guess Solidity or Rust syntax.
-3. Keep settlement rules in effect-free functions (`rules.fe`) that take `now` as an argument. Handlers should declare only the effects and fields they need. Only `Claim` and `Refund` may use `mut call`.
+3. Keep settlement rules in effect-free functions (`rules.fe`) that take `now` as an argument. Handlers should declare only the effects and fields they need. Only `Claim` and `Refund` may list `call` at all. A read-only `uses (call)` still sends ETH (FE_NOTES E7).
 4. Every transition you implement must be a row in `docs/LIFECYCLE.md`. If you need a new one, stop and propose it in `docs/DECISIONS.md`.
 
 ## Tests

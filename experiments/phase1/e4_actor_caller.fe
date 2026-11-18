@@ -1,0 +1,99 @@
+// E4: a helper "Actor" contract forwards a typed message, so the target sees
+// the actor as ctx.caller(). Needed because the test harness has no caller
+// impersonation.
+// Run: fe test experiments/phase1/e4_actor_caller.fe
+
+msg TargetMsg {
+    #[selector = sol("poke()")]
+    Poke,
+    #[selector = sol("lastCaller()")]
+    LastCaller -> Address,
+}
+
+pub contract Target uses (ctx: Ctx) {
+    mut last: Address,
+
+    recv TargetMsg {
+        Poke uses (ctx, mut last) {
+            last = ctx.caller()
+        }
+
+        LastCaller -> Address uses (last) {
+            last
+        }
+    }
+}
+
+msg ActorMsg {
+    #[selector = sol("pokeAs(address)")]
+    PokeAs { target: Address },
+}
+
+pub contract Actor uses (call: mut Call) {
+    recv ActorMsg {
+        PokeAs { target } uses (mut call) {
+            call.call(
+                addr: target,
+                gas: 100000,
+                value: Wei::zero(),
+                message: TargetMsg::Poke {},
+            )
+        }
+    }
+}
+
+#[test]
+fn actor_is_seen_as_caller() uses (evm: mut Evm) {
+    let t = evm.create2<Target>(value: Wei::zero(), args: (), salt: 1)
+    let a = evm.create2<Actor>(value: Wei::zero(), args: (), salt: 2)
+    let b = evm.create2<Actor>(value: Wei::zero(), args: (), salt: 3)
+
+    // Direct call: the test contract itself is the caller.
+    evm.call(
+        addr: t,
+        gas: 100000,
+        value: Wei::zero(),
+        message: TargetMsg::Poke {},
+    )
+    let c0: Address = evm
+        .call(
+            addr: t,
+            gas: 100000,
+            value: Wei::zero(),
+            message: TargetMsg::LastCaller {},
+        )
+    assert!(c0 == evm.address())
+
+    // Through actors: each actor is a distinct caller.
+    evm.call(
+        addr: a,
+        gas: 200000,
+        value: Wei::zero(),
+        message: ActorMsg::PokeAs { target: t },
+    )
+    let c1: Address = evm
+        .call(
+            addr: t,
+            gas: 100000,
+            value: Wei::zero(),
+            message: TargetMsg::LastCaller {},
+        )
+    assert!(c1 == a)
+
+    evm.call(
+        addr: b,
+        gas: 200000,
+        value: Wei::zero(),
+        message: ActorMsg::PokeAs { target: t },
+    )
+    let c2: Address = evm
+        .call(
+            addr: t,
+            gas: 100000,
+            value: Wei::zero(),
+            message: TargetMsg::LastCaller {},
+        )
+    assert!(c2 == b)
+    assert!(a != b)
+    assert!(a != evm.address())
+}

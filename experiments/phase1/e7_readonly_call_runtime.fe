@@ -1,0 +1,45 @@
+// E7b runtime probe: e7_fail_readonly_call.fe unexpectedly COMPILED. Does a
+// handler that declares `uses (call)` (no `mut`) actually send ETH?
+// Run: fe test experiments/phase1/e7_readonly_call_runtime.fe
+
+use std::evm::ether
+
+msg ProbeMsg {
+    #[selector = sol("fund()")]
+    Fund,
+    #[selector = sol("sendReadonly(address)")]
+    SendReadonly { to: Address },
+}
+
+pub contract Probe uses (call: mut Call) {
+    recv ProbeMsg {
+        #[payable]
+        Fund {}
+
+        SendReadonly { to } uses (call) {
+            assert!(
+                call.send_value(addr: to, gas: 0, value: ether(1)).success(),
+            )
+        }
+    }
+}
+
+#[test(balance = 10_000_000_000_000_000_000)]
+fn readonly_call_effect_can_still_send() uses (evm: mut Evm) {
+    let p = evm.create2<Probe>(value: Wei::zero(), args: (), salt: 1)
+    evm.call(
+        addr: p,
+        gas: 100000,
+        value: ether(2),
+        message: ProbeMsg::Fund {},
+    )
+    let to = Address::new(0x4242)
+    evm.call(
+        addr: p,
+        gas: 200000,
+        value: Wei::zero(),
+        message: ProbeMsg::SendReadonly { to },
+    )
+    // If this passes, read-only `call` does NOT prevent value transfer.
+    assert!(evm.balance(to) == ether(1))
+}

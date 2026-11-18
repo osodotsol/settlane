@@ -1,0 +1,41 @@
+// E7-J runtime: a contract arm that lists `uses (call)` READ-ONLY hands it to
+// a free fn that requires `mut Call`, and ETH actually moves.
+use std::evm::ether
+
+fn do_send(_ to: Address) uses (call: mut Call) {
+    assert!(
+        call.send_value(addr: to, gas: 0, value: ether(1)).success(),
+    )
+}
+
+msg M {
+    #[selector = sol("fund()")]
+    Fund,
+    #[selector = sol("sendViaReadonlyArm(address)")]
+    Send { to: Address },
+}
+
+pub contract C uses (call: mut Call) {
+    recv M {
+        #[payable]
+        Fund {}
+
+        Send { to } uses (call) {
+            do_send(to)
+        }
+    }
+}
+
+#[test(balance = 10_000_000_000_000_000_000)]
+fn readonly_arm_still_moves_eth() uses (evm: mut Evm) {
+    let c = evm.create2<C>(value: Wei::zero(), args: (), salt: 1)
+    evm.call(addr: c, gas: 100000, value: ether(2), message: M::Fund {})
+    let to = Address::new(0x7777)
+    evm.call(
+        addr: c,
+        gas: 200000,
+        value: Wei::zero(),
+        message: M::Send { to },
+    )
+    assert!(evm.balance(to) == ether(1))
+}

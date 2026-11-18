@@ -1,0 +1,27 @@
+// E7-A: is the gap specific to the built-in `Call` TRAIT effect, or to any
+// trait effect? A user trait with a `mut self` method, bound read-only.
+// Expected if mutability is enforced for traits: rejected.
+
+trait Sender {
+    fn send(mut self, _ n: u256)
+}
+
+struct Bank { sent: u256 }
+
+impl Sender for Bank {
+    fn send(mut self, _ n: u256) {
+        self.sent += n
+    }
+}
+
+fn pay() uses (s: Sender) {
+    s.send(1)
+}
+
+pub fn run() -> u256 {
+    var b = Bank { sent: 0 }
+    with (Sender = mut b) {
+        pay()
+    }
+    b.sent
+}

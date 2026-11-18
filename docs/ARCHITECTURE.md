@@ -17,7 +17,7 @@ The module layout is confirmed in Phase 1. Fe maps `src/<name>.fe` to `ingot::<n
 | Concern | Mechanism | Enforced by |
 | --- | --- | --- |
 | Rules cannot read storage, time, or move ETH | `rules.fe` functions declare no `uses` and take `now` as an argument | **Compiler** (effects) |
-| Approve, Reject, and Submit cannot transfer ETH | Their handlers do not declare `mut call`. Only `Claim` and `Refund` do. | **Compiler** (effects), to be confirmed by a compile-fail experiment (E7) |
+| Approve, Reject, and Submit cannot transfer ETH | Their handlers do not list `call` in `uses` at all. Only `Claim` and `Refund` do. | **Compiler, for omission only** (E7: omitting `call` or `create` gives `error[8-0012]`; a read-only `uses (call)` in an arm is not narrowed and still sends). Backed by a lint (D-012) and test invariant I11. |
 | Query handlers cannot write storage | Handlers declare only read access to fields | **Compiler** |
 | Wei, Timestamp, and Duration cannot be mixed up | Typed std units | **Compiler** |
 | All states are handled | `match` on the `MilestoneState` enum | **Compiler** (exhaustiveness) |
@@ -43,11 +43,11 @@ Fallback if struct or enum map values fail (E2/E3): one `StorageMap` per field, 
 | Message | Payable | Returns |
 | --- | --- | --- |
 | `Create { provider, verifier, review_period, n, amount0..2, deliver_by0..2, spec0..2 }` | yes | agreement id |
-| `Submit { id, m, evidence }`, `Approve { id, m, evidence }`, `Reject { id, m }` | no | — |
+| `Submit { id, m, evidence }`, `Approve { id, m, evidence }`, `Reject { id, m }` (returns the milestone to `Funded`, D-006b) | no | — |
 | `Claim { id, m, to }`, `Refund { id, m, to }` | no | amount sent |
 | `GetAgreement { id }`, `GetMilestone { id, m }`, `GetAccounting { id }`, `TotalOutstanding` | no | views |
 
-Events: `AgreementCreated`, `MilestoneSubmitted`, `MilestoneApproved`, `MilestoneRejected`, `MilestoneClaimed`, `MilestoneRefunded`, with `id` indexed. Their use follows the starter's `#[event]` and `log.emit`.
+Events: `AgreementCreated`, `MilestoneSubmitted`, `MilestoneApproved`, `MilestoneRejected` (revision requested), `MilestoneClaimed`, `MilestoneRefunded`, with `id` indexed. Their use follows the starter's `#[event]` and `log.emit`.
 
 ## Payments
 - Pull only. Verification creates an entitlement, and `Claim` or `Refund` moves the ETH.
@@ -60,6 +60,9 @@ Events: `AgreementCreated`, `MilestoneSubmitted`, `MilestoneApproved`, `Mileston
 
 ## Privacy
 Only hash commitments (`spec`, `evidence`) go on-chain. Party addresses and amounts are public.
+
+## Time and the test shell (D-009, provisionally approved)
+Transition rules use `uses (clock: Clock)`. The production contract `Settlane` provides `Clock { now: ctx.timestamp() }` and nothing else. A test-only contract `SettlaneTestClock` provides a settable clock from storage so integration tests can cross deadlines. Verified 2026-11-18: **`fe build` emits every contract in the ingot, including those defined in test files**, so the shell is built alongside `Settlane`. It is never the deployable. Safeguards: the lint rules `C-CLOCK` and `C-ABI`, the shell's name, an explicit README statement, and a Phase 2 investigation into a separate test ingot that keeps the shell out of `out/`.
 
 ## Testing architecture
 - **Rule tests.** Plain `#[test]` functions over `rules.fe` with no EVM. They cover the full matrix of (state × action × role × {t < d, t = d, t > d}).

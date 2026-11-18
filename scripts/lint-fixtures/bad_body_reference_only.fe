@@ -1,0 +1,19 @@
+// EXPECT: fail E-BODY
+use std::evm::ether
+
+msg SettleMsg {
+    #[selector = sol("approve(uint256)")]
+    Approve { id: u256 },
+    #[selector = sol("claim(address)")]
+    Claim { to: Address },
+}
+
+pub contract Settlane uses (ctx: Ctx, call: mut Call) {
+    mut paid: Wei,
+
+    recv SettleMsg {
+        Approve { id } uses (ctx, mut paid) {
+            assert!(call.send_value(addr: Address::new(1), gas: 0, value: ether(1)).success())
+        }
+    }
+}

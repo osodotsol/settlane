@@ -1,0 +1,125 @@
+// E9: a user-defined `Clock` effect lets the same rule functions run against
+// real block time (production shell) or a settable time (test shell).
+// Companion compile-fail file: e9_fail_missing_clock.fe
+// Run: fe test experiments/phase1/e9_clock_effect.fe
+
+use std::evm::days
+
+pub struct Clock { now: Timestamp }
+
+// Rule functions see time only through the Clock effect.
+fn delivery_open(deliver_by: Timestamp) -> bool uses (clock: Clock) {
+    clock.now < deliver_by
+}
+
+fn expired_funded(deliver_by: Timestamp) -> bool uses (clock: Clock) {
+    !delivery_open(deliver_by: deliver_by)
+}
+
+msg RuleMsg {
+    #[selector = sol("isOpen(uint256)")]
+    IsOpen { deliver_by: Timestamp } -> bool,
+    #[selector = sol("setTime(uint256)")]
+    SetTime { now: Timestamp },
+}
+
+// Production shell: time comes from the block.
+pub contract ProdRules uses (ctx: Ctx) {
+    recv RuleMsg {
+        IsOpen { deliver_by } -> bool uses (ctx) {
+            var open = false
+            with (Clock = Clock { now: ctx.timestamp() }) {
+                open = delivery_open(deliver_by)
+            }
+            open
+        }
+
+        SetTime { now } {
+            assert!(false, "not supported")
+        }
+    }
+}
+
+// Test shell: time comes from storage and can be set.
+pub contract TestRules {
+    mut now: Timestamp,
+
+    recv RuleMsg {
+        IsOpen { deliver_by } -> bool uses (now) {
+            var open = false
+            with (Clock = Clock { now }) {
+                open = delivery_open(deliver_by)
+            }
+            open
+        }
+
+        SetTime { now: t } uses (mut now) {
+            now = t
+        }
+    }
+}
+
+// Pure rule tests: no EVM, any time value.
+#[test]
+fn boundaries_without_evm() {
+    let d = Timestamp::from_seconds(1000)
+    with (Clock = Clock { now: Timestamp::from_seconds(999) }) {
+        assert!(delivery_open(deliver_by: d))
+        assert!(!expired_funded(deliver_by: d))
+    }
+    with (Clock = Clock { now: Timestamp::from_seconds(1000) }) {
+        assert!(!delivery_open(deliver_by: d))
+        assert!(expired_funded(deliver_by: d))
+    }
+    with (Clock = Clock { now: Timestamp::from_seconds(1001) }) {
+        assert!(!delivery_open(deliver_by: d))
+        assert!(expired_funded(deliver_by: d))
+    }
+}
+
+// The same message type is served by both shells, so one helper drives either.
+fn is_open(_ addr: Address, _ d: Timestamp) -> bool uses (evm: mut Evm) {
+    evm.call(
+        addr: addr,
+        gas: 100000,
+        value: Wei::zero(),
+        message: RuleMsg::IsOpen { deliver_by: d },
+    )
+}
+
+#[test]
+fn shells_share_rules() uses (evm: mut Evm) {
+    let prod = evm.create2<ProdRules>(value: Wei::zero(), args: (), salt: 1)
+    let test = evm.create2<TestRules>(value: Wei::zero(), args: (), salt: 2)
+    let now = evm.timestamp()
+    let d = now + days(1)
+
+    // Production shell: block time is before d.
+    assert!(is_open(prod, d))
+    // Production shell cannot have its time moved.
+    assert!(
+        !evm.try_call(
+            addr: prod,
+            gas: 100000,
+            value: Wei::zero(),
+            message: RuleMsg::SetTime { now: d },
+        )
+            .success(),
+    )
+
+    // Test shell: cross the deadline.
+    evm.call(
+        addr: test,
+        gas: 100000,
+        value: Wei::zero(),
+        message: RuleMsg::SetTime { now },
+    )
+    assert!(is_open(test, d))
+    evm.call(
+        addr: test,
+        gas: 100000,
+        value: Wei::zero(),
+        message: RuleMsg::SetTime { now: d },
+    )
+    assert!(!is_open(test, d))
+}

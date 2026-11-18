@@ -1,0 +1,69 @@
+// E5: is ctx.timestamp() (and block number) constant across calls in one test?
+// Run: fe test experiments/phase1/e5_frozen_time.fe
+
+msg ClockMsg {
+    #[selector = sol("now()")]
+    Now -> Timestamp,
+    #[selector = sol("block()")]
+    Block -> u256,
+}
+
+pub contract Clock uses (ctx: Ctx) {
+    recv ClockMsg {
+        Now -> Timestamp uses (ctx) {
+            ctx.timestamp()
+        }
+
+        Block -> u256 uses (ctx) {
+            ctx.block_number()
+        }
+    }
+}
+
+#[test]
+fn time_and_block_do_not_advance_within_a_test() uses (evm: mut Evm) {
+    let t0 = evm.timestamp()
+    let c = evm.create2<Clock>(value: Wei::zero(), args: (), salt: 1)
+    let t1: Timestamp = evm
+        .call(
+            addr: c,
+            gas: 100000,
+            value: Wei::zero(),
+            message: ClockMsg::Now {},
+        )
+    let b1: u256 = evm.call(
+            addr: c,
+            gas: 100000,
+            value: Wei::zero(),
+            message: ClockMsg::Block {},
+        )
+    // Burn some calls in between.
+    var i: u256 = 0
+    while i < 20 {
+        let _: Timestamp = evm
+            .call(
+                addr: c,
+                gas: 100000,
+                value: Wei::zero(),
+                message: ClockMsg::Now {},
+            )
+        i += 1
+    }
+    let t2: Timestamp = evm
+        .call(
+            addr: c,
+            gas: 100000,
+            value: Wei::zero(),
+            message: ClockMsg::Now {},
+        )
+    let b2: u256 = evm.call(
+            addr: c,
+            gas: 100000,
+            value: Wei::zero(),
+            message: ClockMsg::Block {},
+        )
+    assert!(t0 == t1)
+    assert!(t1 == t2)
+    assert!(b1 == b2)
+    assert!(t1.as_seconds() != 0)
+}

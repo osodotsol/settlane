@@ -1,0 +1,25 @@
+// E7-B: read-only `call` and the typed `call.call` with value (mut self).
+use std::evm::ether
+
+msg M {
+    #[selector = sol("f(address)")]
+    F { to: Address },
+}
+
+msg Ping {
+    #[selector = sol("ping()")]
+    P,
+}
+
+pub contract C uses (call: mut Call) {
+    recv M {
+        F { to } uses (call) {
+            call.call(
+                addr: to,
+                gas: 100000,
+                value: ether(1),
+                message: Ping::P {},
+            )
+        }
+    }
+}

@@ -1,0 +1,21 @@
+// E7-J: contract declares `call: mut Call`. Arm lists `uses (call)` read-only
+// and passes it into a free fn that needs `mut Call`. Is the arm's binding
+// read-only when handed onward?
+use std::evm::ether
+
+fn do_send(_ to: Address) uses (call: mut Call) {
+    let _ = call.send_value(addr: to, gas: 0, value: ether(1))
+}
+
+msg M {
+    #[selector = sol("f(address)")]
+    F { to: Address },
+}
+
+pub contract C uses (call: mut Call) {
+    recv M {
+        F { to } uses (call) {
+            do_send(to)
+        }
+    }
+}

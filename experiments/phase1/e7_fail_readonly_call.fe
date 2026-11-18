@@ -1,0 +1,18 @@
+// E7b (compile-fail): a handler that declares `call` read-only (no `mut`)
+// tries to send ETH.
+// Expected: `fe check --standalone` rejects this file.
+
+use std::evm::ether
+
+msg ApproveMsg {
+    #[selector = sol("approve(address)")]
+    Approve { to: Address },
+}
+
+pub contract Verifier uses (ctx: Ctx, call: mut Call) {
+    recv ApproveMsg {
+        Approve { to } uses (call) {
+            let _ = call.send_value(addr: to, gas: 0, value: ether(1))
+        }
+    }
+}

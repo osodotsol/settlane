@@ -1,0 +1,105 @@
+// E2: StorageMap with a (u256, u8) tuple key and a struct value round-trips,
+// and different keys are isolated.
+// Run: fe test experiments/phase1/e2_struct_tuple_map.fe
+
+use std::evm::{StorageMap, wei}
+
+struct Milestone { amount: Wei, deliver_by: Timestamp, spec: u256, evidence: u256 }
+
+// Attempt 1 omitted this and failed: error[6-0003] `Milestone` doesn't
+// implement `Copy` (required by `StorageMap::get`, storage_map.fe:236).
+impl Copy for Milestone {}
+
+msg MapMsg {
+    #[selector = sol("put(uint256,uint8,uint256,uint256,uint256)")]
+    Put { id: u256, m: u8, amount: Wei, deliver_by: u256, spec: u256 },
+    #[selector = sol("setEvidence(uint256,uint8,uint256)")]
+    SetEvidence { id: u256, m: u8, evidence: u256 },
+    #[selector = sol("get(uint256,uint8)")]
+    Get { id: u256, m: u8 } -> (Wei, Timestamp, u256, u256),
+}
+
+pub contract MapBox {
+    mut ms: StorageMap<(u256, u8), Milestone>,
+
+    recv MapMsg {
+        Put { id, m, amount, deliver_by, spec } uses (mut ms) {
+            ms.set(
+                key: (id, m),
+                value: Milestone {
+                    amount,
+                    deliver_by: Timestamp::from_seconds(deliver_by),
+                    spec,
+                    evidence: 0,
+                },
+            )
+        }
+
+        SetEvidence { id, m, evidence } uses (mut ms) {
+            // Field write through a map projection.
+            ms[(id, m)].evidence = evidence
+        }
+
+        Get { id, m } -> (Wei, Timestamp, u256, u256)
+        uses (ms)
+        {
+            let x = ms.get(key: (id, m))
+            (x.amount, x.deliver_by, x.spec, x.evidence)
+        }
+    }
+}
+
+#[test]
+fn struct_values_round_trip_and_keys_are_isolated() uses (evm: mut Evm) {
+    let b = evm.create2<MapBox>(value: Wei::zero(), args: (), salt: 1)
+    evm.call(
+        addr: b,
+        gas: 300000,
+        value: Wei::zero(),
+        message: MapMsg::Put { id: 7, m: 1, amount: wei(123), deliver_by: 1000, spec: 0xabc },
+    )
+    evm.call(
+        addr: b,
+        gas: 300000,
+        value: Wei::zero(),
+        message: MapMsg::Put { id: 8, m: 1, amount: wei(456), deliver_by: 2000, spec: 0xdef },
+    )
+    evm.call(
+        addr: b,
+        gas: 300000,
+        value: Wei::zero(),
+        message: MapMsg::SetEvidence { id: 7, m: 1, evidence: 0x99 },
+    )
+
+    let a: (Wei, Timestamp, u256, u256) = evm
+        .call(
+            addr: b,
+            gas: 100000,
+            value: Wei::zero(),
+            message: MapMsg::Get { id: 7, m: 1 },
+        )
+    assert!(a.0 == wei(123))
+    assert!(a.1 == Timestamp::from_seconds(1000))
+    assert!(a.2 == 0xabc)
+    assert!(a.3 == 0x99)
+
+    let c: (Wei, Timestamp, u256, u256) = evm
+        .call(
+            addr: b,
+            gas: 100000,
+            value: Wei::zero(),
+            message: MapMsg::Get { id: 8, m: 1 },
+        )
+    assert!(c.0 == wei(456))
+    assert!(c.3 == 0)
+
+    // Unset key reads as zero.
+    let z: (Wei, Timestamp, u256, u256) = evm
+        .call(
+            addr: b,
+            gas: 100000,
+            value: Wei::zero(),
+            message: MapMsg::Get { id: 7, m: 2 },
+        )
+    assert!(z.0 == Wei::zero())
+}

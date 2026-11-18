@@ -1,0 +1,142 @@
+// E3: an enum is stored as a StorageMap value and matched exhaustively.
+// Companion compile-fail file: e3_fail_nonexhaustive.fe
+// Run: fe test experiments/phase1/e3_enum_storage.fe
+
+use std::evm::StorageMap
+
+enum State {
+    None,
+    Funded,
+    Submitted,
+    Approved,
+    Rejected,
+    Paid,
+    Refunded,
+}
+
+impl Copy for State {}
+
+fn code(_ s: State) -> u8 {
+    match s {
+        State::None => 0,
+        State::Funded => 1,
+        State::Submitted => 2,
+        State::Approved => 3,
+        State::Rejected => 4,
+        State::Paid => 5,
+        State::Refunded => 6,
+    }
+}
+
+msg StateMsg {
+    #[selector = sol("fund(uint256)")]
+    Fund { id: u256 },
+    #[selector = sol("advance(uint256)")]
+    Advance { id: u256 },
+    #[selector = sol("state(uint256)")]
+    StateOf { id: u256 } -> u8,
+}
+
+pub contract StateBox {
+    mut states: StorageMap<u256, State>,
+
+    recv StateMsg {
+        Fund { id } uses (mut states) {
+            assert!(code(states.get(key: id)) == 0, "exists")
+            states.set(key: id, value: State::Funded)
+        }
+
+        // Funded -> Submitted -> Approved -> Paid; everything else reverts.
+        Advance { id } uses (mut states) {
+            let next = match states.get(key: id) {
+                State::Funded => State::Submitted,
+                State::Submitted => State::Approved,
+                State::Approved => State::Paid,
+                _ => {
+                    assert!(false, "illegal transition")
+                    State::None
+                },
+            }
+            states.set(key: id, value: next)
+        }
+
+        StateOf { id } -> u8 uses (states) {
+            code(states.get(key: id))
+        }
+    }
+}
+
+#[test]
+fn enum_round_trips_through_storage() uses (evm: mut Evm) {
+    let b = evm.create2<StateBox>(value: Wei::zero(), args: (), salt: 1)
+    let s0: u8 = evm
+        .call(
+            addr: b,
+            gas: 100000,
+            value: Wei::zero(),
+            message: StateMsg::StateOf { id: 1 },
+        )
+    assert!(s0 == 0) // default is the first variant
+    evm.call(
+        addr: b,
+        gas: 100000,
+        value: Wei::zero(),
+        message: StateMsg::Fund { id: 1 },
+    )
+    evm.call(
+        addr: b,
+        gas: 100000,
+        value: Wei::zero(),
+        message: StateMsg::Advance { id: 1 },
+    )
+    evm.call(
+        addr: b,
+        gas: 100000,
+        value: Wei::zero(),
+        message: StateMsg::Advance { id: 1 },
+    )
+    evm.call(
+        addr: b,
+        gas: 100000,
+        value: Wei::zero(),
+        message: StateMsg::Advance { id: 1 },
+    )
+    let s: u8 = evm
+        .call(
+            addr: b,
+            gas: 100000,
+            value: Wei::zero(),
+            message: StateMsg::StateOf { id: 1 },
+        )
+    assert!(s == 5)
+
+    // Paid is terminal: a further Advance reverts and leaves state intact.
+    assert!(
+        !evm.try_call(
+            addr: b,
+            gas: 100000,
+            value: Wei::zero(),
+            message: StateMsg::Advance { id: 1 },
+        )
+            .success(),
+    )
+    let s2: u8 = evm
+        .call(
+            addr: b,
+            gas: 100000,
+            value: Wei::zero(),
+            message: StateMsg::StateOf { id: 1 },
+        )
+    assert!(s2 == 5)
+
+    // A second Fund on the same id reverts.
+    assert!(
+        !evm.try_call(
+            addr: b,
+            gas: 100000,
+            value: Wei::zero(),
+            message: StateMsg::Fund { id: 1 },
+        )
+            .success(),
+    )
+}

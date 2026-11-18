@@ -6,7 +6,8 @@ Settlane is a Fe 26.6 EVM contract for milestone-based settlement of digital-ser
 - Fe only for the core. No Rust application code, NEAR, mainnet, real funds, or paid infrastructure.
 - Verify Fe syntax against the compiler, never Solidity/Rust intuition. Confirmed facts and open questions live in `docs/FE_NOTES.md`; add to it when you learn something.
 - The settlement rules in `docs/LIFECYCLE.md` are the spec. Do not add transitions that are not listed there. Change the spec only through `docs/DECISIONS.md` with human approval.
-- Do not call code done until `fe check`, `fe fmt --check`, and `fe test` pass. Report failures as they are.
+- Do not call code done until `fe check`, `fe fmt --check`, `fe test`, and the policy lint pass. Report failures as they are.
+- Only the `Claim` and `Refund` arms may mention `call` or `create` (Fe does not narrow read-only listings, FE_NOTES E7). The production clock is `ctx.timestamp()` only. The test-clock shell is built by `fe build` but is never the deployable. If you add a payout arm, update `scripts/lint-policy.json` in the same change and say so.
 - Never claim the system is trustless or secure. The verifier is a trusted party.
 - Work on `settlane/dev`. Never push, force-push, rename the workspace, or create remotes without human approval. The `origin` remote is the organizers' starter repo, so do not push to it.
 - No secrets, keys, project IDs, or submission links in tracked files.
@@ -14,6 +15,9 @@ Settlane is a Fe 26.6 EVM contract for milestone-based settlement of digital-ser
 ## Commands
 ```sh
 fe check && fe fmt --check && fe test   # gate before every commit
+fe build && python3 scripts/settlane_lint.py src --abi-dir out   # policy lint, fails CI on violation
+python3 scripts/settlane_lint.py --selftest                       # lint self-test (18 fixtures)
+bash experiments/phase1/run.sh           # Phase 1 compiler experiments (remove before submission)
 fe test src/<file>.fe                    # focused run
 fe build                                 # artifacts go to out/ (gitignored)
 ```

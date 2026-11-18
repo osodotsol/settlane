@@ -1,49 +1,82 @@
-# Fe 26.6.0 notes — confirmed facts, open questions, experiments
+# Fe 26.6.0 notes — confirmed facts, limitations, workarounds
 
-Sources: the installed `fe 26.6.0 (5b3f96a)`, this repo's starter, the `argotorg/fe` tag `v26.6.0` (`ingots/std/src`, `crates/fe/tests/fixtures/fe_test`), and the 26.6 release notes. "Confirmed" means seen in compiling, tested code or std source. It does not mean tested by us unless marked **[ran]**.
+Sources: the installed `fe 26.6.0 (5b3f96a)`, this repo, std source at `argotorg/fe` tag `v26.6.0`, and the 26.6 release notes.
+**[ran]** means we executed it here. **[src]** means it was read in std or compiler source and is not yet exercised by us.
 
-## Confirmed
-- CLI: `build check dev doc tree fmt test bench new …`. `fe test [PATH]` has `--backend sonatina|native`.
-- **[ran]** `fe check`, `fe fmt --check`, and `fe test` (3/3) pass on the starter (2026-11-17).
-- Manifest: `[ingot] name = "starter", version = "0.1.0"`, with no target set, so the default is EVM.
-- Contracts: `pub contract C uses (ctx: Ctx, call: mut Call, log: mut Log) { fields; init(..) uses (mut f) {..}; recv Msg { Arm {..} -> T uses (..) {..} } }`. Handlers narrow the effects and fields they use.
-- Messages: `msg M { #[selector = sol("f(address)")] Arm { x: Address } -> T }`. Payable arms use `#[payable]`.
-- Events: `#[event] struct E { #[indexed] a: Address, .. }`, emitted with `log.emit(E { .. })`.
-- `Ctx`: `caller() value() timestamp() block_number() balance(addr) selfbalance() address()`.
-- `Call`: `send_value(addr:, gas:, value:) -> RawCallOutcome` with `.success()`. Also `call`, `try_call`, `static`, and `call_with_default`.
-- `StorageMap<K, V>`: `get(key:)`, `set(key:, value:)`, `remove`. Tuple keys up to 6-ary implement `StorageKey`.
-- `std::evm::Mutex<T>`: a transient-storage reentrancy lock (`lock`, `try_lock`, `unlock`).
-- Units: `Wei::zero()`, `ether(n)`, `days(n)`, `Duration::zero()`, `Timestamp + Duration`, `ts.as_seconds()`.
-- Storage packing changed in 26.6 (fields under 32 bytes share slots).
-- Panics: 0x11 overflow, 0x21 invalid enum tag, 0x32 index out of range.
-- User-defined effects exist: a struct type is used as an effect, `fn f() uses (s: Store)`, provided with `with (Store = value) { .. }`.
-- Plain `#[test] fn` without `Evm` works, which allows pure-logic tests.
-- **Test harness.** `#[test]` accepts only `balance = N`, `should_revert`, `panic = 0x..`, and `selector = 0x..`. The harness deploys and runs tests from `Address::ZERO` with `TxEnv`, and there are **no cheatcodes** for caller impersonation, time warping, or balance dealing. In tests, `evm.address()` is the test contract.
-- Tests can use `evm.try_call(..).success()` to assert a revert without failing the test.
+Reproduce every Phase 1 result with `bash experiments/phase1/run.sh` (exit 0 means every expectation holds, including the known gap).
 
-## Mismatches to fix
-- CI pins `FE_VERSION: v26.5.0`, but we develop on 26.6.0, which changed the storage layout and Copy semantics. **Proposal:** bump CI to `v26.6.0` in Phase 1 (D-007).
-
-## Open questions → Phase 1 experiments
-Each experiment is the smallest compiling file under `experiments/` (or `src/experiments/`, depending on how the compiler discovers modules). Each gets a pass or fail line here. Experiments are deleted or excluded before submission.
-
-| ID | Question | Pass criterion | Fallback |
+## Phase 1 results (2026-11-17)
+| ID | Question | Result | Evidence |
 | --- | --- | --- | --- |
-| E1 | Can a payable handler compare `ctx.value()` to a sum of `Wei` arguments? | Exact match accepted, ±1 wei reverts | — (blocking) |
-| E2 | Can a `StorageMap<(u256,u8), Struct>` round-trip? | get after set equals original | One map per field |
-| E3 | Can an enum be a storage value, and can `match` on it be exhaustive? | Round-trip works, and a missing arm is a compile error | `u8` state codes and constants |
-| E4 | **Actor pattern.** Can a deployed helper contract forward a typed message so `ctx.caller()` is the actor? | Settlane sees the actor's address | Raw calldata forwarding via `raw_call` |
-| E5 | **Frozen time.** Is `ctx.timestamp()` constant across calls within one test? | Confirmed either way | — (determines Q5) |
-| E6 | Does `send_value(gas: 0)` to a contract with no receive handler fail, and does `assert!` roll back state? | A rejecting recipient reverts the claim and leaves the state `Approved` | Recipient-chosen `to`, documented |
-| E7 | Does calling `call.send_value` in a handler that does not declare `mut call` fail to compile? | Compile error | Drop that claim from the Fe highlight |
-| E8 | Does `Wei` addition panic with 0x11 on overflow by default? | `should_revert, panic = 0x11` passes | Explicit checks |
-| E9 | Can the `Clock` effect be provided in a handler via `with (Clock = Clock { now: ctx.timestamp() })`? | Compiles and runs | Pass `now` explicitly |
+| E1 | Exact `msg.value` against a sum of `Wei` args | **PASS [ran].** Exact value accepted, ±1 wei rejected, reverted calls leave storage and balance unchanged. A non-`#[payable]` handler rejects value. | `e1_payable_exact.fe` (2 tests) |
+| E2 | `StorageMap<(u256,u8), Struct>` | **PASS [ran]** after one fix. The first attempt failed with `error[6-0003]` because `StorageMap::get` requires `V: Copy`, so the struct needs `impl Copy for Milestone {}`. A field write through a projection, `ms[(id, m)].evidence = x`, works. Unset keys read as zero. Distinct ids are isolated. | `e2_struct_tuple_map.fe` |
+| E3 | Enum as a storage value, exhaustive `match` | **PASS [ran].** It round-trips, an unset key reads as the first variant, and a missing arm is a compile error, `error[8-0034] non-exhaustive patterns`. The enum needs `impl Copy`. | `e3_enum_storage.fe`, `e3_fail_nonexhaustive.fe` |
+| E4 | Actor contract forwards a typed message, so `ctx.caller()` is the actor | **PASS [ran].** A direct call from the test has `caller == evm.address()`. Two actors are seen as two distinct callers. | `e4_actor_caller.fe` |
+| E5 | Is time frozen within a test? | **CONFIRMED frozen [ran].** `timestamp` and `block_number` are identical across deployment and 20 or more calls. The timestamp is nonzero. | `e5_frozen_time.fe` |
+| E6 | `send_value(gas: 0)` failure and rollback | **PASS [ran].** A code-less address receives. A contract with no empty-calldata handler rejects the send, `assert!(success)` reverts the call, and the counter written *before* the send is rolled back (I7 holds by construction). | `e6_send_value_failure.fe` |
+| E7 | Compiler blocks ETH transfer from a handler without `mut call` | **PARTIAL: omission is enforced, read-only narrowing is not.** See "E7 investigation" below. Summary: a `recv` arm that *omits* `call`/`create` cannot use them (`error[8-0012]`) [ran]. An arm that lists them **read-only is not narrowed, and really sends ETH** [ran]. | `e7_*.fe`, `e7/*.fe` |
 
-### Q4 — caller impersonation
-There are no cheatcodes, so integration tests use Actor contracts (E4), with the test contract acting as the client.
+### E7 investigation (2026-11-17, `fe 26.6.0 (5b3f96a)`)
+Where the rule *is* and *is not* enforced:
+| Context | Read-only binding + `mut self` method | Evidence |
+| --- | --- | --- |
+| Contract **field** (`uses (count)`) | rejected `8-0018` | `e7_fail_readonly_field.fe` |
+| Free fn, built-in `Call` | rejected `8-0066` | `e7/f` |
+| Free fn, built-in `Log` | rejected `8-0066` | `e7/g` |
+| User trait effect (also with a seal supertrait like std's) | rejected `8-0066` | `e7/a`, `e7/e`, `e7_fail_user_effect_mut.fe` |
+| Contract-level `call: Call`, arm asks `mut call` (upgrade) | rejected `8-0066` | `e7/h` |
+| **Contract arm `uses (call)` read-only → `send_value`** | **accepted, sends ETH** [ran] | `e7_fail_readonly_call.fe`, `e7_readonly_call_runtime.fe` |
+| **Contract arm `uses (call)` read-only → typed `call.call(value: 1 ETH)`** | **accepted** | `e7/b` |
+| **Contract arm `uses (create)` read-only → value `create2_raw`** | **accepted** | `e7/c_create_readonly.fe` |
+| **Contract arm `uses (log)` read-only → `log.emit`** | **accepted** | `e7/i` |
+| **Read-only arm hands `call` to a free fn that requires `mut Call`** | **accepted; 1 ETH moved** [ran] | `e7/j_contract_arm_calls_free_fn.fe`, `e7/j_runtime.fe` |
+| Arm that **omits** `call` / `create` | rejected `8-0012` | `e7_fail_undeclared_call.fe`, `e7/c_create_omitted.fe`, `e7/d` |
 
-### Q5 — testing expiry when time is frozen
-If E5 confirms time is frozen, integration tests cannot cross a deadline. Options, chosen after Phase 1 with human approval:
-- **A (recommended if E9 passes).** All transition logic lives in functions that `uses (clock: Clock)`. The ingot ships `Settlane`, where Clock comes from `ctx.timestamp()`, and a test-only `SettlaneTestClock` with an owner-settable time, both as thin `recv` shells over the same logic. The integration suite runs against both, and the expiry paths run against the test variant. Only `Settlane` is the deployable artifact.
-- **B.** Expiry is covered by exhaustive pure rule tests at `t = d-1, d, d+1`. Integration tests cover rejection-refunds only. This is the weakest option, because the demo cannot show an expired milestone end to end.
-- **C.** Relax creation to `deliver_by >= now`, so a milestone created with `deliver_by == now` is born expired. Rejected: it weakens production validation to suit the test harness.
+**Reading:** the contract-level declaration (`uses (call: mut Call)`) is the upper bound and cannot be exceeded by an arm. Inside that bound, the arm-level `mut` keyword on a built-in *contract* effect does not narrow anything: the arm effectively gets the contract's access. The same shape is enforced for fields, free functions, and user effects, so this is most likely a compiler bug in contract-arm effect narrowing, not intended design.
+
+**Other ETH-moving routes:** the raw opcodes (`call`, `create`, `create2`, `selfdestruct`) are `pub(ingot)` in std and not reachable from user code [src]. The `Address::call` helper sends no value and itself needs `mut Call`. So within user code, value moves only through the `Call` and `Create` effects.
+
+**Consequence for Settlane.** An arm that omits `call` and `create` cannot move ETH. That is the **only** compile-time guarantee. It does not catch an arm that lists `call` read-only. We therefore claim exactly this and back it with (a) a mechanical lint that `call` appears only in the `Claim` and `Refund` arms (D-012), and (b) a behavioral invariant, I11, that every non-payout transition leaves `selfbalance` unchanged.
+| E8 | Checked `Wei` arithmetic | **PASS [ran].** Overflow and underflow both give `Panic(0x11)`, and `MAX-1 + 1` succeeds. | `e8_wei_overflow.fe` (3 tests) |
+| E9 | Custom `Clock` effect provided via `with` | **PASS [ran].** `struct Clock { now: Timestamp }` is used as an effect. A production shell provides it with `with (Clock = Clock { now: ctx.timestamp() }) { .. }`, and a test shell provides it from a settable storage field. Both serve the same `msg`, so one test helper drives either. Pure tests run boundary times (999, 1000, 1001) with no EVM. Calling a Clock-using function without providing Clock is rejected with `error[8-0036] missing effect`. | `e9_clock_effect.fe`, `e9_fail_missing_clock.fe` |
+
+## Confirmed syntax and behavior
+- Contract: `pub contract C uses (ctx: Ctx, call: mut Call, log: mut Log) { mut f: T, init(..) uses (mut f) {..}, recv Msg { Arm {..} -> R uses (ctx, mut f) {..} } }`. **A handler sees only what its own `uses` lists** [ran, E7].
+- Msg: `msg M { #[selector = sol("f(uint256,uint8)")] Arm { a: Wei, m: u8 } -> T }`. `Wei` and `Timestamp` ABI-encode as `uint256`. `#[payable]` marks value-accepting arms [ran].
+- A contract with no payable init rejects value at `create2`, which surfaced as `Test reverted: 0x` (E6 first attempt) [ran].
+- Calls: named arguments are required (`f(deliver_by: d)`). A variable with the same name as the label may be passed bare. The wrong label gives `error[8-0024]` [ran].
+- `match` arms with blocks: `_ => { assert!(false, "..") ; Value }` [ran].
+- `with (Effect = value) { .. }` is a statement block. Return values by assigning to an outer `var` [ran, E9].
+- Units: `wei(n)`, `ether(n)`, `days(n)`, `Timestamp::from_seconds(n)`, `ts.as_seconds()`, `Timestamp + Duration`, `Timestamp < Timestamp` [ran].
+- `Address::new(0x1234)` creates a code-less address that accepts `send_value` [ran].
+- `std::evm::Mutex<T>` is a transient reentrancy lock [src].
+- Storage packing changed in 26.6 [src, release notes].
+
+## Test harness
+- `#[test]` options: `balance = N`, `should_revert`, `panic = 0x..`, `selector = 0x..` [src]. `should_revert, panic = 0x11` works [ran].
+- There are no cheatcodes. All calls run from the test contract (`evm.address()`) within **one frozen block** [ran, E4/E5].
+- `evm.try_call(..).success()` asserts a revert without ending the test, and the reverted call's effects are discarded [ran, E1/E6].
+- Plain `#[test] fn` with no `Evm` runs pure logic [ran, E9].
+- `fe test <file>.fe` and `fe check --standalone <file>.fe` work on files outside the ingot. The root `fe check`, `fe fmt --check`, and `fe test` do **not** pick up `experiments/` [ran].
+
+## Limitations and workarounds
+| Limitation | Workaround | Security impact |
+| --- | --- | --- |
+| No caller impersonation | Actor contracts (E4) | None. Tests stay real EVM calls. |
+| Time frozen per test | `Clock` effect with prod and test shells (E9) | The test shell must never ship as the product. The prod shell has no setter (E9 test). |
+| Arm-level read-only is not enforced for built-in contract effects `Call`, `Create`, `Log` (E7) | Handlers that must not move ETH **omit `call` and `create` entirely**. Add a lint for it (D-012) and the I11 balance-unchanged invariant. | The compile-time guarantee holds only for omission. We claim exactly that and nothing stronger. |
+| `gas: 0` gives a 2300 stipend, and Fe contracts without an empty-calldata handler reject ETH | The payee chooses `to`, for example an EOA [E6] | Contract wallets may need a different `to`. Documented limitation. |
+| Struct and enum map values need `impl Copy` | Add it | None |
+
+## Build finding (2026-11-18)
+**`fe build` emits every `pub contract` in the ingot, including ones defined in `src/tests.fe`.** Verified on a scratch copy: a `TestOnlyShell` contract in the test file produced `out/TestOnlyShell.{bin,runtime.bin,abi.json}`. There is no test-only `cfg` in 26.6 (`#[cfg]` supports `target`, `target_os`, `target_family`). So a test shell for the clock cannot be hidden from the build, and the safeguards are lint rules `C-CLOCK` and `C-ABI`, naming, and documentation (`docs/LIFECYCLE.md` PC). Whether a separate test ingot with a path dependency can keep it out of `out/` is a Phase 2 question.
+
+## Still unverified (Phase 2–4 checks)
+- Can a second ingot (tests only) depend on the main ingot via `fe.toml`, so test shells stay out of the main `out/`?
+- A reentrant recipient under the 2300 stipend. EIP-2200 forbids SSTORE when gas is at or below 2300, so reentrancy into a state change should fail. **Inferred, test in Phase 4.**
+- `#[event]` with `Wei` and `u8` fields, and the event ABI.
+- `u8` parameter range checking at the ABI boundary (for example m = 300).
+- Gas and code size of the full contract (`fe build --emit sizes`).
+
+## Draft upstream report (owner decides whether to file it)
+> **`recv` arms are not narrowed to a read-only built-in effect binding.** In a contract declaring `uses (call: mut Call)`, an arm written `uses (call)` (no `mut`) can call `call.send_value(..)` (declared `fn send_value(mut self, ..)`), and ETH is transferred. The same applies to `Create` and `Log`, and the arm can pass the binding to a free function requiring `mut Call`. The identical pattern is rejected with `error[8-0066]` for free functions, user-defined effects, and contract fields, and an arm cannot upgrade a read-only *contract-level* binding. Minimal repro: `experiments/phase1/e7_fail_readonly_call.fe` (compiles) and `experiments/phase1/e7/j_runtime.fe` (1 ETH moves). fe 26.6.0 (5b3f96a).

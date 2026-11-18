@@ -1,0 +1,13 @@
+// E9 (compile-fail): calling a function that `uses (clock: Clock)` without
+// providing a Clock effect must be rejected.
+// Expected: `fe check --standalone` rejects this file.
+
+pub struct Clock { now: Timestamp }
+
+fn delivery_open(deliver_by: Timestamp) -> bool uses (clock: Clock) {
+    clock.now < deliver_by
+}
+
+pub fn no_clock_provided() -> bool {
+    delivery_open(deliver_by: Timestamp::from_seconds(1))
+}

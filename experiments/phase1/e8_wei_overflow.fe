@@ -1,0 +1,70 @@
+// E8: Wei addition and subtraction are checked by default (Panic 0x11).
+// Run: fe test experiments/phase1/e8_wei_overflow.fe
+
+use std::evm::wei
+
+msg MathMsg {
+    #[selector = sol("add(uint256,uint256)")]
+    Add { a: Wei, b: Wei } -> Wei,
+    #[selector = sol("sub(uint256,uint256)")]
+    Sub { a: Wei, b: Wei } -> Wei,
+}
+
+pub contract Math {
+    recv MathMsg {
+        Add { a, b } -> Wei {
+            a + b
+        }
+
+        Sub { a, b } -> Wei {
+            a - b
+        }
+    }
+}
+
+const MAX: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+
+#[test]
+fn in_range_math_works() uses (evm: mut Evm) {
+    let m = evm.create2<Math>(value: Wei::zero(), args: (), salt: 1)
+    let s: Wei = evm
+        .call(
+            addr: m,
+            gas: 100000,
+            value: Wei::zero(),
+            message: MathMsg::Add { a: wei(MAX - 1), b: wei(1) },
+        )
+    assert!(s == wei(MAX))
+    let d: Wei = evm
+        .call(
+            addr: m,
+            gas: 100000,
+            value: Wei::zero(),
+            message: MathMsg::Sub { a: wei(5), b: wei(5) },
+        )
+    assert!(d == Wei::zero())
+}
+
+#[test(should_revert, panic = 0x11)]
+fn add_overflow_panics() uses (evm: mut Evm) {
+    let m = evm.create2<Math>(value: Wei::zero(), args: (), salt: 1)
+    let _: Wei = evm
+        .call(
+            addr: m,
+            gas: 100000,
+            value: Wei::zero(),
+            message: MathMsg::Add { a: wei(MAX), b: wei(1) },
+        )
+}
+
+#[test(should_revert, panic = 0x11)]
+fn sub_underflow_panics() uses (evm: mut Evm) {
+    let m = evm.create2<Math>(value: Wei::zero(), args: (), salt: 1)
+    let _: Wei = evm
+        .call(
+            addr: m,
+            gas: 100000,
+            value: Wei::zero(),
+            message: MathMsg::Sub { a: wei(1), b: wei(2) },
+        )
+}

@@ -1,0 +1,23 @@
+// EXPECT: pass
+use std::evm::ether
+
+msg SettleMsg {
+    #[selector = sol("approve(uint256)")]
+    Approve { id: u256 },
+    #[selector = sol("claim(address)")]
+    Claim { to: Address },
+}
+
+pub contract Settlane uses (ctx: Ctx, log: mut Log) {
+    mut paid: Wei,
+
+    recv SettleMsg {
+        Approve { id } uses (ctx, mut paid) {
+            paid = paid
+        }
+
+        Claim { to } uses (ctx, mut paid) {
+            paid = paid
+        }
+    }
+}

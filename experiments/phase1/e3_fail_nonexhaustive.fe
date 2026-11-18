@@ -1,0 +1,15 @@
+// E3 (compile-fail): a match missing an enum variant must be rejected.
+// Expected: `fe check --standalone` reports a non-exhaustive match error.
+
+enum State {
+    Funded,
+    Submitted,
+    Paid,
+}
+
+pub fn code(_ s: State) -> u8 {
+    match s {
+        State::Funded => 1,
+        State::Submitted => 2,
+    }
+}

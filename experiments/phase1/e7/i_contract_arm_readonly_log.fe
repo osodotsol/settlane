@@ -1,0 +1,17 @@
+// E7-I: contract declares `log: mut Log`; arm lists `uses (log)` read-only
+// and emits. Same gap for Log?
+#[event]
+struct Ping { n: u256 }
+
+msg M {
+    #[selector = sol("f()")]
+    F,
+}
+
+pub contract C uses (log: mut Log) {
+    recv M {
+        F uses (log) {
+            log.emit(Ping { n: 1 })
+        }
+    }
+}

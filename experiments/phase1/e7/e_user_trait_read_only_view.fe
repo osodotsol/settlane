@@ -1,0 +1,26 @@
+// E7-E: same trait effect shape as std `Call` (a `: Seal` supertrait) to see
+// whether the seal is what changes the mutability check.
+trait Seal {}
+trait Sender2: Seal {
+    fn send(mut self, _ n: u256)
+}
+
+struct Bank2 { sent: u256 }
+impl Seal for Bank2 {}
+impl Sender2 for Bank2 {
+    fn send(mut self, _ n: u256) {
+        self.sent += n
+    }
+}
+
+fn pay2() uses (s: Sender2) {
+    s.send(1)
+}
+
+pub fn run2() -> u256 {
+    var b = Bank2 { sent: 0 }
+    with (Sender2 = mut b) {
+        pay2()
+    }
+    b.sent
+}

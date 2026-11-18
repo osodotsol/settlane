@@ -1,0 +1,17 @@
+{
+  "value_types": ["Call", "Create", "Super", "Evm"],
+  "contracts": {
+    "Vault": {
+      "payout_arms": ["Withdraw"],
+      "note": "Starter example from the organizers. Remove this entry when the Vault is replaced (Phase 2)."
+    },
+    "Settlane": {
+      "payout_arms": ["Claim", "Refund"],
+      "production": true
+    },
+    "SettlaneTestClock": {
+      "payout_arms": ["Claim", "Refund"],
+      "note": "Test-only shell with a settable clock. Built by `fe build` but never the deployable (see docs/DECISIONS.md D-009)."
+    }
+  }
+}

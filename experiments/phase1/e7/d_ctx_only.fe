@@ -1,0 +1,16 @@
+// E7-D: handler lists only `ctx`. Does `ctx` expose anything that sends ETH?
+use std::evm::ether
+
+msg M {
+    #[selector = sol("f(address)")]
+    F { to: Address },
+}
+
+pub contract C uses (ctx: Ctx, call: mut Call) {
+    recv M {
+        F { to } uses (ctx) {
+            let _ = ctx.balance(to)
+            let _ = call.send_value(addr: to, gas: 0, value: ether(1))
+        }
+    }
+}

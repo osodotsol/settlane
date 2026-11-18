@@ -1,0 +1,11 @@
+// E7-F: is the gap contract-specific? A FREE function with a read-only
+// `Call` effect calling send_value.
+use std::evm::ether
+
+fn leak(_ to: Address) uses (call: Call) {
+    let _ = call.send_value(addr: to, gas: 0, value: ether(1))
+}
+
+pub fn run(_ to: Address) uses (call: mut Call) {
+    leak(to)
+}

@@ -1,0 +1,104 @@
+// E6: send_value(gas: 0) to a contract recipient without a matching handler
+// fails, `assert!(success)` reverts the whole call, and storage written
+// before the send is rolled back.
+// Run: fe test experiments/phase1/e6_send_value_failure.fe
+
+use std::evm::{ether, wei}
+
+msg PayMsg {
+    #[selector = sol("pay(address)")]
+    Pay { to: Address } -> Wei,
+    #[selector = sol("paidOut()")]
+    PaidOut -> Wei,
+    #[selector = sol("fund()")]
+    Fund,
+}
+
+pub contract Payer uses (ctx: Ctx, call: mut Call) {
+    mut paid_out: Wei,
+
+    recv PayMsg {
+        Pay { to } -> Wei uses (mut call, mut paid_out) {
+            let amount = ether(1)
+            // Effects before interaction.
+            paid_out = paid_out + amount
+            assert!(
+                call.send_value(addr: to, gas: 0, value: amount).success(),
+                "Transfer failed",
+            )
+            amount
+        }
+
+        PaidOut -> Wei uses (paid_out) {
+            paid_out
+        }
+
+        #[payable]
+        Fund {}
+    }
+}
+
+msg OtherMsg {
+    #[selector = sol("ping()")]
+    Ping -> u256,
+}
+
+// A contract with no payable or fallback handler.
+pub contract NoReceive {
+    recv OtherMsg {
+        Ping -> u256 {
+            1
+        }
+    }
+}
+
+#[test(balance = 10_000_000_000_000_000_000)]
+fn failed_send_rolls_back_state() uses (evm: mut Evm) {
+    // Attempt 1 deployed with `value: ether(3)` and the whole test reverted
+    // ("Test reverted: 0x"): a contract without a payable init rejects
+    // value at deployment. Fund through a payable handler instead.
+    let p = evm.create2<Payer>(value: Wei::zero(), args: (), salt: 1)
+    evm.call(
+        addr: p,
+        gas: 100000,
+        value: ether(3),
+        message: PayMsg::Fund {},
+    )
+    let sink = evm.create2<NoReceive>(value: Wei::zero(), args: (), salt: 2)
+
+    // Code-less address (EOA-like) receives fine.
+    let eoa = Address::new(0x1234)
+    let sent: Wei = evm
+        .call(
+            addr: p,
+            gas: 200000,
+            value: Wei::zero(),
+            message: PayMsg::Pay { to: eoa },
+        )
+    assert!(sent == ether(1))
+    assert!(evm.balance(eoa) == ether(1))
+
+    // Contract recipient without a receive path: the send fails, so the whole
+    // call reverts.
+    let out = evm
+        .try_call(
+            addr: p,
+            gas: 200000,
+            value: Wei::zero(),
+            message: PayMsg::Pay { to: sink },
+        )
+    assert!(!out.success())
+    assert!(evm.balance(sink) == Wei::zero())
+    assert!(evm.balance(p) == ether(2))
+
+    // The paid_out increment written before the failed send was rolled back.
+    let total: Wei = evm.call(
+            addr: p,
+            gas: 100000,
+            value: Wei::zero(),
+            message: PayMsg::PaidOut {},
+        )
+    assert!(total == ether(1))
+    assert!(total != ether(2))
+    assert!(wei(1) > Wei::zero())
+}

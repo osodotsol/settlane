@@ -1,0 +1,19 @@
+// E7c (compile-fail): a handler that declares a storage field read-only
+// writes to it.
+// Expected: `fe check --standalone` rejects this file.
+
+msg QueryMsg {
+    #[selector = sol("peek()")]
+    Peek -> u256,
+}
+
+pub contract Store {
+    mut count: u256,
+
+    recv QueryMsg {
+        Peek -> u256 uses (count) {
+            count = count + 1
+            count
+        }
+    }
+}

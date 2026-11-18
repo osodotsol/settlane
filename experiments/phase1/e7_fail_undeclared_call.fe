@@ -1,0 +1,22 @@
+// E7 (compile-fail): a handler that does not declare `mut call` tries to
+// send ETH, even though the contract itself has the Call effect.
+// Expected: `fe check --standalone` rejects this file.
+
+use std::evm::ether
+
+msg ApproveMsg {
+    #[selector = sol("approve(address)")]
+    Approve { to: Address },
+}
+
+pub contract Verifier uses (ctx: Ctx, call: mut Call) {
+    mut approved: bool,
+
+    recv ApproveMsg {
+        // Declares storage and ctx only, but no Call effect.
+        Approve { to } uses (ctx, mut approved) {
+            approved = true
+            let _ = call.send_value(addr: to, gas: 0, value: ether(1))
+        }
+    }
+}

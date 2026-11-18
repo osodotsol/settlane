@@ -1,0 +1,19 @@
+// E7-C1: handler omits `create` while using it -> expected rejection.
+use std::evm::ether
+
+msg M {
+    #[selector = sol("mk()")]
+    Mk,
+}
+
+pub contract C uses (ctx: Ctx, create: mut Create) {
+    recv M {
+        Mk uses (ctx) {
+            let _ = create.create2_raw(
+                    value: ether(1),
+                    init_code: core::MemSpan::empty(),
+                    salt: 0,
+                )
+        }
+    }
+}

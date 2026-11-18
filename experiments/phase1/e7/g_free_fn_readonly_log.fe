@@ -1,0 +1,12 @@
+// E7-G: same shape with the built-in `Log` effect, whose `emit` is `mut self`.
+// Is a read-only built-in `Log` binding allowed to emit?
+#[event]
+struct Ping { n: u256 }
+
+fn shout() uses (log: Log) {
+    log.emit(Ping { n: 1 })
+}
+
+pub fn run() uses (log: mut Log) {
+    shout()
+}

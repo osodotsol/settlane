@@ -8,8 +8,9 @@ permissions:
   contents: read
 
 env:
-  # Any Fe release from 26.5.0 on is allowed for the contest.
-  FE_VERSION: v26.5.0
+  # Any Fe release from 26.5.0 on is allowed for the contest. Settlane is
+  # developed and verified on 26.6.0 (storage layout differs from 26.5).
+  FE_VERSION: v26.6.0
 
 jobs:
   test:
@@ -24,3 +25,14 @@ jobs:
       - run: fe fmt --check
       - run: fe test
       - run: fe build
+      # Policy lint (docs/DECISIONS.md D-012, D-009). Fe 26.6.0 does not narrow a
+      # `recv` arm that lists `call` or `create` read-only, so only the payout
+      # arms may mention them. Also checks the production clock and its ABI.
+      - name: Settlane policy lint self-test
+        run: python3 scripts/settlane_lint.py --selftest
+      - name: Settlane policy lint (fails the build on a violation)
+        run: python3 scripts/settlane_lint.py src --abi-dir out
+      # Re-runs the Phase 1 compiler experiments against the pinned Fe version.
+      # Remove with experiments/ before the final submission.
+      - name: Phase 1 compiler experiments
+        run: bash experiments/phase1/run.sh

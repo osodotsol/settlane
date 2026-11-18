@@ -1,0 +1,16 @@
+// E7-H: the CONTRACT declares `call: Call` (read-only at contract level) and
+// an arm asks for `mut call`. Does the arm get to upgrade its own access?
+use std::evm::ether
+
+msg M {
+    #[selector = sol("f(address)")]
+    F { to: Address },
+}
+
+pub contract C uses (call: Call) {
+    recv M {
+        F { to } uses (mut call) {
+            let _ = call.send_value(addr: to, gas: 0, value: ether(1))
+        }
+    }
+}

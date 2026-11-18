@@ -1,0 +1,84 @@
+// E1: a payable handler requires msg.value to equal an exact sum of Wei arguments.
+// Run: fe test experiments/phase1/e1_payable_exact.fe
+
+use std::evm::{ether, wei}
+
+msg FundMsg {
+    #[selector = sol("fund(uint256,uint256,uint256)")]
+    Fund { a0: Wei, a1: Wei, a2: Wei } -> Wei,
+    #[selector = sol("held()")]
+    Held -> Wei,
+}
+
+pub contract Funder uses (ctx: Ctx) {
+    mut held: Wei,
+
+    recv FundMsg {
+        #[payable]
+        Fund { a0, a1, a2 } -> Wei uses (ctx, mut held) {
+            let total = a0 + a1 + a2
+            assert!(total > Wei::zero(), "zero total")
+            assert!(ctx.value() == total, "value mismatch")
+            held = held + total
+            held
+        }
+
+        Held -> Wei uses (held) {
+            held
+        }
+    }
+}
+
+#[test(balance = 10_000_000_000_000_000_000)]
+fn exact_value_accepted_and_off_by_one_rejected() uses (evm: mut Evm) {
+    let f = evm.create2<Funder>(value: Wei::zero(), args: (), salt: 1)
+
+    // Exact match succeeds.
+    let held: Wei = evm
+        .call(
+            addr: f,
+            gas: 200000,
+            value: ether(3),
+            message: FundMsg::Fund { a0: ether(1), a1: ether(1), a2: ether(1) },
+        )
+    assert!(held == ether(3))
+
+    // One wei too much and one wei too little both revert.
+    let over = evm
+        .try_call(
+            addr: f,
+            gas: 200000,
+            value: ether(3) + wei(1),
+            message: FundMsg::Fund { a0: ether(1), a1: ether(1), a2: ether(1) },
+        )
+    assert!(!over.success())
+    let under = evm
+        .try_call(
+            addr: f,
+            gas: 200000,
+            value: ether(3) - wei(1),
+            message: FundMsg::Fund { a0: ether(1), a1: ether(1), a2: ether(1) },
+        )
+    assert!(!under.success())
+
+    // Reverted calls left no trace in storage or balance.
+    let after: Wei = evm.call(
+            addr: f,
+            gas: 100000,
+            value: Wei::zero(),
+            message: FundMsg::Held {},
+        )
+    assert!(after == ether(3))
+    assert!(evm.balance(f) == ether(3))
+}
+
+#[test(should_revert, balance = 1_000_000_000_000_000_000)]
+fn non_payable_handler_rejects_value() uses (evm: mut Evm) {
+    let f = evm.create2<Funder>(value: Wei::zero(), args: (), salt: 2)
+    let _: Wei = evm.call(
+            addr: f,
+            gas: 100000,
+            value: wei(1),
+            message: FundMsg::Held {},
+        )
+}

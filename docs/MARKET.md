@@ -20,7 +20,7 @@ Researched 2026-11-17. Each claim is marked **[observed]** (seen in a source), *
 3. **What alternatives do.** Everything in the table above.
 4. **Our specific improvement.** A *specified and verified* settlement core: (a) an explicit total transition table in which every unlisted transition reverts, (b) deadline races resolved by a single pure Fe predicate with disjoint guards, and (c) a conservation identity that is queryable on-chain and checked after every step of the test suite.
 5. **Why it matters.** Escrow bugs come from ambiguous transitions and accounting drift. A small core with a spec, a matrix of tests, and a checkable identity is something an integrator can audit cheaply. [inferred]
-6. **Why Fe.** Effects make "verification cannot move money" and "rules cannot touch storage or time" compile-time properties, and typed `Wei`, `Timestamp`, and `Duration` plus exhaustive `match` remove whole classes of bugs. This is pending experiments E7 and E9.
+6. **Why Fe.** Confirmed by experiment: effect-free rule functions cannot touch storage or time (E9, compile error `8-0036` without a provided `Clock`), a handler that omits `call` and `create` cannot move ETH (E7), typed `Wei`, `Timestamp`, and `Duration` prevent unit mix-ups, `match` exhaustiveness is checked (E3), and `Wei` arithmetic is overflow-checked (E8). **Not** confirmed: arm-level read-only narrowing of `Call` (E7 gap), so "verification cannot move money" is claimed only for omission, plus a lint and a balance-neutral test.
 7. **What we can demonstrate.** A reproducible `fe test` run showing partial settlement of a three-milestone agreement, rejected invalid operations, the identity holding at each step, and the full transition-matrix tests.
 
 ## Measurable differentiator (proposed)
@@ -33,4 +33,4 @@ Researched 2026-11-17. Each claim is marked **[observed]** (seen in a source), *
 - A trusted-verifier model is acceptable to customers. **Not validated.**
 
 ## Originality risk (flagged)
-The mechanism is not novel. The originality score depends on rigor (the formal table, Fe-effect capability guarantees, and verifiable accounting), not on the idea. If experiments E7 and E9 fail, the Fe-specific story weakens substantially. This needs a human decision at the end of Phase 1.
+The mechanism is not novel. The originality score depends on rigor (the formal table, Fe-effect capability guarantees, and verifiable accounting), not on the idea. E9 passed and E7 passed only partially (omission-based), so the Fe story is real but narrower than first planned: it rests on the Clock-effect split, omission-based capability gating, typed units, and exhaustive state matching, not on read-only `Call` narrowing.

@@ -8,6 +8,8 @@ description: Use when adding or changing Settlane code that moves ETH, changes m
 Check each item against the diff, and cite the test that covers it (`docs/SECURITY.md` invariant IDs).
 
 - [ ] Caller check comes first, and it is the right role (I5).
+- [ ] `python3 scripts/settlane_lint.py src --abi-dir out` passes (run `fe build` first). Do not edit `scripts/lint-policy.json` to make it pass without a DECISIONS entry.
+- [ ] Only `Claim` and `Refund` list `call` in `uses`. A read-only `uses (call)` **still sends ETH** (FE_NOTES E7), so omission is the only guarantee.
 - [ ] The state guard matches the `docs/LIFECYCLE.md` row exactly. Unlisted states revert.
 - [ ] Time guards use `rules.fe` predicates: strict `<` for "open", `>=` for "expired" (I10).
 - [ ] State and counters are written **before** `send_value`. `assert!(outcome.success())` comes after it (I7).

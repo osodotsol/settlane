@@ -1,0 +1,20 @@
+// E7-C2: handler lists `create` read-only and does a value-carrying create2.
+// Same gap as `Call`: accepted.
+use std::evm::ether
+
+msg M {
+    #[selector = sol("mk()")]
+    Mk,
+}
+
+pub contract C uses (create: mut Create) {
+    recv M {
+        Mk uses (create) {
+            let _ = create.create2_raw(
+                    value: ether(1),
+                    init_code: core::MemSpan::empty(),
+                    salt: 0,
+                )
+        }
+    }
+}

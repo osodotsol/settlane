@@ -1,0 +1,19 @@
+// EXPECT: fail E-CALL
+use std::evm::ether
+
+msg SettleMsg {
+    #[selector = sol("approve(uint256)")]
+    Approve { id: u256 },
+    #[selector = sol("claim(address)")]
+    Claim { to: Address },
+}
+
+pub contract Settlane uses (ctx: Ctx, create: mut Create) {
+    mut paid: Wei,
+
+    recv SettleMsg {
+        Approve { id } uses (mut create) {
+            let _ = create.create2_raw(value: ether(1), init_code: core::MemSpan::empty(), salt: 0)
+        }
+    }
+}
