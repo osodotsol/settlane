@@ -140,6 +140,14 @@ Evidence in `experiments/review/` (all re-run by `bash experiments/review/run.sh
 | `std::evm::predict_create2<C>(deployer, args, salt)` gives a contract's future address, and an address with no code accepts ETH. So a test can send ETH to the address before deploying there, which is how a surplus is created in a test (the contract has no `receive`). `evm.send_value(addr:, gas:, value:)` sends it. | `surplus_eth_keeps_balance_at_or_above_outstanding_and_is_never_owed` |
 | A regex with `\s*` followed by a negative lookahead backtracks: `=\s*(?!sol\()` matched `= sol(` by giving a space back. Use `(?=\S)` before the lookahead. | lint self-test |
 
+### R-003 facts (2026-11-18, all [ran])
+| Fact | Evidence |
+| --- | --- |
+| **A Fe test can emit an event from the test contract itself**: `evm.emit(CallerProbe { who: evm.address() })`. The log's address is the test contract, so the test contract's own address becomes an independent fact that `fe test --show-logs` exposes. A test-only `#[event]` struct in `tests.fe` needs nothing else. | `ingots/*/src/tests.fe`, `scripts/check_events.py` |
+| The compiled ABI JSON has **empty output names**, so an ABI check can lock output types and their order but not what each position means. | built `Settlane.abi.json` |
+| A cast from `u256` to `usize` is not lossless (`error[8-0055]`). Index with a `u8` loop variable (`i as usize`). | compiler |
+| `ctx.selfbalance()` and `ctx.origin()` are `Ctx` methods, usable in a handler without any extra effect (used by the surplus and `tx.origin` mutation controls). | controls |
+
 ## Still unverified (Phase 2–4 checks)
 - Is the production contract deployed by the dev-ingot tests byte-identical to the shipped `Prod` artifact? It is the same source and compiler, but `fe` offers no way to compare. Mitigation: all tests that do not need time travel live in the production ingot.
 - A reentrant recipient under the 2300 stipend. EIP-2200 forbids SSTORE when gas is at or below 2300, so reentrancy into a state change should fail. **Inferred, test in Phase 4.**

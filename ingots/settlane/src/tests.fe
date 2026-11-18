@@ -46,7 +46,17 @@ fn total_of(_ a: Args) -> Wei {
     rules::total_amount(n: a.n, amounts: a.amounts)
 }
 
+// Emitted by the TEST CONTRACT with its own address. scripts/check_events.py compares the
+// `client` topic of every direct-call AgreementCreated with it (R-003): the test contract is
+// the caller of those calls, and this value does not come from Settlane.
+#[event]
+struct CallerProbe {
+    #[indexed]
+    who: Address,
+}
+
 fn deploy() -> Address uses (evm: mut Evm) {
+    evm.emit(CallerProbe { who: evm.address() })
     evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
 }
 
@@ -623,6 +633,91 @@ uses (evm: mut Evm)
     check_invariants(s, 1, Wei::zero())
 }
 
+// ------------------------------------------------- every slot against the same clock (R-003)
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn every_slot_of_a_two_milestone_agreement_is_judged_against_the_same_clock()
+uses (evm: mut Evm)
+{
+    let s = deploy()
+    let now = evm.timestamp()
+    let zero_t = Timestamp::from_seconds(0)
+    let before = Timestamp::from_seconds(now.as_seconds() - 1)
+    var a = valid(now)
+    a.n = 2
+    a.amounts = [ether(1), ether(2), Wei::zero()]
+    a.specs = [0x51, 0x52, 0]
+
+    // Both slots one second ahead: accepted. This is the positive control for every case below.
+    a.deliver_by = [at(now, 1), at(now, 1), zero_t]
+    assert!(try_create(s, a, ether(3)), "both slots now + 1")
+    // One bad slot sinks the agreement, in either position and on either side of `now`.
+    a.deliver_by = [now, at(now, 1), zero_t]
+    assert!(!try_create(s, a, ether(3)), "slot 0 == now")
+    a.deliver_by = [at(now, 1), now, zero_t]
+    assert!(!try_create(s, a, ether(3)), "slot 1 == now")
+    a.deliver_by = [before, at(now, 1), zero_t]
+    assert!(!try_create(s, a, ether(3)), "slot 0 == now - 1")
+    a.deliver_by = [at(now, 1), before, zero_t]
+    assert!(!try_create(s, a, ether(3)), "slot 1 == now - 1")
+    a.deliver_by = [zero_t, at(now, 1), zero_t]
+    assert!(!try_create(s, a, ether(3)), "slot 0 == 0")
+    a.deliver_by = [at(now, 1), zero_t, zero_t]
+    assert!(!try_create(s, a, ether(3)), "slot 1 == 0")
+    assert_untouched(s, 1, ether(3), Wei::zero())
+
+    // The boundary is the same for both slots: now + 1 is accepted in either order.
+    a.deliver_by = [at(now, 2), at(now, 1), zero_t]
+    assert!(
+        try_create(s, a, ether(3)),
+        "slot 1 == now + 1, slot 0 later",
+    )
+    a.deliver_by = [at(now, 1), at(now, 2), zero_t]
+    assert!(
+        try_create(s, a, ether(3)),
+        "slot 0 == now + 1, slot 1 later",
+    )
+    assert!(
+        milestone(s, 2, 1).2 == at(now, 1) && milestone(s, 3, 0).2 == at(now, 1),
+    )
+    check_invariants(s, 3, Wei::zero())
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn the_boundary_holds_in_every_slot_of_a_three_milestone_agreement()
+uses (evm: mut Evm)
+{
+    let s = deploy()
+    let now = evm.timestamp()
+    var k: u8 = 0
+    var created: u256 = 0
+    while k < 3 {
+        let i = k as usize
+        // `now` in slot k only (the others far ahead) is rejected, `now + 1` is accepted.
+        var late = [at(now, 100), at(now, 200), at(now, 300)]
+        late[i] = now
+        var a = valid(now)
+        a.deliver_by = late
+        assert!(!try_create(s, a, ether(6)), "slot k == now")
+        late[i] = Timestamp::from_seconds(now.as_seconds() - 1)
+        a.deliver_by = late
+        assert!(!try_create(s, a, ether(6)), "slot k == now - 1")
+        assert_untouched(s, created, ether(6) * created, Wei::zero())
+
+        late[i] = at(now, 1)
+        a.deliver_by = late
+        assert!(try_create(s, a, ether(6)), "slot k == now + 1")
+        created += 1
+        assert!(
+            milestone(s, created, k).2 == at(now, 1),
+            "the boundary deadline is stored as given",
+        )
+        k += 1
+    }
+    assert!(created == 3 && outstanding(s) == ether(18))
+    check_invariants(s, 3, Wei::zero())
+}
+
 // ------------------------------------------------------------------- unknown ids
 
 #[test(balance = 100_000_000_000_000_000_000)]
@@ -1124,6 +1219,50 @@ fn rules_deadline_boundaries_at_d_minus_1_d_and_d_plus_1() {
     assert!(
         !rules::delivery_open(now: Timestamp::from_seconds(1001), deliver_by: d),
     )
+}
+
+#[test]
+fn rules_judge_every_used_slot_against_the_same_now() {
+    let now = Timestamp::from_seconds(1000)
+    let client = Address::new(0xc1)
+    let zero_t = Timestamp::from_seconds(0)
+    // n = 2 and n = 3. One slot at a time sits on the boundary (now - 1, now, now + 1) while the
+    // others are far ahead. A slot is rejected at now - 1 and now, accepted at now + 1, whatever
+    // its index. (A clock that shifted with the slot index would pass slot 0 and fail slot 2.)
+    var n: u8 = 2
+    while n <= 3 {
+        var k: u8 = 0
+        while k < n {
+            let i = k as usize
+            var a = valid(now)
+            a.n = n
+            var amounts = [ether(1), ether(2), ether(3)]
+            var specs = [0x51, 0x52, 0x53]
+            var due = [at(now, 100), at(now, 200), at(now, 300)]
+            if n == 2 {
+                amounts[2] = Wei::zero()
+                specs[2] = 0
+                due[2] = zero_t
+            }
+            a.amounts = amounts
+            a.specs = specs
+            let value = if n == 2 { ether(3) } else { ether(6) }
+            due[i] = Timestamp::from_seconds(999)
+            a.deliver_by = due
+            assert!(
+                rule_code(a, client, value, now) == 11,
+                "slot k == now - 1",
+            )
+            due[i] = Timestamp::from_seconds(1000)
+            a.deliver_by = due
+            assert!(rule_code(a, client, value, now) == 11, "slot k == now")
+            due[i] = Timestamp::from_seconds(1001)
+            a.deliver_by = due
+            assert!(rule_code(a, client, value, now) == 0, "slot k == now + 1")
+            k += 1
+        }
+        n += 1
+    }
 }
 
 #[test]

@@ -10,6 +10,7 @@ part of CI because it repeats the whole pipeline once per mutation.
 Usage: python3 scripts/ci_negative_controls.py [mutation-name ...]
 """
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -133,6 +134,36 @@ def add_numeric_selector_arm(root):
     p.write_text(s)
 
 
+def replace_all_in(files, old, new):
+    """Mutation across several files: every occurrence of `old` becomes `new`. Each file must
+    contain it, so a refactor cannot silently turn a control into a no-op."""
+
+    def mutate(root):
+        for rel in files:
+            p = root / rel
+            s = p.read_text()
+            assert old in s, f"mutation target not found in {rel}: {old!r}"
+            p.write_text(s.replace(old, new))
+
+    return mutate
+
+
+def chain(*mutators):
+    def mutate(root):
+        for m in mutators:
+            m(root)
+
+    return mutate
+
+
+# A control whose failing test must be exactly this one (see main).
+ONLY_FAILING = {
+    # R-003 f5: nothing but the surplus test exposes these two, so they prove that test has teeth.
+    "mut-deposited-includes-surplus": "surplus_eth_keeps_balance_at_or_above_outstanding_and_is_never_owed",
+    "mut-outstanding-follows-the-balance": "surplus_eth_keeps_balance_at_or_above_outstanding_and_is_never_owed",
+}
+
+SETTLANE = "ingots/settlane/src/settlane.fe"
 RULES = "ingots/settlane/src/rules.fe"
 HANDLERS = "ingots/settlane/src/handlers.fe"
 TYPES = "ingots/settlane/src/types.fe"
@@ -189,6 +220,14 @@ MUTATIONS = {
     "mut-event-wrong-total": ("R-002 f4: AgreementCreated reports a zero total", "Events of both ingots", replace_in(HANDLERS, "AgreementCreated { id, client, provider, verifier, total, milestones: n }", "AgreementCreated { id, client, provider, verifier, total: Wei::zero(), milestones: n }")),
     "mut-event-client-is-provider": ("R-002 f4: AgreementCreated names the provider as the client", "Events of both ingots", replace_in(HANDLERS, "AgreementCreated { id, client, provider, verifier, total, milestones: n }", "AgreementCreated { id, client: provider, provider, verifier, total, milestones: n }")),
     "mut-event-not-emitted": ("R-002 f4: the creation event is never emitted", "Events of both ingots", replace_in(HANDLERS, "log.emit(\n        AgreementCreated { id, client, provider, verifier, total, milestones: n },\n    )", "let _ = id")),
+    # R-003 findings (2026-11-18).
+    "mut-later-slots-use-a-shifted-clock": ("R-003 f1: slot i is judged against now + i (slot 0 is right, later slots are not)", "Tests for both ingots", replace_in(RULES, "if !(deliver_by[i as usize] > now) {", "if !(deliver_by[i as usize] > Timestamp::from_seconds(now.as_seconds() + (i as u256))) {")),
+    "mut-handler-advances-the-clock": ("R-003 f1: the handler hands the rules a clock one second ahead", "Tests for both ingots", replace_in(HANDLERS, "now: clock.now,", "now: Timestamp::from_seconds(clock.now.as_seconds() + 1),")),
+    "mut-event-client-is-the-contract-for-a-2-eth-agreement": ("R-003 f2: a wrong client topic in one direct-call test (no incidental rule can see it)", "Events of both ingots", chain(replace_in(HANDLERS, "AgreementCreated { id, client, provider, verifier, total, milestones: n }", "AgreementCreated { id, client: if total == ether(2) { ctx.address() } else { client }, provider, verifier, total, milestones: n }"), replace_in(HANDLERS, "use std::evm::StorageMap", "use std::evm::{StorageMap, ether}"))),
+    "mut-event-client-is-tx-origin": ("R-003 f2: the event names tx.origin instead of msg.sender", "Events of both ingots", replace_in(HANDLERS, "AgreementCreated { id, client, provider, verifier, total, milestones: n }", "AgreementCreated { id, client: ctx.origin(), provider, verifier, total, milestones: n }")),
+    "mut-abi-output-type-widened": ("R-003 f3: getMilestone returns its state as uint256 instead of uint8 (Fe tests stay green; only the ABI output lock can see it)", "policy lint (fails", chain(replace_all_in([SETTLANE, "ingots/settlane/src/handlers.fe", "ingots/settlane-dev/src/lib.fe", "ingots/settlane/src/tests.fe", "ingots/settlane-dev/src/tests.fe"], "(u8, Wei, Timestamp, Timestamp, u256, u256)", "(u256, Wei, Timestamp, Timestamp, u256, u256)"), replace_in(HANDLERS, "(rules::state_code(x.state), ", "(rules::state_code(x.state) as u256, "))),
+    "mut-deposited-includes-surplus": ("R-003 f5: an agreement's deposit absorbs any ETH already in the contract", "Tests for both ingots", replace_in(HANDLERS, "deposited: total,", "deposited: ctx.selfbalance() - totals.outstanding + total,")),
+    "mut-outstanding-follows-the-balance": ("R-003 f5: total outstanding is set from the contract balance instead of the agreements", "Tests for both ingots", replace_in(HANDLERS, "totals.outstanding = totals.outstanding + total", "totals.outstanding = ctx.selfbalance()")),
     "unformatted-dev-code": ("badly formatted dev code", "Format check", lambda r: write(r, "ingots/settlane-dev/src/messy.fe", "pub fn   messy ( )   ->  u256 {   1 }\n")),
 }
 
@@ -245,8 +284,16 @@ def main(argv):
                 continue
             if name not in ("control-unmodified", "unformatted-dev-code"):
                 subprocess.run(["fe", "fmt", "ingots"], cwd=root, capture_output=True)  # so the mistake reaches its own step
-            failed_step, _ = run_ci(root)
+            failed_step, output = run_ci(root)
         good = (failed_step is None) if expect is None else (failed_step is not None and expect in failed_step)
+        only = ONLY_FAILING.get(name)
+        if only is not None and good:
+            # The step is right; the failing test must be exactly the named one, so the control
+            # proves that this test (and not some unrelated one) guards the behavior.
+            failing = set(re.findall(r"^FAIL\s+\[[^\]]*\]\s+\S+\s+(\S+)", output, re.M))
+            if failing != {only}:
+                good = False
+                failed_step = f"{failed_step}, but the failing tests are {sorted(failing)} instead of only [{only!r}]"
         ok &= good
         got = "PASSED" if failed_step is None else f"failed at '{failed_step}'"
         print(("ok    " if good else "WRONG ") + f"{name}: {what}: CI {got}" + ("" if expect is None else f" (expected '{expect}')"), flush=True)

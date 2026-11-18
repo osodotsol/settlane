@@ -24,7 +24,7 @@
 - `decide_by = deliver_by + review_period` is validated first (`DecideByOverflow`), so a window that would wrap past 2^256 - 1 reverts and `decide_by == 2^256 - 1` is accepted exactly (boundary tested). The stored value is then computed with checked arithmetic that cannot fail.
 - Deadlines are stored once and no function can change them (DE, I13). Only creation writes `deliver_by` and `decide_by`.
 - `n` is a `u8`. A wider value is rejected by the ABI decoder, so `n = 256` can never wrap to 0 (tested).
-- Deadlines need not be ordered across milestones, and are stored as given.
+- Deadlines need not be ordered across milestones, and are stored as given. Every used slot is judged against the same `now` (tested in every slot, with the boundary at d-1, d and d+1).
 - The funding check uses the amounts of the first `n` slots only, and unused slots must be completely empty.
 
 ## Milestone stored states

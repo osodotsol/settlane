@@ -74,5 +74,34 @@ else
   echo "UNEXPECTED  M1 build step failed"; fail=1
 fi
 
+# R-003 finding 3: the ABI lock covers the exact OUTPUT types and their order. Five edits to the
+# outputs of the clean production build in $ws/out (all accepted before the fix) must be rejected.
+if [ -f "$ws/out/Settlane.abi.json" ]; then
+  python3 -I - "$ws/out" "$lint" "$ws" <<'PYEOF'
+import json, shutil, subprocess, sys, tempfile, pathlib
+out, lint, ws = map(pathlib.Path, sys.argv[1:4])
+def fn(abi, name): return next(x for x in abi if x.get("name") == name)
+def swap(abi): o = fn(abi, "getAgreement")["outputs"]; o[3], o[4] = o[4], o[3]
+def widen(abi): fn(abi, "getMilestone")["outputs"][0]["type"] = "uint256"
+def drop(abi): fn(abi, "getAccounting")["outputs"].pop()
+def add(abi): fn(abi, "totalOutstanding")["outputs"].append({"name": "", "type": "uint256"})
+def retype(abi): fn(abi, "getAgreement")["outputs"][0]["type"] = "uint256"
+bad = 0
+for label, edit in (("swap two outputs", swap), ("uint8 output widened", widen), ("an output dropped", drop), ("an output added", add), ("address output retyped", retype)):
+    with tempfile.TemporaryDirectory() as d:
+        d = pathlib.Path(d) / "out"; shutil.copytree(out, d)
+        p = d / "Settlane.abi.json"; abi = json.load(open(p)); edit(abi); json.dump(abi, open(p, "w"))
+        r = subprocess.run(["python3", str(lint), "ingots", "--abi-dir", str(d)], cwd=ws, capture_output=True, text=True)
+    if r.returncode != 0 and "outputs of" in r.stdout:
+        print(f"REJECTED    R-003 f3: ABI output edit ({label}) by C-ABI")
+    else:
+        print(f"UNEXPECTED  R-003 f3: ABI output edit ({label}) was not rejected:\n{r.stdout}"); bad = 1
+sys.exit(bad)
+PYEOF
+  [ $? -eq 0 ] || fail=1
+else
+  echo "UNEXPECTED  R-003 f3: no clean production ABI to edit"; fail=1
+fi
+
 [ $fail -eq 0 ] && echo "review regressions: all hold" || echo "review regressions: FAILED"
 exit $fail

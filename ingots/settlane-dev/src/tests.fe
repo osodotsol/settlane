@@ -20,6 +20,19 @@ struct Args {
 
 impl Copy for Args {}
 
+// Emitted by the TEST CONTRACT with its own address (R-003). scripts/check_events.py compares
+// the `client` topic of every direct-call AgreementCreated with it, so the client of a direct
+// call is checked against a value that does not come from Settlane.
+#[event]
+struct CallerProbe {
+    #[indexed]
+    who: Address,
+}
+
+fn probe() uses (evm: mut Evm) {
+    evm.emit(CallerProbe { who: evm.address() })
+}
+
 fn t(_ secs: u256) -> Timestamp {
     Timestamp::from_seconds(secs)
 }
@@ -47,6 +60,32 @@ fn single(_ deliver_by: u256) -> Args {
         amounts: [ether(1), Wei::zero(), Wei::zero()],
         deliver_by: [t(deliver_by), t(0), t(0)],
         specs: [0x51, 0, 0],
+    }
+}
+
+// Two milestones (1 + 2 ETH) due at d0 and d1, slot 2 empty. Fund it with 3 ETH.
+fn two(_ d0: u256, _ d1: u256) -> Args {
+    Args {
+        provider: Address::new(0xa1),
+        verifier: Address::new(0xa2),
+        review_period: seconds(3600),
+        n: 2,
+        amounts: [ether(1), ether(2), Wei::zero()],
+        deliver_by: [t(d0), t(d1), t(0)],
+        specs: [0x51, 0x52, 0],
+    }
+}
+
+// Three milestones (1 + 2 + 3 ETH) due at d0, d1 and d2. Fund it with 6 ETH.
+fn three(_ d0: u256, _ d1: u256, _ d2: u256) -> Args {
+    Args {
+        provider: Address::new(0xa1),
+        verifier: Address::new(0xa2),
+        review_period: seconds(3600),
+        n: 3,
+        amounts: [ether(1), ether(2), ether(3)],
+        deliver_by: [t(d0), t(d1), t(d2)],
+        specs: [0x51, 0x52, 0x53],
     }
 }
 
@@ -186,6 +225,7 @@ uses (evm: mut Evm)
 
 #[test(balance = 200_000_000_000_000_000_000)]
 fn shell_and_production_agree_when_their_clocks_agree() uses (evm: mut Evm) {
+    probe()
     let prod = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
     let shell = evm.create2<SettlaneTestClock>(value: Wei::zero(), args: (), salt: 2)
     let now = evm.timestamp().as_seconds()
@@ -254,6 +294,7 @@ fn shell_and_production_agree_when_their_clocks_agree() uses (evm: mut Evm) {
 fn the_shell_crosses_creation_deadlines_that_a_frozen_block_cannot()
 uses (evm: mut Evm)
 {
+    probe()
     let shell = evm.create2<SettlaneTestClock>(value: Wei::zero(), args: (), salt: 1)
 
     // Clock at 1000: deliver_by 1000 is rejected, 1001 is accepted (strict `>`).
@@ -321,6 +362,7 @@ uses (evm: mut Evm)
 
 #[test(balance = 100_000_000_000_000_000_000)]
 fn production_has_no_way_to_set_its_clock() uses (evm: mut Evm) {
+    probe()
     let prod = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
     let shell = evm.create2<SettlaneTestClock>(value: Wei::zero(), args: (), salt: 2)
     let now = evm.timestamp().as_seconds()
@@ -505,6 +547,7 @@ uses (evm: mut Evm)
 
 #[test(balance = 100_000_000_000_000_000_000)]
 fn a_wide_n_is_rejected_at_decode_and_never_truncated() uses (evm: mut Evm) {
+    probe()
     let s = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
     let now = evm.timestamp().as_seconds()
     let a = valid(now)
@@ -526,4 +569,130 @@ fn a_wide_n_is_rejected_at_decode_and_never_truncated() uses (evm: mut Evm) {
         "only the control created anything",
     )
     assert!(!exists(s, 2), "no second agreement")
+}
+
+#[test(balance = 200_000_000_000_000_000_000)]
+fn the_shell_judges_every_slot_against_one_clock() uses (evm: mut Evm) {
+    probe()
+    let shell = evm.create2<SettlaneTestClock>(value: Wei::zero(), args: (), salt: 1)
+
+    // Clock at 1000. In every position the boundary is the same: 1000 and below are rejected,
+    // 1001 is accepted. A clock that moved with the slot index would break one of these.
+    set_time(shell, 1000)
+    assert!(
+        try_create(shell, two(1001, 1001), ether(3)),
+        "positive control: both slots 1001",
+    )
+    assert!(
+        !try_create(shell, two(1000, 1001), ether(3)),
+        "slot 0 == 1000",
+    )
+    assert!(
+        !try_create(shell, two(1001, 1000), ether(3)),
+        "slot 1 == 1000",
+    )
+    assert!(
+        !try_create(shell, two(999, 1001), ether(3)),
+        "slot 0 == 999",
+    )
+    assert!(
+        !try_create(shell, two(1001, 999), ether(3)),
+        "slot 1 == 999",
+    )
+    assert!(
+        try_create(shell, two(1002, 1001), ether(3)),
+        "slot 1 == 1001, slot 0 later",
+    )
+    assert!(
+        try_create(shell, three(1001, 1001, 1001), ether(6)),
+        "positive control: three slots 1001",
+    )
+    assert!(
+        !try_create(shell, three(1001, 1001, 1000), ether(6)),
+        "slot 2 == 1000",
+    )
+    assert!(
+        !try_create(shell, three(1000, 1001, 1001), ether(6)),
+        "slot 0 == 1000",
+    )
+    assert!(
+        !try_create(shell, three(1001, 1000, 1001), ether(6)),
+        "slot 1 == 1000",
+    )
+    assert!(
+        outstanding(shell) == ether(12),
+        "three accepted: 3 + 3 + 6 ETH, rejections left nothing",
+    )
+
+    // Move the clock: the same inputs are judged against the new time, in every slot.
+    set_time(shell, 2000)
+    assert!(
+        !try_create(shell, two(1001, 1001), ether(3)),
+        "both slots now in the past",
+    )
+    assert!(
+        !try_create(shell, two(2001, 1001), ether(3)),
+        "slot 1 is in the past",
+    )
+    assert!(
+        !try_create(shell, two(1001, 2001), ether(3)),
+        "slot 0 is in the past",
+    )
+    assert!(
+        try_create(shell, two(2001, 2001), ether(3)),
+        "both slots 2001",
+    )
+    assert!(
+        outstanding(shell) == ether(15) && evm.balance(shell) == ether(15),
+    )
+}
+
+#[test(balance = 400_000_000_000_000_000_000)]
+fn shell_and_production_agree_on_every_two_and_three_milestone_boundary()
+uses (evm: mut Evm)
+{
+    probe()
+    let prod = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let shell = evm.create2<SettlaneTestClock>(value: Wei::zero(), args: (), salt: 2)
+    let now = evm.timestamp().as_seconds()
+    set_time(shell, now)
+
+    // Offsets around `now` for each slot: -1, 0, +1. Every combination for two slots (9) must
+    // get the same verdict from both contracts, and only (+1, +1) is accepted.
+    var accepted: u256 = 0
+    var x: u256 = 0
+    while x < 3 {
+        var y: u256 = 0
+        while y < 3 {
+            let ok = agree(prod, shell, two(now + x - 1, now + y - 1), ether(3))
+            assert!(
+                ok == (x == 2 && y == 2),
+                "only both slots at now + 1 is accepted",
+            )
+            if ok { accepted += 1 }
+            y += 1
+        }
+        x += 1
+    }
+    assert!(accepted == 1)
+    // And one slot at a time on a three-milestone agreement (the others far ahead).
+    var k: u8 = 0
+    while k < 3 {
+        var off: u256 = 0
+        while off < 3 {
+            var due = [now + 100, now + 200, now + 300]
+            due[k as usize] = now + off - 1
+            let ok = agree(prod, shell, three(due[0], due[1], due[2]), ether(6))
+            assert!(ok == (off == 2), "slot k is accepted only at now + 1")
+            if ok { accepted += 1 }
+            off += 1
+        }
+        k += 1
+    }
+    assert!(accepted == 4, "1 + 3 accepted")
+    same_state(prod, shell, 1)
+    same_state(prod, shell, 4)
+    assert!(
+        outstanding(prod) == outstanding(shell) && evm.balance(prod) == evm.balance(shell),
+    )
 }

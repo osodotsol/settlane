@@ -393,14 +393,28 @@ def production_text_rules(text, aliases, reserved, path):
     return found
 
 
+def abi_type(item):
+    """ABI type string of an input or output; tuples are expanded to `(t1,t2)`."""
+    t = item["type"]
+    if t.startswith("tuple"):
+        return "(" + ",".join(abi_type(c) for c in item.get("components", [])) + ")" + t[len("tuple"):]
+    return t
+
+
 def abi_surface(abi):
-    """(functions {signature: mutability}, events {signature}, other entry types) of an ABI."""
+    """(functions {signature: mutability}, events {signature}, other entry types) of an ABI.
+
+    A function signature is `name(input types)->(output types)`, outputs in order: the lock
+    covers the exact output types and their order, not only the inputs (R-003 finding 3).
+    Output NAMES are empty in the compiled ABI, so two outputs of the same type in a swapped
+    order cannot be told apart here. The tests check the meaning of each position."""
     funcs, events, other = {}, set(), []
     for item in abi:
         kind = item.get("type")
         if kind == "function":
-            sig = f"{item['name']}({','.join(i['type'] for i in item.get('inputs', []))})"
-            funcs[sig] = item.get("stateMutability")
+            ins = ",".join(abi_type(i) for i in item.get("inputs", []))
+            outs = ",".join(abi_type(o) for o in item.get("outputs", []))
+            funcs[f"{item['name']}({ins})->({outs})"] = item.get("stateMutability")
         elif kind == "event":
             args = ",".join(i["type"] + (" indexed" if i.get("indexed") else "") for i in item.get("inputs", []))
             events.add(f"{item['name']}({args})")
@@ -417,9 +431,17 @@ def check_abi_lock(abi, cname, lock):
     funcs, events, other = abi_surface(abi)
     want_f, want_e = lock.get("functions", {}), set(lock.get("events", []))
     found = []
+    # Same name and inputs but different outputs is one finding, not an unknown plus a missing.
+    want_by_head = {s.split("->")[0]: s for s in want_f}
+    changed = set()
     for sig in sorted(set(funcs) - set(want_f)):
-        found.append(("C-ABI", f"{cname}: function {sig} ({funcs[sig]}) is not in the ABI allowlist"))
-    for sig in sorted(set(want_f) - set(funcs)):
+        head = sig.split("->")[0]
+        if head in want_by_head:
+            changed.add(want_by_head[head])
+            found.append(("C-ABI", f"{cname}: outputs of {head} are ->{sig.split('->')[1]} but the allowlist says ->{want_by_head[head].split('->')[1]}"))
+        else:
+            found.append(("C-ABI", f"{cname}: function {sig} ({funcs[sig]}) is not in the ABI allowlist"))
+    for sig in sorted(set(want_f) - set(funcs) - changed):
         found.append(("C-ABI", f"{cname}: allowlisted function {sig} is missing from the ABI"))
     for sig in sorted(set(funcs) & set(want_f)):
         if funcs[sig] != want_f[sig]:
@@ -637,8 +659,11 @@ def selftest(policy):
     prod_ok = classify("ingots/settlane/src/lib.fe", policy) == "production"
     dev_ok = classify("ingots/settlane-dev/src/tests.fe", policy) == "dev"
     base = {"type": "function", "inputs": [], "outputs": []}
-    lock = {"functions": {"a()": "view", "b(uint256)": "payable"}, "events": ["E(uint256 indexed,address)"]}
-    good_abi = [dict(base, name="a", stateMutability="view"), dict(base, name="b", inputs=[{"type": "uint256", "name": "x"}], stateMutability="payable"), {"type": "event", "name": "E", "inputs": [{"type": "uint256", "indexed": True, "name": "i"}, {"type": "address", "indexed": False, "name": "o"}]}]
+    lock = {"functions": {"a()->()": "view", "b(uint256)->(uint256)": "payable", "c()->(uint8,uint256)": "view"}, "events": ["E(uint256 indexed,address)"]}
+    out = lambda *types: [{"type": t, "name": ""} for t in types]
+    good_abi = [dict(base, name="a", stateMutability="view"), dict(base, name="b", inputs=[{"type": "uint256", "name": "x"}], outputs=out("uint256"), stateMutability="payable"), dict(base, name="c", outputs=out("uint8", "uint256"), stateMutability="view"), {"type": "event", "name": "E", "inputs": [{"type": "uint256", "indexed": True, "name": "i"}, {"type": "address", "indexed": False, "name": "o"}]}]
+    def with_outputs(name, *types):
+        return [dict(x, outputs=out(*types)) if x.get("name") == name else x for x in good_abi]
     def abi_with(extra=(), drop=(), edit=None):
         out = [x for x in good_abi if x.get("name") not in drop] + list(extra)
         return [dict(x, **(edit or {})) if x.get("name") == "a" else x for x in out]
@@ -652,6 +677,14 @@ def selftest(policy):
         ("abi lock: a receive entry rejected", any("receive" in m for _, m in check_abi_lock(abi_with([{"type": "receive", "stateMutability": "payable"}]), "S", lock))),
         ("abi lock: a fallback entry rejected", any("fallback" in m for _, m in check_abi_lock(abi_with([{"type": "fallback", "stateMutability": "payable"}]), "S", lock))),
         ("abi lock: wired through check_abi", any("ping()" in m for _, m in check_abi(abi_with([dict(base, name="ping", stateMutability="view")]), "S", lock))),
+        # R-003 finding 3: the exact output types and their order
+        ("abi lock: an output type changed (uint256 -> uint8) rejected, naming the function", any("outputs of b(uint256)" in m and "uint8" in m for _, m in check_abi_lock(with_outputs("b", "uint8"), "S", lock))),
+        ("abi lock: two outputs in swapped order rejected", any("outputs of c()" in m and "(uint256,uint8)".strip("()") in m for _, m in check_abi_lock(with_outputs("c", "uint256", "uint8"), "S", lock))),
+        ("abi lock: a dropped output rejected", any("outputs of c()" in m for _, m in check_abi_lock(with_outputs("c", "uint8"), "S", lock))),
+        ("abi lock: an added output rejected", any("outputs of a()" in m for _, m in check_abi_lock(with_outputs("a", "uint256"), "S", lock))),
+        ("abi lock: an address output changed to uint256 rejected", any("outputs of" in m for _, m in check_abi_lock(with_outputs("b", "address"), "S", lock))),
+        ("abi lock: a changed output is one finding, not an unknown plus a missing function", len(check_abi_lock(with_outputs("b", "uint8"), "S", lock)) == 1),
+        ("abi lock: tuple outputs are expanded, so a component change is seen", abi_type({"type": "tuple[]", "components": [{"type": "uint8"}, {"type": "address"}]}) == "(uint8,address)[]"),
     )
     wrapped = strip_noise((FIXTURES / "ok_wrapped_payout_arm.fe").read_text())
     numeric = strip_noise((FIXTURES / "bad_numeric_selector_arm.fe").read_text())

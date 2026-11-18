@@ -22,11 +22,11 @@
       "deployable": true,
       "abi": {
         "functions": {
-          "create(address,address,uint256,uint8,uint256[3],uint256[3],uint256[3])": "payable",
-          "getAgreement(uint256)": "view",
-          "getMilestone(uint256,uint8)": "view",
-          "getAccounting(uint256)": "view",
-          "totalOutstanding()": "view"
+          "create(address,address,uint256,uint8,uint256[3],uint256[3],uint256[3])->(uint256)": "payable",
+          "getAgreement(uint256)->(address,address,address,uint256,uint8)": "view",
+          "getMilestone(uint256,uint8)->(uint8,uint256,uint256,uint256,uint256,uint256)": "view",
+          "getAccounting(uint256)->(uint256,uint256,uint256,uint256)": "view",
+          "totalOutstanding()->(uint256)": "view"
         },
         "events": [
           "AgreementCreated(uint256 indexed,address indexed,address indexed,address,uint256,uint8)"
