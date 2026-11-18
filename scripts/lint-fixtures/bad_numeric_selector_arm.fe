@@ -1,0 +1,26 @@
+// EXPECT: fail C-ABI
+use std::evm::ether
+
+msg PubMsg {
+    #[selector = sol("visible()")]
+    Visible -> u256,
+}
+
+msg HiddenMsg {
+    #[selector = 0x1badc0de]
+    Hidden -> u256,
+}
+
+pub contract Settlane uses (ctx: Ctx) {
+    recv PubMsg {
+        Visible -> u256 {
+            1
+        }
+    }
+
+    recv HiddenMsg {
+        Hidden -> u256 {
+            42
+        }
+    }
+}

@@ -1,0 +1,12 @@
+// EXPECT: fail C-CLOCK
+pub struct Clock {
+    pub now: Timestamp,
+}
+
+pub fn helper(clock: Clock) -> Timestamp {
+    var out = Timestamp::from_seconds(0)
+    with (clock) {
+        out = Timestamp::from_seconds(1)
+    }
+    out
+}

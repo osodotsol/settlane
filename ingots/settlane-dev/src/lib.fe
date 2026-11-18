@@ -89,7 +89,16 @@ pub msg ActorMsg {
     } -> u256,
 }
 
-pub contract Actor uses (ctx: Ctx, call: mut Call) {
+// Emitted by the Actor with its own address before it forwards a call. scripts/check_events.py
+// compares it with the `client` topic of the AgreementCreated event that follows, so the
+// event's client is checked against an independent source of truth.
+#[event]
+pub struct Acted {
+    #[indexed]
+    pub actor: Address,
+}
+
+pub contract Actor uses (ctx: Ctx, call: mut Call, log: mut Log) {
     recv ActorMsg {
         #[payable]
         CreateVia {
@@ -102,8 +111,9 @@ pub contract Actor uses (ctx: Ctx, call: mut Call) {
             deliver_by,
             specs,
         } -> u256
-        uses (ctx, mut call)
+        uses (ctx, mut call, mut log)
         {
+            log.emit(Acted { actor: ctx.address() })
             call.call(
                 addr: target,
                 gas: 1000000,

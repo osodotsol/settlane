@@ -8,7 +8,7 @@ use ingot::rules
 use ingot::rules::CreateCheck
 use ingot::settlane::{SettleMsg, Settlane}
 use ingot::types::MilestoneState
-use std::evm::{ether, seconds, wei}
+use std::evm::{ether, predict_create2, seconds, wei}
 
 const MAX: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 
@@ -141,7 +141,13 @@ fn exists(_ s: Address, _ id: u256) -> bool uses (evm: mut Evm) {
 
 // The accounting invariants (docs/SECURITY.md I1, I2, I9) for agreements 1..=last_id, and
 // that agreement last_id + 1 does not exist. Called after every state-changing step.
-fn check_invariants(_ s: Address, _ last_id: u256) uses (evm: mut Evm) {
+// I9 is `balance >= outstanding` in general: ETH can reach the contract without an agreement
+// (it is pre-funded at its address before deployment, forced in by selfdestruct or a coinbase
+// reward), and nothing in the contract can claim it. `surplus` is the extra ETH the test knows
+// about (zero for most tests), and the balance must be exactly `outstanding + surplus`.
+fn check_invariants(_ s: Address, _ last_id: u256, _ surplus: Wei)
+uses (evm: mut Evm)
+{
     var id: u256 = 1
     var sum = Wei::zero()
     while id <= last_id {
@@ -169,15 +175,18 @@ fn check_invariants(_ s: Address, _ last_id: u256) uses (evm: mut Evm) {
         outstanding(s) == sum,
         "total outstanding equals the per-agreement sum",
     )
+    // I9, general form: the contract always holds at least what it owes.
+    assert!(evm.balance(s) >= sum, "I9 balance >= outstanding")
+    // And exactly what the test knows: nothing was lost and nothing was created.
     assert!(
-        evm.balance(s) == sum,
-        "I9 the contract holds exactly what it owes",
+        evm.balance(s) == sum + surplus,
+        "balance == outstanding + known surplus",
     )
     assert!(!exists(s, last_id + 1), "no agreement beyond last_id")
 }
 
 // After a rejected call: nothing changed (same total owed, same balance, no new agreement).
-fn assert_untouched(_ s: Address, _ last_id: u256, _ owed: Wei)
+fn assert_untouched(_ s: Address, _ last_id: u256, _ owed: Wei, _ surplus: Wei)
 uses (evm: mut Evm)
 {
     assert!(
@@ -185,7 +194,7 @@ uses (evm: mut Evm)
         "rejected call changed total outstanding",
     )
     assert!(
-        evm.balance(s) == owed,
+        evm.balance(s) == owed + surplus,
         "rejected call changed the contract balance",
     )
     assert!(
@@ -237,7 +246,7 @@ fn creates_a_single_milestone_agreement() uses (evm: mut Evm) {
     assert!(
         acc.0 == ether(2) && acc.1 == Wei::zero() && acc.2 == Wei::zero() && acc.3 == ether(2),
     )
-    check_invariants(s, 1)
+    check_invariants(s, 1, Wei::zero())
 }
 
 #[test(balance = 100_000_000_000_000_000_000)]
@@ -272,7 +281,7 @@ uses (evm: mut Evm)
     assert!(acc.0 == ether(6) && acc.3 == ether(6))
     assert!(outstanding(s) == ether(6))
     assert!(evm.balance(s) == ether(6))
-    check_invariants(s, 1)
+    check_invariants(s, 1, Wei::zero())
 }
 
 #[test(balance = 100_000_000_000_000_000_000)]
@@ -307,7 +316,7 @@ fn ids_increment_and_agreements_are_isolated() uses (evm: mut Evm) {
         accounting(s, 1).3 == ether(6) && accounting(s, 2).3 == ether(9),
     )
     assert!(outstanding(s) == ether(15))
-    check_invariants(s, 2)
+    check_invariants(s, 2, Wei::zero())
 }
 
 // ------------------------------------------------------------- invalid creation inputs
@@ -344,8 +353,8 @@ fn rejects_invalid_parties_and_leaves_no_trace() uses (evm: mut Evm) {
     a.verifier = evm.address()
     assert!(!try_create(s, a, ether(6)), "all three the same")
 
-    assert_untouched(s, 1, owed)
-    check_invariants(s, 1)
+    assert_untouched(s, 1, owed, Wei::zero())
+    check_invariants(s, 1, Wei::zero())
 }
 
 #[test(balance = 100_000_000_000_000_000_000)]
@@ -364,8 +373,8 @@ fn rejects_a_milestone_count_outside_one_to_three() uses (evm: mut Evm) {
     a.n = 255
     assert!(!try_create(s, a, ether(6)), "n = 255")
 
-    assert_untouched(s, 1, ether(6))
-    check_invariants(s, 1)
+    assert_untouched(s, 1, ether(6), Wei::zero())
+    check_invariants(s, 1, Wei::zero())
 }
 
 #[test(balance = 100_000_000_000_000_000_000)]
@@ -419,8 +428,8 @@ fn rejects_non_empty_unused_slots() uses (evm: mut Evm) {
         "n = 2 with an amount in slot 2",
     )
 
-    assert_untouched(s, 1, owed)
-    check_invariants(s, 1)
+    assert_untouched(s, 1, owed, Wei::zero())
+    check_invariants(s, 1, Wei::zero())
 }
 
 #[test(balance = 100_000_000_000_000_000_000)]
@@ -449,8 +458,8 @@ fn rejects_zero_amount_or_zero_spec_in_any_used_slot() uses (evm: mut Evm) {
         assert!(!try_create(s, b, ether(6)), "zero spec in a used slot")
         k += 1
     }
-    assert_untouched(s, 1, ether(6))
-    check_invariants(s, 1)
+    assert_untouched(s, 1, ether(6), Wei::zero())
+    check_invariants(s, 1, Wei::zero())
 }
 
 #[test(balance = 100_000_000_000_000_000_000)]
@@ -479,7 +488,7 @@ uses (evm: mut Evm)
         Timestamp::from_seconds(0),
     ]
     assert!(!try_create(s, a, ether(1)), "deliver_by == 0")
-    assert_untouched(s, 0, Wei::zero())
+    assert_untouched(s, 0, Wei::zero(), Wei::zero())
 
     a.deliver_by = [at(now, 1), Timestamp::from_seconds(0), Timestamp::from_seconds(0)]
     assert!(
@@ -507,7 +516,7 @@ uses (evm: mut Evm)
     assert!(
         milestone(s, 3, 0).2 == at(now, 300) && milestone(s, 3, 1).2 == at(now, 100),
     )
-    check_invariants(s, 3)
+    check_invariants(s, 3, Wei::zero())
 }
 
 #[test(balance = 100_000_000_000_000_000_000)]
@@ -522,8 +531,8 @@ fn rejects_a_zero_review_period() uses (evm: mut Evm) {
     )
     a.review_period = Duration::zero()
     assert!(!try_create(s, a, ether(6)), "zero review period")
-    assert_untouched(s, 1, ether(6))
-    check_invariants(s, 1)
+    assert_untouched(s, 1, ether(6), Wei::zero())
+    check_invariants(s, 1, Wei::zero())
 }
 
 #[test(balance = 100_000_000_000_000_000_000)]
@@ -551,8 +560,8 @@ fn requires_exact_funding() uses (evm: mut Evm) {
     b.specs = [0x51, 0x52, 0]
     assert!(!try_create(s, b, ether(6)), "value for three funds two")
     assert!(!try_create(s, b, ether(1)), "value for one funds two")
-    assert_untouched(s, 1, owed)
-    check_invariants(s, 1)
+    assert_untouched(s, 1, owed, Wei::zero())
+    check_invariants(s, 1, Wei::zero())
 }
 
 #[test(balance = 100_000_000_000_000_000_000)]
@@ -569,7 +578,7 @@ fn rejects_arithmetic_overflow_in_the_amount_sum() uses (evm: mut Evm) {
         "MAX + 1 overflows the sum (Panic 0x11)",
     )
     assert!(!try_create(s, a, Wei::zero()), "overflow with no value")
-    assert_untouched(s, 0, Wei::zero())
+    assert_untouched(s, 0, Wei::zero(), Wei::zero())
 }
 
 #[test(balance = 100_000_000_000_000_000_000)]
@@ -610,68 +619,8 @@ uses (evm: mut Evm)
         Timestamp::from_seconds(0),
     ]
     assert!(!try_create(s, a, ether(1)), "deliver_by == MAX overflows")
-    assert_untouched(s, 1, ether(1))
-    check_invariants(s, 1)
-}
-
-// A `u8` field is range-checked at ABI decode (experiments/review/u1_u8_abi.fe). If it were
-// truncated instead, n = 257 would silently become n = 1. This mirrors the message with a
-// wide `n` and the same selector.
-msg WideCreate {
-    // keccak256("create(address,address,uint256,uint8,uint256[3],uint256[3],uint256[3])")[:4].
-    // `sol(..)` cannot be used here: the compiler checks it against the `u256` field type.
-    #[selector = 0x75ac1b9d]
-    Create {
-        provider: Address,
-        verifier: Address,
-        review_period: Duration,
-        n: u256,
-        amounts: [Wei; 3],
-        deliver_by: [Timestamp; 3],
-        specs: [u256; 3],
-    } -> u256,
-}
-
-fn try_wide(_ s: Address, _ a: Args, _ n: u256, _ value: Wei) -> bool
-uses (evm: mut Evm)
-{
-    evm.try_call(
-        addr: s,
-        gas: 1000000,
-        value,
-        message: WideCreate::Create {
-            provider: a.provider,
-            verifier: a.verifier,
-            review_period: a.review_period,
-            n,
-            amounts: a.amounts,
-            deliver_by: a.deliver_by,
-            specs: a.specs,
-        },
-    )
-        .success()
-}
-
-#[test(balance = 100_000_000_000_000_000_000)]
-fn a_wide_n_is_rejected_at_decode_and_never_truncated() uses (evm: mut Evm) {
-    let s = deploy()
-    let now = evm.timestamp()
-    let a = valid(now)
-    assert!(
-        try_wide(s, a, 3, ether(6)),
-        "positive control: the wide mirror works with n = 3",
-    )
-    assert!(
-        !try_wide(s, a, 256, ether(6)),
-        "n = 256 must not wrap to 0",
-    )
-    assert!(
-        !try_wide(s, a, 259, ether(6)),
-        "n = 259 must not wrap to 3",
-    )
-    assert!(!try_wide(s, a, MAX, ether(6)), "n = 2^256 - 1")
-    assert_untouched(s, 1, ether(6))
-    check_invariants(s, 1)
+    assert_untouched(s, 1, ether(1), Wei::zero())
+    check_invariants(s, 1, Wei::zero())
 }
 
 // ------------------------------------------------------------------- unknown ids
@@ -744,7 +693,7 @@ fn unknown_agreement_ids_revert_or_read_as_none() uses (evm: mut Evm) {
     assert!(milestone(s, 1, 3).0 == 0)
     assert!(milestone(s, 1, 255).0 == 0)
     assert!(milestone(s, 1, 0).0 == 1, "slot 0 is Funded")
-    check_invariants(s, 1)
+    check_invariants(s, 1, Wei::zero())
 }
 
 #[test(balance = 100_000_000_000_000_000_000)]
@@ -805,7 +754,73 @@ fn only_create_is_payable() uses (evm: mut Evm) {
             .success(),
     )
     assert!(evm.balance(s) == ether(1), "rejected value was not kept")
-    check_invariants(s, 1)
+    check_invariants(s, 1, Wei::zero())
+}
+
+// ------------------------------------------------------------------ surplus ETH (I9)
+
+// I9 is `balance >= outstanding`, not equality (R-002). ETH can reach the contract without an
+// agreement: it has no `receive`, but its address is predictable, and an address with no code
+// accepts ETH, so a test can send ETH to it BEFORE deploying there. (On a live chain the same
+// happens through selfdestruct or a coinbase reward.) Nothing in the contract can claim it.
+#[test(balance = 100_000_000_000_000_000_000)]
+fn surplus_eth_keeps_balance_at_or_above_outstanding_and_is_never_owed()
+uses (evm: mut Evm)
+{
+    let predicted = predict_create2<Settlane>(deployer: evm.address(), args: (), salt: 1)
+    assert!(
+        evm.send_value(addr: predicted, gas: 100000, value: ether(2)).success(),
+        "positive control: a code-less address accepts ETH",
+    )
+    let s = deploy()
+    assert!(
+        s == predicted,
+        "positive control: the prediction was right, so the ETH is in this contract",
+    )
+    assert!(
+        evm.balance(s) == ether(2),
+        "the surplus arrived before any agreement",
+    )
+    assert!(
+        outstanding(s) == Wei::zero(),
+        "the surplus is not owed to anyone",
+    )
+    check_invariants(s, 0, ether(2))
+
+    let now = evm.timestamp()
+    let a = valid(now)
+    assert!(create(s, a, ether(6)) == 1)
+    assert!(
+        evm.balance(s) == ether(8),
+        "8 ETH held: 6 owed, 2 surplus",
+    )
+    assert!(
+        outstanding(s) == ether(6),
+        "outstanding counts only the agreement",
+    )
+    assert!(
+        accounting(s, 1).0 == ether(6) && accounting(s, 1).3 == ether(6),
+        "the surplus is in no agreement",
+    )
+    check_invariants(s, 1, ether(2))
+
+    // Rejected calls leave both the owed amount and the surplus exactly as they were.
+    assert!(!try_create(s, a, ether(6) + wei(1)), "one wei too much")
+    assert!(
+        !try_create(s, a, ether(8)),
+        "funding with the surplus amount is still a mismatch",
+    )
+    assert_untouched(s, 1, ether(6), ether(2))
+
+    // A second agreement: the surplus stays out of both agreements and the total.
+    var b = a
+    b.n = 1
+    b.amounts = [ether(1), Wei::zero(), Wei::zero()]
+    b.deliver_by = [at(now, 100), Timestamp::from_seconds(0), Timestamp::from_seconds(0)]
+    b.specs = [0x51, 0, 0]
+    assert!(create(s, b, ether(1)) == 2)
+    assert!(outstanding(s) == ether(7) && evm.balance(s) == ether(9))
+    check_invariants(s, 2, ether(2))
 }
 
 // ------------------------------------------------------------ pure rules (no EVM)
@@ -834,6 +849,7 @@ fn rules_accept_a_valid_agreement_and_report_each_failure() {
     let a = valid(now)
     assert!(rule_code(a, client, ether(6), now) == 0, "valid")
 
+    // Parties
     var b = a
     b.provider = Address::zero()
     assert!(rule_code(b, client, ether(6), now) == 1, "ProviderZero")
@@ -858,6 +874,7 @@ fn rules_accept_a_valid_agreement_and_report_each_failure() {
         rule_code(b, client, ether(6), now) == 5,
         "ProviderIsVerifier",
     )
+    // Count
     b = a
     b.n = 0
     assert!(
@@ -876,31 +893,172 @@ fn rules_accept_a_valid_agreement_and_report_each_failure() {
         rule_code(b, client, ether(3), now) == 7,
         "UnusedSlotNotEmpty",
     )
+    // Amounts
     b = a
     b.amounts = [Wei::zero(), ether(2), ether(3)]
     assert!(rule_code(b, client, ether(5), now) == 8, "ZeroAmount")
     b = a
-    b.specs = [0x51, 0, 0x53]
-    assert!(rule_code(b, client, ether(6), now) == 9, "ZeroSpec")
+    b.n = 2
+    b.amounts = [wei(MAX), wei(1), Wei::zero()]
+    b.deliver_by = [at(now, 100), at(now, 200), Timestamp::from_seconds(0)]
+    b.specs = [0x51, 0x52, 0]
+    assert!(
+        rule_code(b, client, Wei::zero(), now) == 9,
+        "AmountSumOverflow",
+    )
+    assert!(
+        rule_code(a, client, ether(6) + wei(1), now) == 10,
+        "ValueMismatch +1",
+    )
+    assert!(
+        rule_code(a, client, ether(6) - wei(1), now) == 10,
+        "ValueMismatch -1",
+    )
+    // Time
     b = a
     b.deliver_by = [at(now, 100), now, at(now, 300)]
     assert!(
-        rule_code(b, client, ether(6), now) == 10,
+        rule_code(b, client, ether(6), now) == 11,
         "DeliveryNotInFuture",
     )
     b = a
     b.review_period = Duration::zero()
     assert!(
-        rule_code(b, client, ether(6), now) == 11,
+        rule_code(b, client, ether(6), now) == 12,
         "ZeroReviewPeriod",
     )
+    b = a
+    b.deliver_by = [at(now, 100), at(now, 200), Timestamp::from_seconds(MAX)]
     assert!(
-        rule_code(a, client, ether(6) + wei(1), now) == 12,
-        "ValueMismatch",
+        rule_code(b, client, ether(6), now) == 13,
+        "DecideByOverflow",
     )
+    // Spec
+    b = a
+    b.specs = [0x51, 0, 0x53]
+    assert!(rule_code(b, client, ether(6), now) == 14, "ZeroSpec")
+}
+
+#[test]
+fn rules_overflow_cases_are_explicit_rules_and_never_panic() {
+    let now = Timestamp::from_seconds(1000)
+    let client = Address::new(0xc1)
+    // The amount sum: MAX + 1 is reported (code 9), and MAX - 1 + 1 == MAX is exactly funded.
+    var a = valid(now)
+    a.n = 2
+    a.amounts = [wei(MAX), wei(1), Wei::zero()]
+    a.deliver_by = [at(now, 100), at(now, 200), Timestamp::from_seconds(0)]
+    a.specs = [0x51, 0x52, 0]
     assert!(
-        rule_code(a, client, ether(6) - wei(1), now) == 12,
-        "ValueMismatch",
+        rule_code(a, client, wei(MAX), now) == 9,
+        "MAX + 1 overflows",
+    )
+    a.amounts = [wei(MAX - 1), wei(1), Wei::zero()]
+    assert!(
+        rule_code(a, client, wei(MAX), now) == 0,
+        "MAX - 1 + 1 is exactly MAX",
+    )
+    // The decide_by window: deliver_by + review_period == MAX fits, one more does not.
+    var b = valid(now)
+    b.n = 1
+    b.amounts = [ether(1), Wei::zero(), Wei::zero()]
+    b.specs = [0x51, 0, 0]
+    b.review_period = seconds(1000)
+    b.deliver_by = [
+        Timestamp::from_seconds(MAX - 1000),
+        Timestamp::from_seconds(0),
+        Timestamp::from_seconds(0),
+    ]
+    assert!(
+        rule_code(b, client, ether(1), now) == 0,
+        "decide_by == MAX fits",
+    )
+    b.deliver_by = [
+        Timestamp::from_seconds(MAX - 999),
+        Timestamp::from_seconds(0),
+        Timestamp::from_seconds(0),
+    ]
+    assert!(
+        rule_code(b, client, ether(1), now) == 13,
+        "decide_by would wrap",
+    )
+}
+
+#[test]
+fn rules_run_stage_by_stage_in_the_lifecycle_order() {
+    // docs/LIFECYCLE.md lists Parties, Count, Amounts, Time, Spec. Each case puts a fault of a
+    // LATER stage in an EARLIER slot and a fault of an EARLIER stage in a LATER slot: the
+    // earlier stage must win. (Checking slot by slot would report the later stage here.)
+    let now = Timestamp::from_seconds(1000)
+    let client = Address::new(0xc1)
+    let zero_t = Timestamp::from_seconds(0)
+
+    // Amounts before Spec: slot 0 has no spec, slot 2 has no amount.
+    var a = valid(now)
+    a.specs = [0, 0x52, 0x53]
+    a.amounts = [ether(1), ether(2), Wei::zero()]
+    assert!(
+        rule_code(a, client, ether(3), now) == 8,
+        "zero amount (slot 2) before zero spec (slot 0)",
+    )
+    // Amounts before Time: slot 0 deadline is not in the future, slot 2 has no amount.
+    a = valid(now)
+    a.deliver_by = [now, at(now, 200), at(now, 300)]
+    a.amounts = [ether(1), ether(2), Wei::zero()]
+    assert!(
+        rule_code(a, client, ether(3), now) == 8,
+        "zero amount before a past deadline",
+    )
+    // Funding before Time: the value is wrong and slot 0's deadline is not in the future.
+    a = valid(now)
+    a.deliver_by = [now, at(now, 200), at(now, 300)]
+    assert!(
+        rule_code(a, client, ether(5), now) == 10,
+        "value mismatch before a past deadline",
+    )
+    // Time before Spec: slot 0 has no spec, slot 2's deadline is not in the future.
+    a = valid(now)
+    a.specs = [0, 0x52, 0x53]
+    a.deliver_by = [at(now, 100), at(now, 200), now]
+    assert!(
+        rule_code(a, client, ether(6), now) == 11,
+        "past deadline (slot 2) before zero spec (slot 0)",
+    )
+    // Review period before Spec, and decide_by overflow before Spec.
+    a = valid(now)
+    a.specs = [0, 0x52, 0x53]
+    a.review_period = Duration::zero()
+    assert!(
+        rule_code(a, client, ether(6), now) == 12,
+        "zero review period before zero spec",
+    )
+    a = valid(now)
+    a.n = 1
+    a.amounts = [ether(1), Wei::zero(), Wei::zero()]
+    a.specs = [0, 0, 0]
+    a.review_period = seconds(6)
+    a.deliver_by = [Timestamp::from_seconds(MAX - 5), zero_t, zero_t]
+    assert!(
+        rule_code(a, client, ether(1), now) == 13,
+        "decide_by overflow before zero spec",
+    )
+    // Count before Amounts: a dirty unused slot 2 and a zero amount in slot 0.
+    a = valid(now)
+    a.n = 2
+    a.amounts = [Wei::zero(), ether(2), wei(1)]
+    assert!(
+        rule_code(a, client, ether(2), now) == 7,
+        "unused slot before zero amount",
+    )
+    // The sum overflow is reported before the value is compared.
+    a = valid(now)
+    a.n = 2
+    a.amounts = [wei(MAX), wei(1), Wei::zero()]
+    a.deliver_by = [at(now, 100), at(now, 200), Timestamp::from_seconds(0)]
+    a.specs = [0x51, 0x52, 0]
+    assert!(
+        rule_code(a, client, Wei::zero(), now) == 9,
+        "sum overflow before value mismatch",
     )
 }
 
@@ -908,30 +1066,35 @@ fn rules_accept_a_valid_agreement_and_report_each_failure() {
 fn rules_report_the_first_failure_in_a_fixed_order() {
     let now = Timestamp::from_seconds(1000)
     let client = Address::new(0xc1)
-    // Several faults at once: parties first, then count, slots, review period, funding.
+    // Several faults at once, fixed one stage at a time: Parties, Count, Amounts (funding),
+    // Time (review period), Spec.
     var a = valid(now)
     a.provider = Address::zero()
     a.n = 0
     a.review_period = Duration::zero()
+    a.specs = [0, 0, 0]
     assert!(
         rule_code(a, client, Wei::zero(), now) == 1,
-        "provider before count",
+        "parties first",
     )
     a.provider = Address::new(0xa1)
-    assert!(
-        rule_code(a, client, Wei::zero(), now) == 6,
-        "count before review period",
-    )
+    assert!(rule_code(a, client, Wei::zero(), now) == 6, "then count")
     a.n = 3
     assert!(
-        rule_code(a, client, Wei::zero(), now) == 11,
-        "review period before funding",
+        rule_code(a, client, Wei::zero(), now) == 10,
+        "then funding",
+    )
+    assert!(
+        rule_code(a, client, ether(6), now) == 12,
+        "then the review period",
     )
     a.review_period = seconds(10)
     assert!(
-        rule_code(a, client, Wei::zero(), now) == 12,
-        "funding last",
+        rule_code(a, client, ether(6), now) == 14,
+        "then the specs",
     )
+    a.specs = [0x51, 0x52, 0x53]
+    assert!(rule_code(a, client, ether(6), now) == 0, "all fixed")
 }
 
 #[test]
@@ -944,9 +1107,9 @@ fn rules_deadline_boundaries_at_d_minus_1_d_and_d_plus_1() {
     a.specs = [0x51, 0, 0]
     let zero_t = Timestamp::from_seconds(0)
     a.deliver_by = [Timestamp::from_seconds(999), zero_t, zero_t]
-    assert!(rule_code(a, client, ether(1), now) == 10, "d = now - 1")
+    assert!(rule_code(a, client, ether(1), now) == 11, "d = now - 1")
     a.deliver_by = [Timestamp::from_seconds(1000), zero_t, zero_t]
-    assert!(rule_code(a, client, ether(1), now) == 10, "d = now")
+    assert!(rule_code(a, client, ether(1), now) == 11, "d = now")
     a.deliver_by = [Timestamp::from_seconds(1001), zero_t, zero_t]
     assert!(rule_code(a, client, ether(1), now) == 0, "d = now + 1")
 

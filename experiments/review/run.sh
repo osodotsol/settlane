@@ -45,6 +45,20 @@ expect_compile_error s2_handler_omit_call.fe 8-0036   # D-016: omitting call blo
 expect_tests_pass s1_shared_arm.fe   # S-2: whole handler as a shared fn, shell crosses the deadline
 expect_tests_pass u1_u8_abi.fe       # u8 out of range is rejected at ABI decode
 
+# R-002 finding 1: an arm with a numeric selector is callable but absent from the ABI JSON.
+expect_abi_lacks() { # file function: the compiler warns, and the ABI JSON omits the function
+  fe build --standalone "$here/$1" --out-dir "$tmp/abi-$1" >"$tmp/b" 2>&1
+  if ! grep -q "skipping recv arm" "$tmp/b"; then echo "UNEXPECTED  $1: the compiler did not warn about the skipped arm:"; cat "$tmp/b"; fail=1; return; fi
+  if python3 -I -c "import json,sys; a=json.load(open('$tmp/abi-$1/Settlane.abi.json')); sys.exit(1 if any(x.get('name','').lower()=='$2' for x in a) else 0)"; then
+    echo "REJECTED    $1: callable arm \`$2\` is absent from the ABI JSON (the compiler warns \`skipping recv arm\`)"
+  else echo "UNEXPECTED  $1: \`$2\` is in the ABI JSON"; fail=1; fi
+}
+expect_tests_pass a1_numeric_selector.fe;       expect_abi_lacks a1_numeric_selector.fe hidden
+expect_lint_rejects a1_numeric_selector.fe C-ABI                                              # R-002 finding 1
+# R-002 finding 2: the Clock is built as the lint requires and then changed before the handler.
+expect_tests_pass d1_clock_var_mutation.fe;     expect_lint_rejects d1_clock_var_mutation.fe C-CLOCK
+expect_tests_pass d2_clock_mut_effect.fe;       expect_lint_rejects d2_clock_mut_effect.fe C-CLOCK
+
 # M1: a dev contract's bytecode in the production out/ without an ABI must fail C-ARTIFACT.
 ws="$tmp/ws"; mkdir -p "$ws"
 cp -r "$repo/fe.toml" "$repo/ingots" "$ws/"

@@ -1,0 +1,39 @@
+// Review R-002 finding 1 (2026-11-18): an arm with a numeric selector is callable but is
+// missing from the ABI JSON, so the ABI allowlist (C-ABI) cannot see it.
+// Run: fe test experiments/review/a1_numeric_selector.fe
+// ABI:  fe build --standalone experiments/review/a1_numeric_selector.fe --out-dir <dir>
+use std::evm::StorageMap
+
+msg PubMsg {
+    #[selector = sol("visible()")]
+    Visible -> u256,
+}
+
+// A second message type whose arm is addressed by a raw 4-byte selector.
+msg HiddenMsg {
+    #[selector = 0x1badc0de]
+    Hidden -> u256,
+}
+
+pub contract Settlane uses (ctx: Ctx) {
+    recv PubMsg {
+        Visible -> u256 {
+            1
+        }
+    }
+
+    recv HiddenMsg {
+        Hidden -> u256 {
+            42
+        }
+    }
+}
+
+#[test]
+fn the_hidden_arm_is_callable() uses (evm: mut Evm) {
+    let c = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let v: u256 = evm.call(addr: c, gas: 100000, value: Wei::zero(), message: PubMsg::Visible {})
+    assert!(v == 1, "positive control: the sol() arm works")
+    let h: u256 = evm.call(addr: c, gas: 100000, value: Wei::zero(), message: HiddenMsg::Hidden {})
+    assert!(h == 42, "the numeric-selector arm is callable")
+}

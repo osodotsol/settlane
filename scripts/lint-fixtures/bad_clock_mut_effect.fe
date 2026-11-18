@@ -1,0 +1,31 @@
+// EXPECT: fail C-CLOCK
+pub struct Clock {
+    pub now: Timestamp,
+}
+
+pub fn rewind(to: Timestamp) uses (clock: mut Clock) {
+    clock.now = to
+}
+
+pub fn is_open(deliver_by: Timestamp) -> bool uses (clock: Clock) {
+    clock.now < deliver_by
+}
+
+msg M {
+    #[selector = sol("open(uint256,uint256)")]
+    Open { deliver_by: Timestamp, fake_now: Timestamp } -> bool,
+}
+
+pub contract Settlane uses (ctx: Ctx) {
+    recv M {
+        Open { deliver_by, fake_now } -> bool uses (ctx) {
+            var c = Clock { now: ctx.timestamp() }
+            var open = false
+            with (Clock = mut c) {
+                rewind(to: fake_now)
+                open = is_open(deliver_by: deliver_by)
+            }
+            open
+        }
+    }
+}

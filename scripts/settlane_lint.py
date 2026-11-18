@@ -32,7 +32,13 @@ Rules (a violation exits 1):
               parsed, or one parsed arm holds more than one `uses (` header
               (two arms merged, review H2). Arm names may be any identifier,
               lowercase included. The lint fails closed.
-  C-CLOCK     anywhere in the production ingot, a Clock is built from anything
+  C-CLOCK     in the production ingot the identifier `Clock` may appear only in its
+              declaration, in imports, in `uses (name: Clock)` lists (read-only), and in
+              the one literal `with (Clock = Clock { now: ctx.timestamp() })`. A variable
+              holding a Clock, a Clock parameter or return type, `mut Clock`, `with (Clock
+              = mut ..)`, a `with` item other than that literal, or an assignment to
+              `.now` lets code change the time between construction and the shared
+              handler (R-002 finding 2). Also: anywhere in the production ingot, a Clock is built from anything
               other than `Clock { now: ctx.timestamp() }`, a production
               contract stores a Clock field, Clock is aliased (`type X =
               Clock`, `use .. Clock as X`), an `impl` block with a body targets
@@ -47,7 +53,11 @@ Rules (a violation exits 1):
   C-LAYOUT    a test-only contract is defined in the production ingot, a
               production or deployable contract is defined in the dev ingot,
               or an ingot directory is not classified in the policy.
-  C-ABI       a production contract's ABI differs from its policy allowlist (every
+  C-ABI       a production arm uses a selector that is not `sol("..")` (a numeric
+              selector makes the arm callable but leaves it out of the ABI JSON, so
+              the allowlist cannot see it, R-002 finding 1), or the number of
+              `recv` arms in a production contract differs from the number of
+              functions in its built ABI, or the production contract's ABI differs from its policy allowlist (every
               function with its mutability, every event with its indexed flags;
               any receive/fallback/error entry), or has a state-changing function whose
               name mentions time or clock (needs the `fe build` output).
@@ -213,6 +223,10 @@ def arms_in(recv_body):
     arms, depth, cur_name, cur = [], 0, None, []
     for line in recv_body.split("\n"):
         m = re.match(r"\s*(?:#\[[^\n]*\]\s*)*([A-Za-z_]\w*)", line) if depth == 0 else None
+        # `fe fmt` wraps a long header so that `uses (..)` starts a line: that continues the
+        # arm, it is not a new arm (found while counting arms against the ABI, R-002).
+        if m and m.group(1) in ("uses", "where"):
+            m = None
         if m:
             if cur_name:
                 arms.append((cur_name, "\n".join(cur)))
@@ -333,6 +347,30 @@ def lint_text(text, policy, path="<src>", kind="production"):
         for n, t in all_uses_items(text, aliases):
             if n == "ctx" and t not in (None, "Ctx"):
                 found.append(("C-CLOCK", f"{path}: `ctx` is bound to `{t}`, not Ctx"))
+        # R-002 finding 1: every selector must be `sol("..")`, or the arm is callable but not in the ABI.
+        for m in re.finditer(r"#\[\s*selector\s*=\s*(?=\S)(?!sol\s*\()", text):
+            line = text.count("\n", 0, m.start()) + 1
+            found.append(("C-ABI", f"{path}:{line}: a selector that is not `sol(\"..\")` makes the arm callable but missing from the ABI JSON, so the ABI allowlist cannot see it"))
+        # R-002 finding 2: the Clock may be handled only in the permitted forms.
+        scrub = blank_uses(text)
+        scrub = re.sub(r"\buse\b[^\n{]*(?:\{[^}]*\})?[^\n]*", lambda m: re.sub(r"[^\n]", " ", m.group(0)), scrub)
+        scrub = re.sub(r"\bstruct\s+Clock\b", lambda m: " " * len(m.group(0)), scrub)
+        scrub = re.sub(r"\bClock\s*=\s*Clock\s*\{\s*now\s*:\s*ctx\s*\.\s*timestamp\s*\(\s*\)\s*,?\s*\}", lambda m: re.sub(r"[^\n]", " ", m.group(0)), scrub)
+        for m in re.finditer(r"\bClock\b", scrub):
+            line = scrub.count("\n", 0, m.start()) + 1
+            found.append(("C-CLOCK", f"{path}:{line}: `Clock` is used outside its declaration, imports, `uses (name: Clock)` lists and `with (Clock = Clock {{ now: ctx.timestamp() }})`; it could be stored, passed or changed before a handler sees it"))
+        for m in re.finditer(r"\bmut\s+Clock\b", text):
+            line = text.count("\n", 0, m.start()) + 1
+            found.append(("C-CLOCK", f"{path}:{line}: `mut Clock` lets a handler change the time"))
+        for m in re.finditer(r"\.\s*now\s*(?:[-+*]?=)(?!=)", text):
+            line = text.count("\n", 0, m.start()) + 1
+            found.append(("C-CLOCK", f"{path}:{line}: assignment to `.now`: the Clock must never be modified"))
+        for m in re.finditer(r"\bwith\s*\(", text):
+            inner = text[m.end() : match_close(text, m.end() - 1)]
+            for item in split_top(inner):
+                if not re.fullmatch(r"Clock\s*=\s*Clock\s*\{\s*now\s*:\s*ctx\s*\.\s*timestamp\s*\(\s*\)\s*,?\s*\}", item.strip()):
+                    line = text.count("\n", 0, m.start()) + 1
+                    found.append(("C-CLOCK", f"{path}:{line}: `with ({item.strip()})` in the production ingot: only `with (Clock = Clock {{ now: ctx.timestamp() }})` is allowed"))
         blank = blank_uses(text)
         for m in re.finditer(r"(?<![\w.])ctx\b", blank):
             if not re.match(r"\s*\.\s*\w+\s*\(", blank[m.end() :]):
@@ -454,9 +492,30 @@ def check_fresh(abi_dir, cname, newest_source):
     return found
 
 
+def arm_count(text, cname):
+    """Number of `recv` arms across all recv blocks of contract `cname` (noise already stripped)."""
+    total = 0
+    for name, _, body in contracts_in(text):
+        if name != cname:
+            continue
+        for m in re.finditer(r"\brecv\b[^{]*\{", body):
+            open_idx = m.end() - 1
+            total += len(arms_in(body[open_idx + 1 : match_close(body, open_idx)]))
+    return total
+
+
+def check_arm_count(cname, arms, abi):
+    """Every callable arm must be in the ABI: the counts must match (R-002 finding 1)."""
+    funcs = sum(1 for x in abi if x.get("type") == "function")
+    if arms != funcs:
+        return [("C-ABI", f"{cname}: {arms} recv arms in the source but {funcs} functions in the built ABI, so an arm is callable but missing from the ABI (numeric selector?)")]
+    return []
+
+
 def lint_tree(src_dir, policy, abi_dir=None):
     found = []
     seen_production = set()
+    arms_by_contract = {}
     target = pathlib.Path(src_dir)
     if not target.exists():
         return [("E-PARSE", f"{src_dir}: path does not exist, nothing was scanned")]
@@ -478,6 +537,7 @@ def lint_tree(src_dir, policy, abi_dir=None):
                 entry = policy["contracts"].get(cname, {})
                 if entry.get("production"):
                     seen_production.add(cname)
+                    arms_by_contract[cname] = arms_by_contract.get(cname, 0) + arm_count(strip_noise(text), cname)
                 if entry.get("deployable"):
                     seen_deployable.add(cname)
     if abi_dir is not None:
@@ -486,7 +546,9 @@ def lint_tree(src_dir, policy, abi_dir=None):
             p = pathlib.Path(abi_dir) / f"{cname}.abi.json"
             found += check_fresh(abi_dir, cname, newest_source)
             if p.exists() and cname in seen_production:
-                found += check_abi(json.loads(p.read_text()), cname, policy["contracts"].get(cname, {}).get("abi"))
+                abi = json.loads(p.read_text())
+                found += check_abi(abi, cname, policy["contracts"].get(cname, {}).get("abi"))
+                found += check_arm_count(cname, arms_by_contract.get(cname, 0), abi)
     return found
 
 
@@ -591,7 +653,18 @@ def selftest(policy):
         ("abi lock: a fallback entry rejected", any("fallback" in m for _, m in check_abi_lock(abi_with([{"type": "fallback", "stateMutability": "payable"}]), "S", lock))),
         ("abi lock: wired through check_abi", any("ping()" in m for _, m in check_abi(abi_with([dict(base, name="ping", stateMutability="view")]), "S", lock))),
     )
-    for label, good in lock_checks:
+    wrapped = strip_noise((FIXTURES / "ok_wrapped_payout_arm.fe").read_text())
+    numeric = strip_noise((FIXTURES / "bad_numeric_selector_arm.fe").read_text())
+    abi5 = [dict(base, name=f"f{i}", stateMutability="view") for i in range(5)]
+    arm_checks = (
+        ("arm count: a wrapped `uses (..)` header is not a second arm", arm_count(wrapped, "Settlane") == 2),
+        ("arm count: matching arms and ABI functions accepted", not check_arm_count("S", 5, abi5)),
+        ("arm count: an arm missing from the ABI rejected (numeric selector, R-002)", any("missing from the ABI" in m for _, m in check_arm_count("S", 6, abi5))),
+        ("arm count: the numeric-selector fixture has 2 arms and the compiler ABI would list 1", arm_count(numeric, "Settlane") == 2),
+        ("selector rule: `sol(..)`, with or without spaces, is accepted", not [1 for t in ('#[selector = sol("a()")]', '#[selector=sol( "a()" )]', "#[selector =  sol(\"a()\")]") if re.search(r"#\[\s*selector\s*=\s*(?=\S)(?!sol\s*\()", strip_noise(t))]),
+        ("selector rule: a numeric selector is rejected (R-002)", all(re.search(r"#\[\s*selector\s*=\s*(?=\S)(?!sol\s*\()", t) for t in ("#[selector = 0x1badc0de]", "#[selector=7]", "#[selector =  0xdeadbeef]"))),
+    )
+    for label, good in lock_checks + arm_checks:
         print(("ok    " if good else "WRONG ") + label)
         ok &= good
     for label, good in (

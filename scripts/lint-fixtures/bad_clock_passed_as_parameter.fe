@@ -1,0 +1,8 @@
+// EXPECT: fail C-CLOCK
+pub struct Clock {
+    pub now: Timestamp,
+}
+
+pub fn pick(c: Clock) -> Timestamp {
+    c.now
+}

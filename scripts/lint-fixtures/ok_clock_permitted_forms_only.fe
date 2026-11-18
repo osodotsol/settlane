@@ -1,0 +1,27 @@
+// EXPECT: pass
+use std::evm::StorageMap
+
+pub struct Clock {
+    pub now: Timestamp,
+}
+
+pub fn open(deliver_by: Timestamp) -> bool uses (clock: Clock) {
+    clock.now < deliver_by
+}
+
+msg M {
+    #[selector = sol("open(uint256)")]
+    Open { deliver_by: Timestamp } -> bool,
+}
+
+pub contract Settlane uses (ctx: Ctx) {
+    recv M {
+        Open { deliver_by } -> bool uses (ctx) {
+            var result = false
+            with (Clock = Clock { now: ctx.timestamp() }) {
+                result = open(deliver_by: deliver_by)
+            }
+            result
+        }
+    }
+}

@@ -17,9 +17,11 @@
 | Spec | `spec_i != 0`, a hash commitment to the off-chain milestone specification. |
 
 ### Implementation notes (Phase 2A, T1 only)
-- Rules are checked in the order of the table above, and the first failure is reported. All of them run before any storage write, so a rejected creation leaves no trace (tested).
+- Rules are checked **stage by stage in the order of the table above** (Parties, Count, Amounts, Time, Spec), and within a stage in slot order. The first failure is reported. A fault of an earlier stage wins even when it sits in a later slot (tested: a zero amount in slot 2 is reported before a zero spec in slot 0).
+- Every rule, including every deadline and the `decide_by` window, is evaluated **before the first storage write**, so a rejected creation leaves no trace (tested) and nothing depends on a revert undoing a partial write.
+- The two overflow cases are explicit rules and never panic: `AmountSumOverflow` (the sum of the used amounts would exceed 2^256 - 1) and `DecideByOverflow` (`deliver_by + review_period` would). Sum and window use `<= 2^256 - 1` exactly.
 - Agreement ids start at 1 and `0` is never valid. `getAgreement` and `getAccounting` revert for an unknown id. `getMilestone` does not revert: an unknown id or an unused slot reads as state `None` (code 0) with every field zero (D-017).
-- `decide_by = deliver_by + review_period` uses checked arithmetic, so a window that would wrap past 2^256 - 1 reverts, and `decide_by == 2^256 - 1` is accepted exactly (boundary tested).
+- `decide_by = deliver_by + review_period` is validated first (`DecideByOverflow`), so a window that would wrap past 2^256 - 1 reverts and `decide_by == 2^256 - 1` is accepted exactly (boundary tested). The stored value is then computed with checked arithmetic that cannot fail.
 - Deadlines are stored once and no function can change them (DE, I13). Only creation writes `deliver_by` and `decide_by`.
 - `n` is a `u8`. A wider value is rejected by the ABI decoder, so `n = 256` can never wrap to 0 (tested).
 - Deadlines need not be ordered across milestones, and are stored as given.

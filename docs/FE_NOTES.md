@@ -127,9 +127,18 @@ Evidence in `experiments/review/` (all re-run by `bash experiments/review/run.sh
 | A `u8` message field is range-checked at ABI decode: `n = 256` and `259` are rejected instead of wrapping. | same test |
 | An unset storage key reads as the first enum variant, so `MilestoneState::None` first makes unknown ids and unused slots read as `None` (D-017). Swapping the order makes the tests fail. | mutation `mut-none-not-first-variant` |
 | `with (Clock = ..) { .. }` is a statement block: a returned value goes through an outer `var`. | `settlane.fe` |
-| **Events cannot be observed from `fe test`.** The Rust harness records logs, but the Fe `Evm` effect exposes only `selector`, `args`, `decode_args` and the std traits. An emitted event shows up in the ABI JSON only. | harness source, `effects.fe` |
+| **Events are observable from the command line, not from Fe test code.** `fe test --show-logs` prints every log of every test (topics and data); the Fe `Evm` effect still has no accessor, so a test cannot assert on them itself. `scripts/check_events.py` runs `fe test --show-logs --jobs 1` and decodes them. **Correction:** this note and ARCHITECTURE/SECURITY said events could not be tested at all, which was wrong, found by R-002 finding 4. | `fe test --help`, `scripts/check_events.py` |
 | Production `Settlane` with `uses (ctx: Ctx, log: mut Log)`: runtime 2124 bytes (limit 24576), five functions and one event in the ABI, no constructor arguments. | `fe build` |
 | `rm -rf out` before every `fe build`: it never clears `out/` (review M1). | CLAUDE.md |
+
+### R-002 facts (2026-11-18, all [ran])
+| Fact | Evidence |
+| --- | --- |
+| **A `recv` arm with a numeric selector (`#[selector = 0x..]`) is callable but missing from the ABI JSON.** The compiler only warns (`skipping recv arm `Hidden`: selector signature is unknown`), so an ABI allowlist alone cannot see it. The lint now rejects every selector that is not `sol("..")` in the production ingot, and compares the number of source arms with the number of ABI functions. | `experiments/review/a1_numeric_selector.fe` |
+| **A Clock that is constructed correctly can still be changed before the handler runs**: `var c = Clock { now: ctx.timestamp() }; c.now = x; with (Clock = c)` and `with (Clock = mut c)` with a `uses (clock: mut Clock)` handler both compile and work. The lint now allows the identifier `Clock` only in its declaration, imports, `uses (name: Clock)` and the one literal `with (Clock = Clock { now: ctx.timestamp() })`. | `d1_clock_var_mutation.fe`, `d2_clock_mut_effect.fe` |
+| `fe fmt` wraps a long header so that `uses (..)` starts its own line. The arm splitter treated that as a new arm named `uses` (a latent bug since the H2 fix allowed lowercase arm names), which would have flagged a wrapped payout arm as a non-payout arm. Fixed, with `ok_wrapped_payout_arm` and `bad_wrapped_nonpayout_arm` fixtures. | found by the arm/ABI count check |
+| `std::evm::predict_create2<C>(deployer, args, salt)` gives a contract's future address, and an address with no code accepts ETH. So a test can send ETH to the address before deploying there, which is how a surplus is created in a test (the contract has no `receive`). `evm.send_value(addr:, gas:, value:)` sends it. | `surplus_eth_keeps_balance_at_or_above_outstanding_and_is_never_owed` |
+| A regex with `\s*` followed by a negative lookahead backtracks: `=\s*(?!sol\()` matched `= sol(` by giving a space back. Use `(?=\S)` before the lookahead. | lint self-test |
 
 ## Still unverified (Phase 2–4 checks)
 - Is the production contract deployed by the dev-ingot tests byte-identical to the shipped `Prod` artifact? It is the same source and compiler, but `fe` offers no way to compare. Mitigation: all tests that do not need time travel live in the production ingot.

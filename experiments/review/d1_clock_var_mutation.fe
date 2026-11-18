@@ -1,0 +1,44 @@
+// Review R-002 finding 2 (2026-11-18): the Clock is constructed exactly as the lint
+// requires, then mutated before the shared handler sees it. The attacker supplies the time.
+// Run: fe test experiments/review/d1_clock_var_mutation.fe
+pub struct Clock {
+    pub now: Timestamp,
+}
+
+// A stand-in for a shared handler: it trusts the Clock effect.
+pub fn is_open(deliver_by: Timestamp) -> bool uses (clock: Clock) {
+    clock.now < deliver_by
+}
+
+msg M {
+    #[selector = sol("open(uint256,uint256)")]
+    Open { deliver_by: Timestamp, fake_now: Timestamp } -> bool,
+}
+
+pub contract Settlane uses (ctx: Ctx) {
+    recv M {
+        Open { deliver_by, fake_now } -> bool uses (ctx) {
+            // Constructed as `Clock { now: ctx.timestamp() }`, which the construction rule accepts.
+            var c = Clock { now: ctx.timestamp() }
+            // ... then reassigned from the message before the handler runs.
+            c.now = fake_now
+            var open = false
+            with (Clock = c) {
+                open = is_open(deliver_by: deliver_by)
+            }
+            open
+        }
+    }
+}
+
+#[test]
+fn the_caller_controls_the_time_the_handler_sees() uses (evm: mut Evm) {
+    let s = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let past = Timestamp::from_seconds(1)
+    // The real block time is far after `past`, so honestly this deadline is closed.
+    let honest: bool = evm.call(addr: s, gas: 100000, value: Wei::zero(), message: M::Open { deliver_by: past, fake_now: evm.timestamp() })
+    assert!(!honest, "positive control: with the real time the deadline is closed")
+    // The attacker passes time 0 and the closed deadline looks open.
+    let attacked: bool = evm.call(addr: s, gas: 100000, value: Wei::zero(), message: M::Open { deliver_by: past, fake_now: Timestamp::from_seconds(0) })
+    assert!(attacked, "the handler was fooled by a Clock the caller controls")
+}

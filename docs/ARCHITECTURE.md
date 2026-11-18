@@ -73,7 +73,7 @@ Planned for Phase 3 and later, **not implemented**:
 | `Submit { id, m, evidence }`, `Approve { id, m, evidence }`, `Reject { id, m, evidence }` (must match stored evidence, D-015; returns the milestone to `Funded`, D-006b) | no | none |
 | `Claim { id, m, to }`, `Refund { id, m, to }` | no | amount sent |
 
-Events: `AgreementCreated` (implemented: `id`, `client` and `provider` indexed, plus `verifier`, `total`, `milestones`). Later phases add `MilestoneSubmitted`, `MilestoneApproved`, `MilestoneRejected` (revision requested), `MilestoneClaimed`, `MilestoneRefunded`, with `id` indexed. **Emitted events cannot be asserted from `fe test`:** the Rust harness records logs, but the Fe `Evm` effect exposes no accessor (FE_NOTES). The event's presence and shape are locked by the ABI check instead.
+Events: `AgreementCreated` (implemented: `id`, `client` and `provider` indexed, plus `verifier`, `total`, `milestones`). Later phases add `MilestoneSubmitted`, `MilestoneApproved`, `MilestoneRejected` (revision requested), `MilestoneClaimed`, `MilestoneRefunded`, with `id` indexed. Fe test code cannot read events, but `fe test --show-logs` prints them, and `scripts/check_events.py` decodes every `AgreementCreated` (topic hash, id, client, provider, verifier, total, milestones) with an independent encoder and checks exact sequences, that a rejected creation emits nothing, that the client is the real caller (the dev Actor emits its own address), and that production and the test-clock shell emit identical events. The ABI lock fixes the event's signature and indexed flags.
 
 ## Payments
 None yet: Phase 2A has no outgoing transfer, and `Settlane` declares no `Call` effect, so the compiler guarantees it cannot send ETH. The design below is for Phase 3.

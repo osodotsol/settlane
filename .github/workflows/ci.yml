@@ -39,6 +39,13 @@ jobs:
         run: python3 scripts/check_tests.py --selftest
       - name: Tests for both ingots (fails if none run)
         run: python3 scripts/check_tests.py
+      # Fe test code cannot read emitted events, but `fe test --show-logs` prints them. This
+      # decodes every AgreementCreated (topics and payload) with an independent Keccak/ABI
+      # encoder and checks the exact sequences the tests produce (R-002 finding 4).
+      - name: Event checker self-test
+        run: python3 scripts/keccak.py && python3 scripts/check_events.py --selftest
+      - name: Events of both ingots (topics and payload)
+        run: python3 scripts/check_events.py
       # Production build: only the default member, so test contracts must not appear.
       # `fe build` never clears out/, so start from an empty directory (review M1); the
       # lint also rejects any file in out/ that is not a fresh deployable artifact.

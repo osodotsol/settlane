@@ -37,8 +37,11 @@ pub fn require_valid(_ c: CreateCheck) {
         CreateCheck::ZeroAmount => {
             assert!(false, "milestone amount is zero")
         },
-        CreateCheck::ZeroSpec => {
-            assert!(false, "milestone spec is zero")
+        CreateCheck::AmountSumOverflow => {
+            assert!(false, "milestone amounts overflow")
+        },
+        CreateCheck::ValueMismatch => {
+            assert!(false, "value does not equal the milestone total")
         },
         CreateCheck::DeliveryNotInFuture => {
             assert!(false, "deliver_by not in the future")
@@ -46,14 +49,18 @@ pub fn require_valid(_ c: CreateCheck) {
         CreateCheck::ZeroReviewPeriod => {
             assert!(false, "review period is zero")
         },
-        CreateCheck::ValueMismatch => {
-            assert!(false, "value does not equal the milestone total")
+        CreateCheck::DecideByOverflow => {
+            assert!(false, "deliver_by plus review period overflows")
+        },
+        CreateCheck::ZeroSpec => {
+            assert!(false, "milestone spec is zero")
         },
     }
 }
 
-// T1: create and fund an agreement. The caller becomes the client. Validates everything
-// first, then writes storage. There is no external call, so nothing can re-enter.
+// T1: create and fund an agreement. The caller becomes the client. Every rule, including the
+// deadlines and the `decide_by` window, is validated first (rules::check_create), and only then
+// is anything written to storage. There is no external call, so nothing can re-enter.
 pub fn create_handler(
     provider: Address,
     verifier: Address,

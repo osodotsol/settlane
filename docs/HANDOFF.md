@@ -19,7 +19,7 @@ Do not modify src/ unless the assignment allows it. Do not commit or push.
 ## Active assignment
 - **ID:** R-002 Phase 2A review (agreement creation, funding, queries; no transitions yet)
 - **Commit:** the Phase 2A commit on `settlane/dev` (see `git log -1`).
-- **Status: NOT RUN.** Codex is not installed in this environment and has not reviewed anything. Findings files under `docs/reviews/` exist only if the owner runs Codex.
+- **Status: RUN by the owner with Codex, findings fixed.** Codex is not installed in this environment, so I did not see the reviewer's own report: the five findings reached me in the owner's request and are recorded, reproduced and resolved in `docs/reviews/2026-11-18-phase2a.md`. The fixes have not been independently re-reviewed (an R-003 would be that check).
 - **Scope:** `ingots/settlane/src/*.fe`, `ingots/settlane-dev/src/*.fe`, `scripts/*` (lint, policy, test gate, negative controls), `docs/LIFECYCLE.md` ("Creation validation" and its implementation notes), `docs/SECURITY.md` ("Phase 2A coverage"), `docs/DECISIONS.md` D-016, D-017, D-018.
 - **Edit permission:** you may add new files under `experiments/review/` to reproduce a doubt. Do not edit any other file.
 - **Questions:**

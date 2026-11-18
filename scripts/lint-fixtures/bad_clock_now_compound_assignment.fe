@@ -1,0 +1,8 @@
+// EXPECT: fail C-CLOCK
+pub struct Clock {
+    pub now: Timestamp,
+}
+
+pub fn skew(secs: Duration) uses (clock: mut Clock) {
+    clock.now += secs
+}

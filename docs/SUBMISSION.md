@@ -11,7 +11,7 @@ Requirements verified against https://fe-lang.org/contest/ and the starter READM
 | `fe.toml` workspace manifest; production ingot named `settlane` | done (D-014). Folder rename and repo remote pending (D-010) |
 | Exact Fe version stated (`fe 26.6.0`), CI on 26.6.0 | CI pinned to v26.6.0 (D-007); has never run on GitHub |
 | Reproducible build and test instructions (`python3 scripts/check_tests.py`, `fe build`); clean-clone check | commands exist; clean-clone check not started |
-| Automated tests appropriate to the project | Phase 2A: 27 tests (23 production, 4 dev) plus lint, test-gate and CI negative-control suites. Settlement transitions are Phase 3. |
+| Automated tests appropriate to the project | Phase 2A: 30 tests (25 production, 5 dev) plus event, lint, test-gate and CI negative-control suites. Settlement transitions are Phase 3. |
 | README covering problem, approach, architecture, limitations | not started |
 | One-sentence pitch and one Fe-specific highlight with a code excerpt | draft pitch in PRODUCT.md |
 | Demo: reproducible CLI example | not started |

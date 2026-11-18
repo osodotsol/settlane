@@ -1,0 +1,42 @@
+// Review R-002 finding 2, second shape: a shared handler takes `clock: mut Clock` and moves
+// the time itself. Run: fe test experiments/review/d2_clock_mut_effect.fe
+pub struct Clock {
+    pub now: Timestamp,
+}
+
+pub fn rewind(to: Timestamp) uses (clock: mut Clock) {
+    clock.now = to
+}
+
+pub fn is_open(deliver_by: Timestamp) -> bool uses (clock: Clock) {
+    clock.now < deliver_by
+}
+
+msg M {
+    #[selector = sol("open(uint256,uint256)")]
+    Open { deliver_by: Timestamp, fake_now: Timestamp } -> bool,
+}
+
+pub contract Settlane uses (ctx: Ctx) {
+    recv M {
+        Open { deliver_by, fake_now } -> bool uses (ctx) {
+            var c = Clock { now: ctx.timestamp() }
+            var open = false
+            with (Clock = mut c) {
+                rewind(to: fake_now)
+                open = is_open(deliver_by: deliver_by)
+            }
+            open
+        }
+    }
+}
+
+#[test]
+fn a_mut_clock_effect_can_rewind_time() uses (evm: mut Evm) {
+    let s = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let past = Timestamp::from_seconds(1)
+    let honest: bool = evm.call(addr: s, gas: 100000, value: Wei::zero(), message: M::Open { deliver_by: past, fake_now: evm.timestamp() })
+    assert!(!honest, "positive control")
+    let attacked: bool = evm.call(addr: s, gas: 100000, value: Wei::zero(), message: M::Open { deliver_by: past, fake_now: Timestamp::from_seconds(0) })
+    assert!(attacked, "time was rewound through a `mut Clock` effect")
+}

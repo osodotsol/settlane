@@ -3,21 +3,31 @@
 // clock and under the dev ingot's settable clock (D-016).
 use ingot::types::MilestoneState
 
-// First failed creation rule, in the order the rules are checked. `Valid` means all passed.
+// First failed creation rule, in the order docs/LIFECYCLE.md "Creation validation" lists them:
+// Parties, Count, Amounts, Time, Spec. `Valid` means all passed. Overflow cases are explicit
+// rules here (no panic), so every check, including the `decide_by` window, finishes before
+// the handler writes anything to storage.
 pub enum CreateCheck {
     Valid,
+    // Parties (D-011)
     ProviderZero,
     VerifierZero,
     ClientIsProvider,
     ClientIsVerifier,
     ProviderIsVerifier,
+    // Count
     BadMilestoneCount,
     UnusedSlotNotEmpty,
+    // Amounts
     ZeroAmount,
-    ZeroSpec,
+    AmountSumOverflow,
+    ValueMismatch,
+    // Time
     DeliveryNotInFuture,
     ZeroReviewPeriod,
-    ValueMismatch,
+    DecideByOverflow,
+    // Spec
+    ZeroSpec,
 }
 
 impl Copy for CreateCheck {}
@@ -33,10 +43,12 @@ pub fn check_code(_ c: CreateCheck) -> u8 {
         CreateCheck::BadMilestoneCount => 6,
         CreateCheck::UnusedSlotNotEmpty => 7,
         CreateCheck::ZeroAmount => 8,
-        CreateCheck::ZeroSpec => 9,
-        CreateCheck::DeliveryNotInFuture => 10,
-        CreateCheck::ZeroReviewPeriod => 11,
-        CreateCheck::ValueMismatch => 12,
+        CreateCheck::AmountSumOverflow => 9,
+        CreateCheck::ValueMismatch => 10,
+        CreateCheck::DeliveryNotInFuture => 11,
+        CreateCheck::ZeroReviewPeriod => 12,
+        CreateCheck::DecideByOverflow => 13,
+        CreateCheck::ZeroSpec => 14,
     }
 }
 
@@ -75,9 +87,13 @@ pub fn delivery_open(now: Timestamp, deliver_by: Timestamp) -> bool {
     now < deliver_by
 }
 
-// All creation rules (docs/LIFECYCLE.md "Creation validation"). `client` is the caller.
-// Checked in this order, and the first failure is returned. Unused slots (index >= n)
-// must be completely empty. `now` is the clock, `value` is the ETH sent with the call.
+pub const U256_MAX: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+
+// All creation rules (docs/LIFECYCLE.md "Creation validation"), stage by stage in the table's
+// order: Parties, Count, Amounts, Time, Spec. Within a stage every used slot is checked in
+// index order, and the first failure is returned. Unused slots (index >= n) must be empty.
+// `client` is the caller, `now` is the clock, `value` is the ETH sent with the call.
+// Nothing here panics: the sum and the `decide_by` window are tested against U256_MAX first.
 pub fn check_create(
     client: Address,
     provider: Address,
@@ -90,6 +106,7 @@ pub fn check_create(
     value: Wei,
     now: Timestamp,
 ) -> CreateCheck {
+    // Parties
     if provider == Address::zero() {
         return CreateCheck::ProviderZero
     }
@@ -105,34 +122,68 @@ pub fn check_create(
     if provider == verifier {
         return CreateCheck::ProviderIsVerifier
     }
+
+    // Count: 1..=3 milestones, and every unused slot completely empty.
     if n < 1 || n > 3 {
         return CreateCheck::BadMilestoneCount
     }
     var i: u8 = 0
     while i < 3 {
         let k = i as usize
-        if i < n {
-            if amounts[k] == Wei::zero() {
-                return CreateCheck::ZeroAmount
+        if i >= n {
+            if amounts[k] != Wei::zero()
+                || specs[k] != 0
+                || deliver_by[k] != Timestamp::from_seconds(0) {
+                return CreateCheck::UnusedSlotNotEmpty
             }
-            if specs[k] == 0 {
-                return CreateCheck::ZeroSpec
-            }
-            if !(deliver_by[k] > now) {
-                return CreateCheck::DeliveryNotInFuture
-            }
-        } else if amounts[k] != Wei::zero()
-            || specs[k] != 0
-            || deliver_by[k] != Timestamp::from_seconds(0) {
-            return CreateCheck::UnusedSlotNotEmpty
+        }
+        i += 1
+    }
+
+    // Amounts: each used amount > 0, the sum cannot overflow, and the value is exactly the sum.
+    var sum: u256 = 0
+    i = 0
+    while i < n {
+        let a = amounts[i as usize].as_wei()
+        if a == 0 {
+            return CreateCheck::ZeroAmount
+        }
+        if a > U256_MAX - sum {
+            return CreateCheck::AmountSumOverflow
+        }
+        sum = sum + a
+        i += 1
+    }
+    if value.as_wei() != sum {
+        return CreateCheck::ValueMismatch
+    }
+
+    // Time: every deadline strictly after now, a nonzero review period, and no `decide_by` wrap.
+    i = 0
+    while i < n {
+        if !(deliver_by[i as usize] > now) {
+            return CreateCheck::DeliveryNotInFuture
         }
         i += 1
     }
     if review_period == Duration::zero() {
         return CreateCheck::ZeroReviewPeriod
     }
-    if value != total_amount(n, amounts) {
-        return CreateCheck::ValueMismatch
+    i = 0
+    while i < n {
+        if deliver_by[i as usize].as_seconds() > U256_MAX - review_period.as_seconds() {
+            return CreateCheck::DecideByOverflow
+        }
+        i += 1
+    }
+
+    // Spec: every used milestone commits to a nonzero specification hash.
+    i = 0
+    while i < n {
+        if specs[i as usize] == 0 {
+            return CreateCheck::ZeroSpec
+        }
+        i += 1
     }
     CreateCheck::Valid
 }

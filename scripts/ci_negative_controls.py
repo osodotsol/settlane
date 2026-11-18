@@ -123,6 +123,16 @@ WARP = add_production_entry_point('#[selector = sol("warp(uint256)")]\n    Warp 
 PING = add_production_entry_point('#[selector = sol("ping()")]\n    Ping -> u256,', "Ping -> u256 {\n            1\n        }")
 
 
+def add_numeric_selector_arm(root):
+    """R-002 finding 1: a callable arm addressed by a raw selector is missing from the ABI JSON."""
+    p = root / "ingots/settlane/src/settlane.fe"
+    s = p.read_text()
+    assert "    recv SettleMsg {" in s
+    s = s.replace("    recv SettleMsg {", "    recv HiddenMsg {\n        Hidden -> u256 {\n            42\n        }\n    }\n\n    recv SettleMsg {", 1)
+    s += "\npub msg HiddenMsg {\n    #[selector = 0x1badc0de]\n    Hidden -> u256,\n}\n"
+    p.write_text(s)
+
+
 RULES = "ingots/settlane/src/rules.fe"
 HANDLERS = "ingots/settlane/src/handlers.fe"
 TYPES = "ingots/settlane/src/types.fe"
@@ -153,8 +163,8 @@ MUTATIONS = {
     # Phase 2A behavior mutations: each breaks one rule of docs/LIFECYCLE.md, and the tests must catch it.
     "mut-client-may-be-provider": ("creation allows client == provider (D-011)", "Tests for both ingots", replace_in(RULES, "if client == provider {", "if client == provider && false {")),
     "mut-verifier-may-be-provider": ("creation allows provider == verifier (D-011)", "Tests for both ingots", replace_in(RULES, "if provider == verifier {", "if provider == verifier && false {")),
-    "mut-deliver-by-boundary-off-by-one": ("deliver_by == now accepted (DE boundary)", "Tests for both ingots", replace_in(RULES, "if !(deliver_by[k] > now) {", "if !(deliver_by[k] >= now) {")),
-    "mut-funding-not-checked": ("msg.value need not equal the milestone total", "Tests for both ingots", replace_in(RULES, "if value != total_amount(n, amounts) {", "if false {")),
+    "mut-deliver-by-boundary-off-by-one": ("deliver_by == now accepted (DE boundary)", "Tests for both ingots", replace_in(RULES, "if !(deliver_by[i as usize] > now) {", "if !(deliver_by[i as usize] >= now) {")),
+    "mut-funding-not-checked": ("msg.value need not equal the milestone total", "Tests for both ingots", replace_in(RULES, "if value.as_wei() != sum {", "if false {")),
     "mut-decide-by-ignores-review-period": ("decide_by == deliver_by", "Tests for both ingots", replace_in(RULES, "    deliver_by + review_period\n}", "    deliver_by\n}")),
     "mut-zero-review-period-allowed": ("review_period == 0 accepted", "Tests for both ingots", replace_in(RULES, "if review_period == Duration::zero() {", "if false {")),
     "mut-unused-slot-not-checked": ("a non-empty unused slot is accepted", "Tests for both ingots", replace_in(RULES, "return CreateCheck::UnusedSlotNotEmpty", "i += 0")),
@@ -169,6 +179,16 @@ MUTATIONS = {
     "mut-production-time-setter-other-name": ("a production warp(uint256) exists (PC): no test probes it, so the lint (C-ABI) must", "policy lint (fails", WARP),
     "mut-production-extra-entry-point": ("a harmless-looking production ping() exists: only the exact ABI allowlist (C-ABI) can catch it", "policy lint (fails", PING),
     "mut-view-becomes-payable": ("getAgreement is made payable: the only-create-is-payable test catches it", "Tests for both ingots", replace_in("ingots/settlane/src/settlane.fe", "        GetAgreement { id } ->", "        #[payable]\n        GetAgreement { id } ->")),
+    # R-002 findings (2026-11-18), each isolating one layer.
+    "mut-production-numeric-selector-arm": ("R-002 f1: a callable arm with a numeric selector is missing from the ABI", "policy lint (fails", add_numeric_selector_arm),
+    "mut-clock-reassigned-before-handler": ("R-002 f2: the Clock is held in a variable and reassigned (behavior unchanged, so only the lint can see it)", "policy lint (fails", replace_in("ingots/settlane/src/settlane.fe", "with (Clock = Clock { now: ctx.timestamp() }) {", "var held = Clock { now: ctx.timestamp() }\n            held.now = ctx.timestamp()\n            with (Clock = held) {")),
+    "mut-clock-rewound-before-handler": ("R-002 f2: the Clock is reset to time 0 before the handler (the boundary tests catch it)", "Tests for both ingots", replace_in("ingots/settlane/src/settlane.fe", "with (Clock = Clock { now: ctx.timestamp() }) {", "var held = Clock { now: ctx.timestamp() }\n            held.now = Timestamp::from_seconds(0)\n            with (Clock = held) {")),
+    "mut-spec-checked-inside-the-amounts-stage": ("R-002 f3: the spec rule runs slot by slot inside the amounts stage (wrong order)", "Tests for both ingots", replace_in(RULES, "        let a = amounts[i as usize].as_wei()\n", "        let a = amounts[i as usize].as_wei()\n        if specs[i as usize] == 0 {\n            return CreateCheck::ZeroSpec\n        }\n")),
+    "mut-decide-by-overflow-not-prevalidated": ("R-002 f3: the decide_by window is not validated before the writes (it would only panic mid-write)", "Tests for both ingots", replace_in(RULES, "if deliver_by[i as usize].as_seconds() > U256_MAX - review_period.as_seconds() {", "if false {")),
+    "mut-event-provider-and-verifier-swapped": ("R-002 f4: AgreementCreated carries the provider and verifier swapped (tests and ABI cannot see it)", "Events of both ingots", replace_in(HANDLERS, "AgreementCreated { id, client, provider, verifier, total, milestones: n }", "AgreementCreated { id, client, provider: verifier, verifier: provider, total, milestones: n }")),
+    "mut-event-wrong-total": ("R-002 f4: AgreementCreated reports a zero total", "Events of both ingots", replace_in(HANDLERS, "AgreementCreated { id, client, provider, verifier, total, milestones: n }", "AgreementCreated { id, client, provider, verifier, total: Wei::zero(), milestones: n }")),
+    "mut-event-client-is-provider": ("R-002 f4: AgreementCreated names the provider as the client", "Events of both ingots", replace_in(HANDLERS, "AgreementCreated { id, client, provider, verifier, total, milestones: n }", "AgreementCreated { id, client: provider, provider, verifier, total, milestones: n }")),
+    "mut-event-not-emitted": ("R-002 f4: the creation event is never emitted", "Events of both ingots", replace_in(HANDLERS, "log.emit(\n        AgreementCreated { id, client, provider, verifier, total, milestones: n },\n    )", "let _ = id")),
     "unformatted-dev-code": ("badly formatted dev code", "Format check", lambda r: write(r, "ingots/settlane-dev/src/messy.fe", "pub fn   messy ( )   ->  u256 {   1 }\n")),
 }
 
@@ -186,7 +206,28 @@ def run_ci(root):
     return None, ""
 
 
+def dry_run():
+    """Apply every mutation to a copy without running CI, so a target that no longer exists
+    in the code is found in seconds, not after a long run."""
+    ok = True
+    for name, (what, expect, mutate) in MUTATIONS.items():
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for item in COPY:
+                src = REPO / item
+                shutil.copytree(src, root / item, ignore=shutil.ignore_patterns("out", "__pycache__")) if src.is_dir() else shutil.copy(src, root / item)
+            try:
+                mutate(root)
+                print(f"ok    {name}: applies")
+            except (AssertionError, FileNotFoundError, ValueError) as e:
+                print(f"WRONG {name}: cannot be applied: {e}")
+                ok = False
+    return 0 if ok else 1
+
+
 def main(argv):
+    if argv == ["--dry-run"]:
+        return dry_run()
     names = argv or list(MUTATIONS)
     ok = True
     for name in names:
@@ -196,14 +237,19 @@ def main(argv):
             for item in COPY:
                 src = REPO / item
                 shutil.copytree(src, root / item, ignore=shutil.ignore_patterns("out", "__pycache__")) if src.is_dir() else shutil.copy(src, root / item)
-            mutate(root)
+            try:
+                mutate(root)
+            except (AssertionError, FileNotFoundError, ValueError) as e:
+                print(f"WRONG {name}: the mutation cannot be applied (the code it targets changed): {e}", flush=True)
+                ok = False
+                continue
             if name not in ("control-unmodified", "unformatted-dev-code"):
                 subprocess.run(["fe", "fmt", "ingots"], cwd=root, capture_output=True)  # so the mistake reaches its own step
             failed_step, _ = run_ci(root)
         good = (failed_step is None) if expect is None else (failed_step is not None and expect in failed_step)
         ok &= good
         got = "PASSED" if failed_step is None else f"failed at '{failed_step}'"
-        print(("ok    " if good else "WRONG ") + f"{name}: {what}: CI {got}" + ("" if expect is None else f" (expected '{expect}')"))
+        print(("ok    " if good else "WRONG ") + f"{name}: {what}: CI {got}" + ("" if expect is None else f" (expected '{expect}')"), flush=True)
     return 0 if ok else 1
 
 

@@ -463,3 +463,67 @@ fn the_client_is_the_caller_and_never_a_parameter() uses (evm: mut Evm) {
     )
     assert!(outstanding(s) == ether(12))
 }
+
+// A `u8` field is range-checked at ABI decode (experiments/review/u1_u8_abi.fe). If it were
+// truncated instead, n = 259 would silently become n = 3. This mirrors the production message
+// with a wide `n` and the same 4-byte selector. It lives in the dev ingot because the
+// production ingot may not use a selector that is not `sol(..)` (lint C-ABI, R-002 finding 1),
+// and `sol(..)` itself cannot be used here: the compiler checks it against the `u256` field.
+msg WideCreate {
+    // keccak256("create(address,address,uint256,uint8,uint256[3],uint256[3],uint256[3])")[:4]
+    #[selector = 0x75ac1b9d]
+    Create {
+        provider: Address,
+        verifier: Address,
+        review_period: Duration,
+        n: u256,
+        amounts: [Wei; 3],
+        deliver_by: [Timestamp; 3],
+        specs: [u256; 3],
+    } -> u256,
+}
+
+fn try_wide(_ s: Address, _ a: Args, _ n: u256, _ value: Wei) -> bool
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: s,
+        gas: 1000000,
+        value,
+        message: WideCreate::Create {
+            provider: a.provider,
+            verifier: a.verifier,
+            review_period: a.review_period,
+            n,
+            amounts: a.amounts,
+            deliver_by: a.deliver_by,
+            specs: a.specs,
+        },
+    )
+        .success()
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn a_wide_n_is_rejected_at_decode_and_never_truncated() uses (evm: mut Evm) {
+    let s = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let now = evm.timestamp().as_seconds()
+    let a = valid(now)
+    assert!(
+        try_wide(s, a, 3, ether(6)),
+        "positive control: the wide mirror works with n = 3",
+    )
+    assert!(
+        !try_wide(s, a, 256, ether(6)),
+        "n = 256 must not wrap to 0",
+    )
+    assert!(
+        !try_wide(s, a, 259, ether(6)),
+        "n = 259 must not wrap to 3",
+    )
+    assert!(!try_wide(s, a, MAX, ether(6)), "n = 2^256 - 1")
+    assert!(
+        outstanding(s) == ether(6) && evm.balance(s) == ether(6),
+        "only the control created anything",
+    )
+    assert!(!exists(s, 2), "no second agreement")
+}
