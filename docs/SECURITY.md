@@ -44,8 +44,25 @@ These locked amounts stay in `outstanding`, so I1 and I9 still hold. Parties sho
 - **Two agreements** interleaved (I8).
 - **Invariant helper** after every step of the integration and demo tests.
 
-## Phase 2A coverage (creation, funding, queries; no transitions yet)
-Only T1 exists, so I3 to I7 and I10 have nothing to test yet (no payout, refund or state transition). `Settlane` declares no `Call` effect at all, so the compiler guarantees it cannot send ETH in this phase.
+## Phase 2A and 2B coverage (creation, funding, evidence submission, review, queries)
+T1 to T4 exist. I3, I4, I6 and I7 are about payouts and refunds (T5, T6) and have nothing to test until Phase 3, and the refund half of I10 waits for the same reason. `Settlane` declares no `Call` effect at all, so the compiler guarantees it cannot send ETH in these phases.
+
+**Phase 2B (T2 Submit, T3 Approve, T4 Reject).**
+| Property | Evidence |
+| --- | --- |
+| I5 authorization | `only_the_provider_submits_and_only_the_verifier_reviews`: for every action, the client (the test contract), the other party and a stranger are each rejected **with the role reason**, in both the `Funded` and the `Submitted` states, with a positive control, and nothing changes. `a_caller_with_no_role_cannot_submit_approve_or_reject_and_changes_nothing` (production ingot). The provider cannot approve its own work. |
+| State machine and replay | `replays_and_invalid_transitions_are_rejected_and_an_approved_milestone_never_changes`: every action from every state, replayed approve, replayed reject, submit after approve, approve after reject. The event logs are also replayed as the state machine by `scripts/check_events.py`. |
+| Immutability | `an_approved_milestone_stays_immutable_through_every_deadline`: after `Approved`, every action by the right role is rejected at six times, including after `deliver_by`, after `decide_by` and far in the future, and the milestone tuple is identical. After every transition amount, both deadlines and the spec are unchanged (`fixed_fields`). |
+| Deadlines (DE) | `the_delivery_window_closes_exactly_at_deliver_by` (d-1 open, d and d+1 closed, resubmission closes at d, a rejected milestone at d is stuck `Funded`) and `the_review_window_closes_exactly_at_decide_by_and_a_late_submission_keeps_it_whole` (decide_by-1 open for both approve and reject, decide_by and decide_by+1 closed, a submission at d-1 keeps the whole review window), plus the pure `rules_delivery_and_review_windows_at_d_minus_1_d_and_d_plus_1`. |
+| Evidence (D-015) | `evidence_must_match_and_stale_evidence_can_neither_be_approved_nor_rejected`: zero is rejected, a wrong or zero evidence cannot approve or reject, and after a resubmission neither the old evidence's `Approve` nor its `Reject` lands (the S-1 race). |
+| Unknown ids and unused slots | `unknown_agreements_and_unused_milestones_are_rejected_by_the_right_role_on_both_contracts`: ids 0, 1 (before creation), 2 and 2^256-1, and slots 1, 2, 3 and 255 of a one-milestone agreement, for all three actions, on production and the shell, with the right reason. |
+| Isolation, multiple agreements | `agreements_are_isolated_and_milestones_are_independent`: the roles of one agreement have no power over another, work on one leaves the other's milestones identical, and the milestones, evidence and rejection counters of one agreement are independent. |
+| I11 balance neutrality, non-payable | `transitions_are_not_payable_and_never_move_money`: each action with value attached is rejected, with a zero-value control, and the balance, the totals, the accounting and the provider's and verifier's own balances never change. |
+| Rejection counter | `the_rejection_counter_counts_every_revision_request_and_never_decreases`. |
+| Production and the shell | `production_and_the_shell_agree_on_every_step_of_a_transition_script`: 17 steps, accepted and rejected, get the same verdict and the same final state, and the events are identical pairwise. |
+| Every negative test asserts its reason | The revert data carries the message, and the tests search it, so a call that fails for a different reason fails the test. |
+
+**Phase 2A.**
 | Invariant | Evidence |
 | --- | --- |
 | I1 conservation (creation part), I9 solvency | `check_invariants` after every state-changing step: `deposited == paid + refunded + outstanding`, per-agreement outstanding equals the live milestone amounts, `totalOutstanding` equals their sum, no agreement exists beyond the last id, and **`balance >= outstanding`** (I9 in general, R-002). The exact balance is also checked against `outstanding + a known surplus`. `surplus_eth_keeps_balance_at_or_above_outstanding_and_is_never_owed` pre-funds the contract's predicted address, so balance is strictly above outstanding, and shows the surplus is in no agreement, is not in `totalOutstanding`, and is untouched by creations and rejections. |

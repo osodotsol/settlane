@@ -66,7 +66,7 @@ rules.
 | Path | Contents |
 | --- | --- |
 | `fe.toml` | The workspace manifest (Settlane, D-014). `default-members` is the production ingot only. |
-| `ingots/settlane/` | Production ingot: the `Settlane` contract (agreement creation and funding so far). Only this ingot is built by `fe build`. |
+| `ingots/settlane/` | Production ingot: the `Settlane` contract (agreement creation and funding, evidence submission, and verifier approval or revision requests so far; no payouts yet). Only this ingot is built by `fe build`. |
 | `ingots/settlane/src/` | `types.fe` (storage types, the `Clock` effect, events), `rules.fe` (pure rules), `handlers.fe` (shared handler bodies), `settlane.fe` (messages and the contract), `tests.fe`. |
 | `ingots/settlane-dev/` | Dev ingot: the test-clock shell (`SettlaneTestClock`), an `Actor` helper and their tests. Never built by default and never deployable. |
 | `scripts/` | Policy lint and test gate used by CI. Run the tests with `python3 scripts/check_tests.py` (a bare `fe test` runs only the production ingot). |

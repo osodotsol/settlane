@@ -41,13 +41,31 @@ pub contract SettlaneTestClock uses (ctx: Ctx, log: mut Log) {
             id
         }
 
+        Submit { id, m, evidence } uses (ctx, mut log, agreements, mut milestones, now) {
+            with (Clock = Clock { now }) {
+                handlers::submit_handler(id, m, evidence)
+            }
+        }
+
+        Approve { id, m, evidence } uses (ctx, mut log, agreements, mut milestones, now) {
+            with (Clock = Clock { now }) {
+                handlers::approve_handler(id, m, evidence)
+            }
+        }
+
+        Reject { id, m, evidence } uses (ctx, mut log, agreements, mut milestones, now) {
+            with (Clock = Clock { now }) {
+                handlers::reject_handler(id, m, evidence)
+            }
+        }
+
         GetAgreement { id } -> (Address, Address, Address, Duration, u8)
         uses (agreements)
         {
             handlers::get_agreement_handler(id)
         }
 
-        GetMilestone { id, m } -> (u8, Wei, Timestamp, Timestamp, u256, u256)
+        GetMilestone { id, m } -> (u8, Wei, Timestamp, Timestamp, u256, u256, u256)
         uses (milestones)
         {
             handlers::get_milestone_handler(id, m)
@@ -87,6 +105,13 @@ pub msg ActorMsg {
         deliver_by: [Timestamp; 3],
         specs: [u256; 3],
     } -> u256,
+    // Forward a transition to Settlane as this actor (the caller Settlane sees is the actor).
+    #[selector = sol("submitVia(address,uint256,uint8,uint256)")]
+    SubmitVia { target: Address, id: u256, m: u8, evidence: u256 },
+    #[selector = sol("approveVia(address,uint256,uint8,uint256)")]
+    ApproveVia { target: Address, id: u256, m: u8, evidence: u256 },
+    #[selector = sol("rejectVia(address,uint256,uint8,uint256)")]
+    RejectVia { target: Address, id: u256, m: u8, evidence: u256 },
 }
 
 // Emitted by the Actor with its own address before it forwards a call. scripts/check_events.py
@@ -127,6 +152,36 @@ pub contract Actor uses (ctx: Ctx, call: mut Call, log: mut Log) {
                     deliver_by,
                     specs,
                 },
+            )
+        }
+
+        #[payable]
+        SubmitVia { target, id, m, evidence } uses (ctx, mut call) {
+            call.call(
+                addr: target,
+                gas: 1000000,
+                value: ctx.value(),
+                message: SettleMsg::Submit { id, m, evidence },
+            )
+        }
+
+        #[payable]
+        ApproveVia { target, id, m, evidence } uses (ctx, mut call) {
+            call.call(
+                addr: target,
+                gas: 1000000,
+                value: ctx.value(),
+                message: SettleMsg::Approve { id, m, evidence },
+            )
+        }
+
+        #[payable]
+        RejectVia { target, id, m, evidence } uses (ctx, mut call) {
+            call.call(
+                addr: target,
+                gas: 1000000,
+                value: ctx.value(),
+                message: SettleMsg::Reject { id, m, evidence },
             )
         }
     }

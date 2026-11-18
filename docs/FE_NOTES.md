@@ -148,6 +148,16 @@ Evidence in `experiments/review/` (all re-run by `bash experiments/review/run.sh
 | A cast from `u256` to `usize` is not lossless (`error[8-0055]`). Index with a `u8` loop variable (`i as usize`). | compiler |
 | `ctx.selfbalance()` and `ctx.origin()` are `Ctx` methods, usable in a handler without any extra effect (used by the surplus and `tx.origin` mutation controls). | controls |
 
+### Phase 2B facts (2026-11-18, all [ran])
+| Fact | Evidence |
+| --- | --- |
+| **A Fe test can assert the revert reason**: `let out = evm.try_call(..)`, then `out.returndata().index_of("reason text").is_some()`. The `assert!` message is in the revert data. `CallOutcome` is imported with `use std::evm::CallOutcome`. | probe, `because()` in both test files |
+| **The reason survives being forwarded through a contract** (the dev Actor): a typed `call.call(..)` re-raises the callee's revert data. | `only_the_provider_submits_and_only_the_verifier_reviews` |
+| An arm with a unit return and no `uses` clause parses its body as a record pattern (`Boom {` then `assert!` is an error). Give it a return type or a `uses` clause. | probe |
+| A `Milestone { .. }` literal must list every field (`error[8-0011] missing fields`), and there is no struct update syntax, so a transition rebuilds the struct from the old value. | `handlers.fe` |
+| `u8` is valid as an indexed event field (`uint8 indexed` in the ABI), and an event can have three indexed fields plus data. | built ABI |
+| `fe fmt` wraps a long expression into a multi-line form, so a text mutation must target the formatted text. The control runner reformats after mutating. | controls |
+
 ## Still unverified (Phase 2–4 checks)
 - Is the production contract deployed by the dev-ingot tests byte-identical to the shipped `Prod` artifact? It is the same source and compiler, but `fe` offers no way to compare. Mitigation: all tests that do not need time travel live in the production ingot.
 - A reentrant recipient under the 2300 stipend. EIP-2200 forbids SSTORE when gas is at or below 2300, so reentrancy into a state change should fail. **Inferred, test in Phase 4.**

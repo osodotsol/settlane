@@ -5,8 +5,18 @@
 // Phase 2A: creation and queries. No handler here lists `call` or `create`, so none can
 // move ETH (and the contract does not even declare those effects).
 use ingot::rules
-use ingot::rules::CreateCheck
-use ingot::types::{Agreement, AgreementCreated, Clock, Milestone, MilestoneState, Totals}
+use ingot::rules::{CreateCheck, ReviewCheck, SubmitCheck}
+use ingot::types::{
+    Agreement,
+    AgreementCreated,
+    Clock,
+    Milestone,
+    MilestoneApproved,
+    MilestoneRejected,
+    MilestoneState,
+    MilestoneSubmitted,
+    Totals,
+}
 use std::evm::StorageMap
 
 // Reverts with the reason for the first failed creation rule.
@@ -131,6 +141,7 @@ uses (
                     ),
                     spec: specs[k],
                     evidence: 0,
+                    rejections: 0,
                 },
             )
         i += 1
@@ -142,6 +153,182 @@ uses (
     id
 }
 
+// Reverts with the reason for the first failed `Submit` rule.
+pub fn require_submit(_ c: SubmitCheck) {
+    match c {
+        SubmitCheck::Valid => {},
+        SubmitCheck::UnknownAgreement => {
+            assert!(false, "unknown agreement")
+        },
+        SubmitCheck::NotProvider => {
+            assert!(false, "caller is not the provider")
+        },
+        SubmitCheck::NoSuchMilestone => {
+            assert!(false, "no such milestone")
+        },
+        SubmitCheck::WrongState => {
+            assert!(false, "milestone cannot take evidence in this state")
+        },
+        SubmitCheck::DeliveryClosed => {
+            assert!(false, "delivery window is closed")
+        },
+        SubmitCheck::ZeroEvidence => {
+            assert!(false, "evidence is zero")
+        },
+    }
+}
+
+// Reverts with the reason for the first failed `Approve` or `Reject` rule.
+pub fn require_review(_ c: ReviewCheck) {
+    match c {
+        ReviewCheck::Valid => {},
+        ReviewCheck::UnknownAgreement => {
+            assert!(false, "unknown agreement")
+        },
+        ReviewCheck::NotVerifier => {
+            assert!(false, "caller is not the verifier")
+        },
+        ReviewCheck::NoSuchMilestone => {
+            assert!(false, "no such milestone")
+        },
+        ReviewCheck::NotSubmitted => {
+            assert!(false, "milestone is not submitted")
+        },
+        ReviewCheck::ReviewClosed => {
+            assert!(false, "review window is closed")
+        },
+        ReviewCheck::EvidenceMismatch => {
+            assert!(false, "evidence does not match the submitted evidence")
+        },
+    }
+}
+
+// T2: the provider submits evidence, or resubmits while the delivery window is open. Only the
+// state and the evidence change: amounts, deadlines and spec are never rewritten from here.
+// No ETH moves and nothing is called.
+pub fn submit_handler(id: u256, m: u8, evidence: u256)
+uses (
+    clock: Clock,
+    ctx: Ctx,
+    log: mut Log,
+    agreements: StorageMap<u256, Agreement>,
+    milestones: mut StorageMap<(u256, u8), Milestone>,
+)
+{
+    let a = agreements.get(key: id)
+    let x = milestones.get(key: (id, m))
+    require_submit(
+        rules::check_submit(
+            agreement_exists: a.n != 0,
+            caller: ctx.caller(),
+            provider: a.provider,
+            state: x.state,
+            deliver_by: x.deliver_by,
+            now: clock.now,
+            evidence,
+        ),
+    )
+    milestones
+        .set(
+            key: (id, m),
+            value: Milestone {
+                state: MilestoneState::Submitted,
+                amount: x.amount,
+                deliver_by: x.deliver_by,
+                decide_by: x.decide_by,
+                spec: x.spec,
+                evidence,
+                rejections: x.rejections,
+            },
+        )
+    log.emit(MilestoneSubmitted { id, m, evidence })
+}
+
+// T3: the verifier approves the evidence it names. The milestone becomes `Approved`, which no
+// handler can change again, and the evidence stays as it was. No ETH moves: approval only
+// creates the provider's entitlement (it is claimed in a later phase).
+pub fn approve_handler(id: u256, m: u8, evidence: u256)
+uses (
+    clock: Clock,
+    ctx: Ctx,
+    log: mut Log,
+    agreements: StorageMap<u256, Agreement>,
+    milestones: mut StorageMap<(u256, u8), Milestone>,
+)
+{
+    let a = agreements.get(key: id)
+    let x = milestones.get(key: (id, m))
+    require_review(
+        rules::check_review(
+            agreement_exists: a.n != 0,
+            caller: ctx.caller(),
+            verifier: a.verifier,
+            state: x.state,
+            decide_by: x.decide_by,
+            now: clock.now,
+            stored_evidence: x.evidence,
+            evidence,
+        ),
+    )
+    milestones
+        .set(
+            key: (id, m),
+            value: Milestone {
+                state: MilestoneState::Approved,
+                amount: x.amount,
+                deliver_by: x.deliver_by,
+                decide_by: x.decide_by,
+                spec: x.spec,
+                evidence: x.evidence,
+                rejections: x.rejections,
+            },
+        )
+    log.emit(MilestoneApproved { id, m, evidence })
+}
+
+// T4: the verifier asks for a revision of the evidence it names (D-006b, D-015). The milestone
+// returns to `Funded`, the evidence is cleared and the rejection counter goes up. Deadlines are
+// absolute and untouched, so the provider can resubmit only while the delivery window is open.
+pub fn reject_handler(id: u256, m: u8, evidence: u256)
+uses (
+    clock: Clock,
+    ctx: Ctx,
+    log: mut Log,
+    agreements: StorageMap<u256, Agreement>,
+    milestones: mut StorageMap<(u256, u8), Milestone>,
+)
+{
+    let a = agreements.get(key: id)
+    let x = milestones.get(key: (id, m))
+    require_review(
+        rules::check_review(
+            agreement_exists: a.n != 0,
+            caller: ctx.caller(),
+            verifier: a.verifier,
+            state: x.state,
+            decide_by: x.decide_by,
+            now: clock.now,
+            stored_evidence: x.evidence,
+            evidence,
+        ),
+    )
+    let rejections = x.rejections + 1
+    milestones
+        .set(
+            key: (id, m),
+            value: Milestone {
+                state: MilestoneState::Funded,
+                amount: x.amount,
+                deliver_by: x.deliver_by,
+                decide_by: x.decide_by,
+                spec: x.spec,
+                evidence: 0,
+                rejections,
+            },
+        )
+    log.emit(MilestoneRejected { id, m, evidence, rejections })
+}
+
 // Parties and review window. Reverts for an unknown agreement id (including 0).
 pub fn get_agreement_handler(id: u256) -> (Address, Address, Address, Duration, u8)
 uses (agreements: StorageMap<u256, Agreement>)
@@ -151,13 +338,21 @@ uses (agreements: StorageMap<u256, Agreement>)
     (a.client, a.provider, a.verifier, a.review_period, a.n)
 }
 
-// (state code, amount, deliver_by, decide_by, spec, evidence). An unknown agreement id or
+// (state code, amount, deliver_by, decide_by, spec, evidence, rejections). An unknown agreement id or
 // an unused slot reads as state 0 (`None`) with everything zero (D-017). It does not revert.
-pub fn get_milestone_handler(id: u256, m: u8) -> (u8, Wei, Timestamp, Timestamp, u256, u256)
+pub fn get_milestone_handler(id: u256, m: u8) -> (u8, Wei, Timestamp, Timestamp, u256, u256, u256)
 uses (milestones: StorageMap<(u256, u8), Milestone>)
 {
     let x = milestones.get(key: (id, m))
-    (rules::state_code(x.state), x.amount, x.deliver_by, x.decide_by, x.spec, x.evidence)
+    (
+        rules::state_code(x.state),
+        x.amount,
+        x.deliver_by,
+        x.decide_by,
+        x.spec,
+        x.evidence,
+        x.rejections,
+    )
 }
 
 // (deposited, paid, refunded, outstanding). Reverts for an unknown agreement id.

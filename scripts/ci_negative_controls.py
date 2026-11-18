@@ -148,6 +148,22 @@ def replace_all_in(files, old, new):
     return mutate
 
 
+def replace_nth_in(rel, old, new, n):
+    """Mutation: replace the n-th (1-based) occurrence of `old`. Refuses to run if there are
+    fewer than n occurrences."""
+
+    def mutate(root):
+        path = root / rel
+        s = path.read_text()
+        idx = -1
+        for _ in range(n):
+            idx = s.find(old, idx + 1)
+            assert idx >= 0, f"occurrence {n} of {old!r} not found in {rel}"
+        path.write_text(s[:idx] + new + s[idx + len(old) :])
+
+    return mutate
+
+
 def chain(*mutators):
     def mutate(root):
         for m in mutators:
@@ -225,9 +241,31 @@ MUTATIONS = {
     "mut-handler-advances-the-clock": ("R-003 f1: the handler hands the rules a clock one second ahead", "Tests for both ingots", replace_in(HANDLERS, "now: clock.now,", "now: Timestamp::from_seconds(clock.now.as_seconds() + 1),")),
     "mut-event-client-is-the-contract-for-a-2-eth-agreement": ("R-003 f2: a wrong client topic in one direct-call test (no incidental rule can see it)", "Events of both ingots", chain(replace_in(HANDLERS, "AgreementCreated { id, client, provider, verifier, total, milestones: n }", "AgreementCreated { id, client: if total == ether(2) { ctx.address() } else { client }, provider, verifier, total, milestones: n }"), replace_in(HANDLERS, "use std::evm::StorageMap", "use std::evm::{StorageMap, ether}"))),
     "mut-event-client-is-tx-origin": ("R-003 f2: the event names tx.origin instead of msg.sender", "Events of both ingots", replace_in(HANDLERS, "AgreementCreated { id, client, provider, verifier, total, milestones: n }", "AgreementCreated { id, client: ctx.origin(), provider, verifier, total, milestones: n }")),
-    "mut-abi-output-type-widened": ("R-003 f3: getMilestone returns its state as uint256 instead of uint8 (Fe tests stay green; only the ABI output lock can see it)", "policy lint (fails", chain(replace_all_in([SETTLANE, "ingots/settlane/src/handlers.fe", "ingots/settlane-dev/src/lib.fe", "ingots/settlane/src/tests.fe", "ingots/settlane-dev/src/tests.fe"], "(u8, Wei, Timestamp, Timestamp, u256, u256)", "(u256, Wei, Timestamp, Timestamp, u256, u256)"), replace_in(HANDLERS, "(rules::state_code(x.state), ", "(rules::state_code(x.state) as u256, "))),
+    "mut-abi-output-type-widened": ("R-003 f3: getMilestone returns its state as uint256 instead of uint8 (Fe tests stay green; only the ABI output lock can see it)", "policy lint (fails", chain(replace_all_in([SETTLANE, "ingots/settlane/src/handlers.fe", "ingots/settlane-dev/src/lib.fe", "ingots/settlane/src/tests.fe", "ingots/settlane-dev/src/tests.fe"], "(u8, Wei, Timestamp, Timestamp, u256, u256, u256)", "(u256, Wei, Timestamp, Timestamp, u256, u256, u256)"), replace_in(HANDLERS, "        rules::state_code(x.state),\n        x.amount,", "        rules::state_code(x.state) as u256,\n        x.amount,"), replace_in("ingots/settlane-dev/src/tests.fe", "fn state_of(_ s: Address, _ id: u256, _ m: u8) -> u8 uses (evm: mut Evm) {", "fn state_of(_ s: Address, _ id: u256, _ m: u8) -> u256 uses (evm: mut Evm) {"))),
     "mut-deposited-includes-surplus": ("R-003 f5: an agreement's deposit absorbs any ETH already in the contract", "Tests for both ingots", replace_in(HANDLERS, "deposited: total,", "deposited: ctx.selfbalance() - totals.outstanding + total,")),
     "mut-outstanding-follows-the-balance": ("R-003 f5: total outstanding is set from the contract balance instead of the agreements", "Tests for both ingots", replace_in(HANDLERS, "totals.outstanding = totals.outstanding + total", "totals.outstanding = ctx.selfbalance()")),
+    # Phase 2B: each mutation breaks one rule of T2 (Submit), T3 (Approve) or T4 (Reject).
+    "mut-anyone-can-submit": ("T2: the caller need not be the provider", "Tests for both ingots", replace_in(RULES, "    if caller != provider {", "    if caller != provider && false {")),
+    "mut-approved-milestone-accepts-new-evidence": ("T2: an Approved milestone can take new evidence (immutability broken)", "Tests for both ingots", replace_in(RULES, "    if !can_submit_from(state) {", "    if false {")),
+    "mut-submit-ignores-the-delivery-window": ("T2: evidence is accepted after deliver_by", "Tests for both ingots", replace_in(RULES, "    if !delivery_open(now, deliver_by) {", "    if false {")),
+    "mut-zero-evidence-accepted": ("T2: zero evidence is accepted", "Tests for both ingots", replace_in(RULES, "    if evidence == 0 {", "    if false {")),
+    "mut-unused-slot-reports-the-wrong-reason": ("T2: an unused slot fails for the wrong reason (WrongState instead of NoSuchMilestone)", "Tests for both ingots", replace_nth_in(RULES, "    if state_code(state) == 0 {", "    if state_code(state) == 0 && false {", 1)),
+    "mut-anyone-can-review": ("T3/T4: the caller need not be the verifier", "Tests for both ingots", replace_in(RULES, "    if caller != verifier {", "    if caller != verifier && false {")),
+    "mut-review-from-any-state": ("T3/T4: a milestone need not be Submitted to be reviewed", "Tests for both ingots", replace_in(RULES, "    if state_code(state) != 2 {", "    if false {")),
+    "mut-review-ignores-the-window": ("T3/T4: the verifier can review after decide_by", "Tests for both ingots", replace_in(RULES, "    if !review_open(now, decide_by) {", "    if false {")),
+    "mut-review-ignores-the-evidence": ("T3/T4 (D-015): neither Approve nor Reject needs to name the stored evidence", "Tests for both ingots", replace_in(RULES, "    if evidence != stored_evidence {", "    if false {")),
+    "mut-approve-ignores-the-named-evidence": ("T3: Approve always matches (the named evidence is replaced by the stored one)", "Tests for both ingots", replace_nth_in(HANDLERS, "            stored_evidence: x.evidence,\n            evidence,", "            stored_evidence: x.evidence,\n            evidence: x.evidence,", 1)),
+    "mut-reject-ignores-the-named-evidence": ("T4 (D-015): Reject always matches (the S-1 race)", "Tests for both ingots", replace_nth_in(HANDLERS, "            stored_evidence: x.evidence,\n            evidence,", "            stored_evidence: x.evidence,\n            evidence: x.evidence,", 2)),
+    "mut-reject-keeps-the-evidence": ("T4: a rejected milestone keeps its evidence", "Tests for both ingots", replace_in(HANDLERS, "                evidence: 0,\n                rejections,", "                evidence: x.evidence,\n                rejections,")),
+    "mut-reject-does-not-count": ("T4: the rejection counter does not go up", "Tests for both ingots", replace_in(HANDLERS, "let rejections = x.rejections + 1", "let rejections = x.rejections")),
+    "mut-reject-leaves-the-milestone-submitted": ("T4: Reject keeps the state Submitted instead of Funded", "Tests for both ingots", replace_nth_in(HANDLERS, "state: MilestoneState::Funded,", "state: MilestoneState::Submitted,", 2)),
+    "mut-approve-sets-another-state": ("T3: Approve sets the state Paid", "Tests for both ingots", replace_in(HANDLERS, "state: MilestoneState::Approved,", "state: MilestoneState::Paid,")),
+    "mut-submit-rewrites-the-deadline": ("T2: Submit moves deliver_by one second later (deadlines must be immutable)", "Tests for both ingots", replace_in(HANDLERS, "                state: MilestoneState::Submitted,\n                amount: x.amount,\n                deliver_by: x.deliver_by,", "                state: MilestoneState::Submitted,\n                amount: x.amount,\n                deliver_by: Timestamp::from_seconds(x.deliver_by.as_seconds() + 1),")),
+    "mut-submit-checks-the-verifier-role": ("T2: Submit compares the caller with the verifier (roles swapped)", "Tests for both ingots", replace_in(HANDLERS, "            provider: a.provider,", "            provider: a.verifier,")),
+    "mut-transition-becomes-payable": ("T2: Submit is payable (a transition must never take ETH)", "Tests for both ingots", replace_in(SETTLANE, "        Submit { id, m, evidence } uses (", "        #[payable]\n        Submit { id, m, evidence } uses (")),
+    "mut-approved-event-reports-milestone-zero": ("T3: MilestoneApproved always reports milestone 0 (tests and ABI cannot see it)", "Events of both ingots", replace_in(HANDLERS, "MilestoneApproved { id, m, evidence }", "MilestoneApproved { id, m: 0, evidence }")),
+    "mut-rejected-event-counter-off-by-one": ("T4: MilestoneRejected reports rejections + 1", "Events of both ingots", replace_in(HANDLERS, "MilestoneRejected { id, m, evidence, rejections }", "MilestoneRejected { id, m, evidence, rejections: rejections + 1 }")),
+    "mut-submitted-event-not-emitted": ("T2: MilestoneSubmitted is never emitted", "Events of both ingots", replace_in(HANDLERS, "log.emit(MilestoneSubmitted { id, m, evidence })", "let _ = id")),
     "unformatted-dev-code": ("badly formatted dev code", "Format check", lambda r: write(r, "ingots/settlane-dev/src/messy.fe", "pub fn   messy ( )   ->  u256 {   1 }\n")),
 }
 

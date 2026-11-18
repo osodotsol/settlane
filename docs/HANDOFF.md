@@ -17,6 +17,24 @@ Do not modify src/ unless the assignment allows it. Do not commit or push.
 ```
 
 ## Active assignment
+- **ID:** R-004 Phase 2B review (evidence submission, approval, evidence-matched rejection; no payouts yet)
+- **Commit:** the Phase 2B commit on `settlane/dev` (see `git log -1`).
+- **Status: NOT RUN.** Codex is not installed in this environment and has not reviewed Phase 2B.
+- **Scope:** `ingots/settlane/src/*.fe` (`rules.fe` `check_submit` and `check_review`, `handlers.fe`, `settlane.fe`, `types.fe`), `ingots/settlane-dev/src/*.fe`, `scripts/*`, `docs/LIFECYCLE.md` (the T2 to T4 rows and the "Phase 2B" implementation notes), `docs/SECURITY.md` ("Phase 2B" coverage table), `docs/DECISIONS.md` D-015 and D-021.
+- **Edit permission:** you may add new files under `experiments/review/` to reproduce a doubt. Do not edit any other file.
+- **Questions:**
+  1. Does every rule of T2, T3 and T4 in the lifecycle table hold, with no extra and no missing rule? Find a (state, caller, time, evidence) combination that is accepted but should be rejected, or the reverse.
+  2. Immutability: can any transition after `Approved` change a stored field, or can any transition change amount, `deliver_by`, `decide_by` or `spec`?
+  3. D-015: construct a race (a resubmission just before a `Reject` or `Approve`) in which the verifier acts on evidence it never saw. Is the evidence match complete for both actions?
+  4. Role and window ordering: can an unauthorized caller learn the state of a milestone from a revert reason? Is the role-before-state order consistent for all three actions?
+  5. Money: can any of the three transitions move, take or create ETH, or change `totalOutstanding` or any accounting? Is every arm non-payable in the ABI?
+  6. The `rejections` counter: any way to overflow, reset or desynchronize it? Is its `u256` type a problem for the ABI or storage packing?
+  7. Tests: is any assertion vacuous, or any reason assertion too loose (a substring that two different reasons share)? Run `python3 scripts/ci_negative_controls.py` and propose mutations the tests would miss.
+  8. Events: do the three events carry enough to reconstruct the state machine? Can `scripts/check_events.py` pass on logs that violate the lifecycle?
+- **Acceptance:** each finding gives a severity, a concrete sequence, the expected and actual (or predicted) outcome, and a fix or test. Doubts about Fe behavior come with an `fe check` or `fe test` command and its output.
+- **Output:** `docs/reviews/2026-11-18-phase2b.md`
+
+## Previous assignment (R-002 and R-003, done)
 - **ID:** R-002 Phase 2A review (agreement creation, funding, queries; no transitions yet)
 - **Commit:** the Phase 2A commit on `settlane/dev` (see `git log -1`).
 - **Status: R-002 and R-003 were run by the owner with Codex, and their findings are fixed** (`docs/reviews/2026-11-18-phase2a.md`, `docs/reviews/2026-11-18-phase2a-r003.md`). The fixes of R-003 have not been re-reviewed (an R-004 would be that check). Original R-002 status: **RUN by the owner with Codex, findings fixed.** Codex is not installed in this environment, so I did not see the reviewer's own report: the five findings reached me in the owner's request and are recorded, reproduced and resolved in `docs/reviews/2026-11-18-phase2a.md`. The fixes have not been independently re-reviewed (an R-003 would be that check).

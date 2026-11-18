@@ -87,6 +87,142 @@ pub fn delivery_open(now: Timestamp, deliver_by: Timestamp) -> bool {
     now < deliver_by
 }
 
+// The review window is open strictly before `decide_by` (docs/LIFECYCLE.md, DE). It is the
+// mirror of `expired` for a Submitted milestone: a refund (Phase 3) needs `now >= decide_by`.
+pub fn review_open(now: Timestamp, decide_by: Timestamp) -> bool {
+    now < decide_by
+}
+
+// A milestone can take new evidence in these states (T2): first submission from `Funded`,
+// resubmission from `Submitted`. `Approved` is immutable, and `Paid`, `Refunded` are terminal.
+pub fn can_submit_from(_ s: MilestoneState) -> bool {
+    match s {
+        MilestoneState::None => false,
+        MilestoneState::Funded => true,
+        MilestoneState::Submitted => true,
+        MilestoneState::Approved => false,
+        MilestoneState::Paid => false,
+        MilestoneState::Refunded => false,
+    }
+}
+
+// First failed rule of `Submit` (T2), in this order: the agreement exists, the caller is the
+// provider, the milestone exists, its state allows submission, the delivery window is open,
+// and the evidence is not zero.
+pub enum SubmitCheck {
+    Valid,
+    UnknownAgreement,
+    NotProvider,
+    NoSuchMilestone,
+    WrongState,
+    DeliveryClosed,
+    ZeroEvidence,
+}
+
+impl Copy for SubmitCheck {}
+
+pub fn submit_code(_ c: SubmitCheck) -> u8 {
+    match c {
+        SubmitCheck::Valid => 0,
+        SubmitCheck::UnknownAgreement => 1,
+        SubmitCheck::NotProvider => 2,
+        SubmitCheck::NoSuchMilestone => 3,
+        SubmitCheck::WrongState => 4,
+        SubmitCheck::DeliveryClosed => 5,
+        SubmitCheck::ZeroEvidence => 6,
+    }
+}
+
+pub fn check_submit(
+    agreement_exists: bool,
+    caller: Address,
+    provider: Address,
+    state: MilestoneState,
+    deliver_by: Timestamp,
+    now: Timestamp,
+    evidence: u256,
+) -> SubmitCheck {
+    if !agreement_exists {
+        return SubmitCheck::UnknownAgreement
+    }
+    if caller != provider {
+        return SubmitCheck::NotProvider
+    }
+    if state_code(state) == 0 {
+        return SubmitCheck::NoSuchMilestone
+    }
+    if !can_submit_from(state) {
+        return SubmitCheck::WrongState
+    }
+    if !delivery_open(now, deliver_by) {
+        return SubmitCheck::DeliveryClosed
+    }
+    if evidence == 0 {
+        return SubmitCheck::ZeroEvidence
+    }
+    SubmitCheck::Valid
+}
+
+// First failed rule of `Approve` (T3) and `Reject` (T4). They share one check, so their guards
+// cannot drift apart: the agreement exists, the caller is the verifier, the milestone exists,
+// it is `Submitted`, the review window is open, and the evidence the verifier names is exactly
+// the stored evidence (D-015). A zero evidence can never match, because a `Submitted`
+// milestone always has nonzero evidence.
+pub enum ReviewCheck {
+    Valid,
+    UnknownAgreement,
+    NotVerifier,
+    NoSuchMilestone,
+    NotSubmitted,
+    ReviewClosed,
+    EvidenceMismatch,
+}
+
+impl Copy for ReviewCheck {}
+
+pub fn review_code(_ c: ReviewCheck) -> u8 {
+    match c {
+        ReviewCheck::Valid => 0,
+        ReviewCheck::UnknownAgreement => 1,
+        ReviewCheck::NotVerifier => 2,
+        ReviewCheck::NoSuchMilestone => 3,
+        ReviewCheck::NotSubmitted => 4,
+        ReviewCheck::ReviewClosed => 5,
+        ReviewCheck::EvidenceMismatch => 6,
+    }
+}
+
+pub fn check_review(
+    agreement_exists: bool,
+    caller: Address,
+    verifier: Address,
+    state: MilestoneState,
+    decide_by: Timestamp,
+    now: Timestamp,
+    stored_evidence: u256,
+    evidence: u256,
+) -> ReviewCheck {
+    if !agreement_exists {
+        return ReviewCheck::UnknownAgreement
+    }
+    if caller != verifier {
+        return ReviewCheck::NotVerifier
+    }
+    if state_code(state) == 0 {
+        return ReviewCheck::NoSuchMilestone
+    }
+    if state_code(state) != 2 {
+        return ReviewCheck::NotSubmitted
+    }
+    if !review_open(now, decide_by) {
+        return ReviewCheck::ReviewClosed
+    }
+    if evidence != stored_evidence {
+        return ReviewCheck::EvidenceMismatch
+    }
+    ReviewCheck::Valid
+}
+
 pub const U256_MAX: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 
 // All creation rules (docs/LIFECYCLE.md "Creation validation"), stage by stage in the table's

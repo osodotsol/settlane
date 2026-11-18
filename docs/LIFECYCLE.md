@@ -1,6 +1,6 @@
 # Lifecycle specification
 
-**Status:** Phase 2A implements T1 and the queries only (T2 to T6 are Phase 3). Provisionally approved by the owner on 2026-11-18 (D-005a refund, D-006b revision-request rejection, D-009 Clock effect, D-011 distinct verifier). Final approval is at the Phase 2 review. This document is authoritative for settlement behavior, and any transition not listed here **must revert**.
+**Status:** Phase 2B implements T1 to T4 and the queries. T5 and T6 (the payouts, the only transitions that move ETH) are Phase 3. Provisionally approved by the owner on 2026-11-18 (D-005a refund, D-006b revision-request rejection, D-009 Clock effect, D-011 distinct verifier). Final approval is at the Phase 2 review. This document is authoritative for settlement behavior, and any transition not listed here **must revert**.
 
 ## Agreement
 - Creation and funding are one payable call (D-003), so an unfunded or partially funded agreement cannot exist on-chain.
@@ -26,6 +26,22 @@
 - `n` is a `u8`. A wider value is rejected by the ABI decoder, so `n = 256` can never wrap to 0 (tested).
 - Deadlines need not be ordered across milestones, and are stored as given. Every used slot is judged against the same `now` (tested in every slot, with the boundary at d-1, d and d+1).
 - The funding check uses the amounts of the first `n` slots only, and unused slots must be completely empty.
+
+### Implementation notes (Phase 2B, T2 to T4)
+**Check order.** Each action runs one pure check (`rules::check_submit`, `rules::check_review`) that returns the first failed rule, and every rule is evaluated before anything is written. The revert reason names the failed rule, and the tests assert it.
+| Action | Order of the rules, with the revert reason |
+| --- | --- |
+| `Submit(id, m, e)` | the agreement exists (`unknown agreement`), the caller is the provider (`caller is not the provider`), the milestone exists (`no such milestone`), its state is `Funded` or `Submitted` (`milestone cannot take evidence in this state`), the delivery window is open (`delivery window is closed`), `e != 0` (`evidence is zero`) |
+| `Approve(id, m, e)` and `Reject(id, m, e)` (one shared check, so their guards cannot drift apart) | the agreement exists, the caller is the verifier (`caller is not the verifier`), the milestone exists, its state is `Submitted` (`milestone is not submitted`), the review window is open (`review window is closed`), `e` equals the stored evidence (`evidence does not match the submitted evidence`) |
+
+- **Role before state.** A caller without the role always gets the role reason, so it learns nothing about the state of a milestone. A caller with the role gets the state reason.
+- **Resubmission.** A `Submit` from `Submitted` replaces the stored evidence, while the delivery window is open. An identical resubmission is accepted (idempotent) and emits the event again. `Submit` from `Approved`, `Paid` or `Refunded` always reverts.
+- **Immutability.** The only fields a transition writes are `state`, `evidence` and `rejections`. Amount, both deadlines and the spec are never rewritten (tested after every transition). `Approved` accepts no transition at all, at any time, and approval never expires (tested at every deadline).
+- **`Reject`** returns the milestone to `Funded`, clears the evidence and adds one to `rejections` (a `u256`, so a long reject and resubmit cycle can never overflow and block a rejection). `Approve` keeps the evidence and the count.
+- **Windows.** `Submit` needs `now < deliver_by`. `Approve` and `Reject` need `now < decide_by`. A submission made at `deliver_by - 1` still gets the whole review window (tested). After the delivery window closes a rejected milestone stays `Funded` and can take no new evidence, so only a refund (Phase 3) can settle it.
+- **Money.** None of the three moves ETH, takes ETH (all are non-payable, tested with a zero-value control) or changes any total. `Settlane` still declares no `Call` effect, so the compiler guarantees it cannot send ETH.
+- **Views.** `getMilestone` returns `rejections` as a 7th output. Unknown ids and unused slots still read as state `None`, all zero.
+- **Events.** `MilestoneSubmitted(id, m, evidence)`, `MilestoneApproved(id, m, evidence)` (all three indexed) and `MilestoneRejected(id, m, evidence, rejections)` (the first three indexed, `rejections` is the new total).
 
 ## Milestone stored states
 `Funded`, `Submitted`, `Approved`, `Paid`, `Refunded`. Unused slots are `None`. There is no stored `Rejected` state (D-006b): a rejection returns the milestone to `Funded`.

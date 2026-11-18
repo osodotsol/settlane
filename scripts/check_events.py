@@ -19,7 +19,12 @@ with what the tests did. It checks:
         topic must equal it. Every test that creates agreements directly must emit the probe;
       - a call through the dev Actor: the Actor emits `Acted(its own address)` immediately
         before forwarding, and the `client` topic of the next AgreementCreated must equal it;
-  * the production contract and the dev test-clock shell emit identical events for the same call.
+  * the production contract and the dev test-clock shell emit identical events for the same call;
+  * (Phase 2B) every MilestoneSubmitted / Approved / Rejected is decoded strictly, the events of each
+    test are replayed as the milestone state machine of docs/LIFECYCLE.md (a Submit only from Funded
+    or Submitted, a review only of a Submitted milestone and only naming the stored evidence, a
+    Reject counting up by exactly one, nothing after Approved), and 11 tests have their exact
+    transition sequence checked.
 
 Usage:
   python3 scripts/check_events.py             run fe test --show-logs and check the logs
@@ -36,9 +41,16 @@ from keccak import keccak256  # noqa: E402
 CREATED_SIG = "AgreementCreated(uint256,address,address,address,uint256,uint8)"
 ACTED_SIG = "Acted(address)"
 PROBE_SIG = "CallerProbe(address)"
+SUBMITTED_SIG = "MilestoneSubmitted(uint256,uint8,uint256)"
+APPROVED_SIG = "MilestoneApproved(uint256,uint8,uint256)"
+REJECTED_SIG = "MilestoneRejected(uint256,uint8,uint256,uint256)"
 TOPIC_CREATED = "0x" + keccak256(CREATED_SIG.encode()).hex()
 TOPIC_ACTED = "0x" + keccak256(ACTED_SIG.encode()).hex()
 TOPIC_PROBE = "0x" + keccak256(PROBE_SIG.encode()).hex()
+TOPIC_SUBMITTED = "0x" + keccak256(SUBMITTED_SIG.encode()).hex()
+TOPIC_APPROVED = "0x" + keccak256(APPROVED_SIG.encode()).hex()
+TOPIC_REJECTED = "0x" + keccak256(REJECTED_SIG.encode()).hex()
+TRANSITION_KINDS = ("Submitted", "Approved", "Rejected")
 ETHER = 10**18
 A1, A2, B1, B2 = 0xA1, 0xA2, 0xB1, 0xB2
 
@@ -91,6 +103,28 @@ def decode(log):
         if not is_address(v):
             return None, [f"{kind}.{field} is not a nonzero address"]
         return {"kind": kind, field: v, "address": log["address"]}, []
+    if t[0] in (TOPIC_SUBMITTED, TOPIC_APPROVED, TOPIC_REJECTED):
+        kind = {TOPIC_SUBMITTED: "Submitted", TOPIC_APPROVED: "Approved", TOPIC_REJECTED: "Rejected"}[t[0]]
+        if len(t) != 4:
+            return None, [f"Milestone{kind} must have 4 topics (hash, id, m, evidence), got {len(t)}"]
+        w = words(log["data"])
+        want = 1 if kind == "Rejected" else 0
+        if w is None or len(w) != want:
+            return None, [f"Milestone{kind} data must be {want} word(s), got {log['data']}"]
+        tid, m, evidence = (int(x, 16) for x in t[1:])
+        problems = []
+        if tid == 0:
+            problems.append("id is zero")
+        if m > 2:
+            problems.append(f"m {m} is not 0..2")
+        if evidence == 0:
+            problems.append("evidence is zero")
+        ev = {"kind": kind, "id": tid, "m": m, "evidence": evidence, "address": log["address"]}
+        if kind == "Rejected":
+            ev["rejections"] = w[0]
+            if w[0] == 0:
+                problems.append("rejections is zero")
+        return ev, problems
     if t[0] != TOPIC_CREATED:
         return None, [f"unknown event topic0 {t[0]}"]
     if len(t) != 4:
@@ -161,6 +195,87 @@ DIFFERENTIAL = {
 }
 
 
+def S(i, m, e):
+    return ("Submitted", i, m, e)
+
+
+def A(i, m, e):
+    return ("Approved", i, m, e)
+
+
+def R(i, m, e, k):
+    return ("Rejected", i, m, e, k)
+
+
+# Exact expected transition events (Submitted, Approved, Rejected) in order, per test. A transition
+# that reverts emits nothing, so these lists contain only the accepted steps.
+EXPECTED_TRANSITIONS = {
+    ("settlane_dev", "provider_submits_and_verifier_approves_on_production_with_the_real_clock"): [S(1, 0, 0xE1), A(1, 0, 0xE1), S(1, 1, 0xE2), A(1, 1, 0xE2)],
+    ("settlane_dev", "only_the_provider_submits_and_only_the_verifier_reviews"): [S(1, 0, 0xE1), S(1, 1, 0xE2), A(1, 0, 0xE1), R(1, 1, 0xE2, 1)],
+    ("settlane_dev", "evidence_must_match_and_stale_evidence_can_neither_be_approved_nor_rejected"): [S(1, 0, 0xE1), R(1, 0, 0xE1, 1), S(1, 0, 0xE2), S(1, 0, 0xE3), A(1, 0, 0xE3)],
+    ("settlane_dev", "replays_and_invalid_transitions_are_rejected_and_an_approved_milestone_never_changes"): [S(1, 0, 0xE1), S(1, 0, 0xE1), A(1, 0, 0xE1), S(2, 0, 0xE1), R(2, 0, 0xE1, 1), S(2, 0, 0xE2)],
+    ("settlane_dev", "an_approved_milestone_stays_immutable_through_every_deadline"): [S(1, 0, 0xE1), A(1, 0, 0xE1)],
+    ("settlane_dev", "the_delivery_window_closes_exactly_at_deliver_by"): [S(1, 0, 0xE1), S(4, 0, 0xE1), S(5, 0, 0xE1), R(5, 0, 0xE1, 1)],
+    ("settlane_dev", "the_review_window_closes_exactly_at_decide_by_and_a_late_submission_keeps_it_whole"): [S(i, 0, 0xE0 + i) for i in range(1, 7)] + [A(1, 0, 0xE1), A(2, 0, 0xE2), R(3, 0, 0xE3, 1)],
+    ("settlane_dev", "agreements_are_isolated_and_milestones_are_independent"): [S(1, 0, 0xA0), S(1, 1, 0xA1), A(1, 0, 0xA0), R(1, 1, 0xA1, 1), S(2, 0, 0xB0), A(2, 0, 0xB0)],
+    ("settlane_dev", "the_rejection_counter_counts_every_revision_request_and_never_decreases"): [S(1, 0, 0xC0), R(1, 0, 0xC0, 1), S(1, 0, 0xC1), R(1, 0, 0xC1, 2), S(1, 0, 0xC2), R(1, 0, 0xC2, 3), S(1, 0, 0xCF), A(1, 0, 0xCF)],
+    ("settlane_dev", "transitions_are_not_payable_and_never_move_money"): [S(1, 0, 0xE1), A(1, 0, 0xE1)],
+    ("settlane_dev", "unknown_agreements_and_unused_milestones_are_rejected_by_the_right_role_on_both_contracts"): [S(1, 0, 0xE1), S(1, 0, 0xE1)],
+}
+
+
+def as_tuple(e):
+    base = (e["kind"], e["id"], e["m"], e["evidence"])
+    return base + ((e["rejections"],) if e["kind"] == "Rejected" else ())
+
+
+def check_machine(key, evs):
+    """Replay the events of one test as the milestone state machine of docs/LIFECYCLE.md and check
+    every transition against it. The logs alone must obey the spec: a Submit only from Funded or
+    Submitted, an Approve or Reject only from Submitted and only naming the stored evidence, a
+    Reject counting up by exactly one, and nothing after Approved."""
+    problems = []
+    state = {}  # (contract, id, m) -> [state, evidence, rejections]
+    sizes = {}  # (contract, id) -> milestones
+    for e in evs:
+        if e["kind"] == "Created":
+            sizes[(e["address"], e["id"])] = e["n"]
+            for m in range(e["n"]):
+                state[(e["address"], e["id"], m)] = ["Funded", 0, 0]
+            continue
+        if e["kind"] not in TRANSITION_KINDS:
+            continue
+        k = (e["address"], e["id"], e["m"])
+        label = f"{key[1]}: {e['kind']}(id {e['id']}, m {e['m']})"
+        if (e["address"], e["id"]) not in sizes:
+            problems.append(f"{label} on an agreement that was never created")
+            continue
+        if k not in state:
+            problems.append(f"{label} on an unused milestone")
+            continue
+        st = state[k]
+        if e["kind"] == "Submitted":
+            if st[0] not in ("Funded", "Submitted"):
+                problems.append(f"{label} from {st[0]}")
+            st[0], st[1] = "Submitted", e["evidence"]
+        else:
+            if st[0] != "Submitted":
+                problems.append(f"{label} from {st[0]}, only a Submitted milestone can be reviewed")
+            elif e["evidence"] != st[1]:
+                problems.append(f"{label} names evidence {e['evidence']:#x} but {st[1]:#x} is stored")
+            if e["kind"] == "Approved":
+                st[0] = "Approved"
+            else:
+                if e["rejections"] != st[2] + 1:
+                    problems.append(f"{label} reports rejections {e['rejections']}, expected {st[2] + 1}")
+                st[0], st[1], st[2] = "Funded", 0, e["rejections"]
+    return problems
+
+
+# The test pairs where production and the shell are called alternately with identical inputs.
+TRANSITION_DIFFERENTIAL = {("settlane_dev", "production_and_the_shell_agree_on_every_step_of_a_transition_script"): 12}
+
+
 def check_client(key, evs):
     """R-003 finding 2: every `client` must be the real caller, from an independent source."""
     problems = []
@@ -203,6 +318,28 @@ def check(logs):
             if ids != list(range(1, len(ids) + 1)):
                 problems.append(f"{key[1]}: contract {addr[:10]}.. emitted ids {ids}, expected 1..{len(ids)}")
         problems += check_client(key, evs)
+        problems += check_machine(key, evs)
+    for key, want in EXPECTED_TRANSITIONS.items():
+        if key not in decoded:
+            problems.append(f"expected test {key[1]} did not run")
+            continue
+        got = [as_tuple(e) for e in decoded[key] if e["kind"] in TRANSITION_KINDS]
+        if got != want:
+            problems.append(f"{key[1]}: transition events {got}, expected {want}")
+    for key, count in TRANSITION_DIFFERENTIAL.items():
+        if key not in decoded:
+            problems.append(f"expected test {key[1]} did not run")
+            continue
+        ev = [log for log in logs[key] if log["topics"] and log["topics"][0] in (TOPIC_SUBMITTED, TOPIC_APPROVED, TOPIC_REJECTED)]
+        if len(ev) != count:
+            problems.append(f"{key[1]}: {len(ev)} transition logs, expected {count} (production, shell, production, shell, ...)")
+            continue
+        prod, shell = ev[0]["address"], ev[1]["address"]
+        if prod == shell or any(ev[i]["address"] != (prod if i % 2 == 0 else shell) for i in range(count)):
+            problems.append(f"{key[1]}: transition logs do not alternate between one production and one shell contract")
+        for i in range(0, count, 2):
+            if ev[i]["topics"] != ev[i + 1]["topics"] or ev[i]["data"] != ev[i + 1]["data"]:
+                problems.append(f"{key[1]}: production and shell emitted different transition events (pair {i // 2 + 1})")
     for key, want in EXPECTED.items():
         if key not in decoded:
             problems.append(f"expected test {key[1]} did not run")
@@ -310,6 +447,47 @@ def selftest():
     cases.append(("a call through the actor whose client is someone else is rejected", any("is not the Actor" in p for p in check_client(key, [actor, dict(via, client=0xC1)]))))
     cases.append(("an actor-called client equal to the probe is still rejected", any("is not the Actor" in p for p in check_client(key, [probe, actor, dict(via, client=0xBD)]))))
     cases.append(("two different probed callers in one test are rejected", any("different callers" in p for p in check_client(key, [probe, dict(probe, who=0xBE)]))))
+    # Phase 2B: the three transition events, decoded strictly (each negative asserts its reason)
+    def tlog(kind, i=1, m=0, e=0xE1, rej=1):
+        t0 = {"Submitted": TOPIC_SUBMITTED, "Approved": TOPIC_APPROVED, "Rejected": TOPIC_REJECTED}[kind]
+        return {"address": "0x" + "d2" * 20, "topics": [t0, "0x" + word(i), "0x" + word(m), "0x" + word(e)], "data": "0x" + (word(rej) if kind == "Rejected" else "")}
+
+    for kind in ("Submitted", "Approved", "Rejected"):
+        ev, probs = decode(tlog(kind))
+        cases.append((f"the well-formed Milestone{kind} control decodes", not probs and ev["kind"] == kind and ev["id"] == 1 and ev["m"] == 0 and ev["evidence"] == 0xE1))
+    cases.append(("a Rejected control carries its rejection count", decode(tlog("Rejected", rej=3))[0]["rejections"] == 3))
+    cases.append(("the three transition topics are distinct and match their signatures", len({TOPIC_SUBMITTED, TOPIC_APPROVED, TOPIC_REJECTED}) == 3 and TOPIC_SUBMITTED == "0x" + keccak256(SUBMITTED_SIG.encode()).hex()))
+    for kind in ("Submitted", "Approved", "Rejected"):
+        rejects(f"{kind}: zero evidence", tlog(kind, e=0), "evidence is zero")
+        rejects(f"{kind}: m = 3", tlog(kind, m=3), "m 3 is not 0..2")
+        rejects(f"{kind}: id zero", tlog(kind, i=0), "id is zero")
+        rejects(f"{kind}: a missing topic", dict(tlog(kind), topics=tlog(kind)["topics"][:3]), "must have 4 topics")
+    rejects("Rejected: zero rejections", tlog("Rejected", rej=0), "rejections is zero")
+    rejects("Rejected: no data word", dict(tlog("Rejected"), data="0x"), "must be 1 word(s)")
+    rejects("Submitted: an unexpected data word", dict(tlog("Submitted"), data="0x" + word(1)), "must be 0 word(s)")
+    # the state-machine replay (the logs alone must obey docs/LIFECYCLE.md)
+    mk = ("settlane_dev", "t")
+    def cr(i=1, n=2, a="c1"):
+        return {"kind": "Created", "id": i, "n": n, "address": a}
+    def tr(kind, i=1, m=0, e=0xE1, rej=1, a="c1"):
+        return {"kind": kind, "id": i, "m": m, "evidence": e, "rejections": rej, "address": a}
+    good_run = [cr(), tr("Submitted"), tr("Rejected", rej=1), tr("Submitted", e=0xE2), tr("Approved", e=0xE2)]
+    cases.append(("a legal Submit, Reject, Submit, Approve run replays cleanly", not check_machine(mk, good_run)))
+    def machine_rejects(label, evs, text):
+        cases.append((f"{label} [reason: {text}]", any(text in p for p in check_machine(mk, evs))))
+    machine_rejects("an Approve with nothing submitted", [cr(), tr("Approved")], "from Funded")
+    machine_rejects("a Reject with nothing submitted", [cr(), tr("Rejected")], "from Funded")
+    machine_rejects("an Approve naming other evidence", [cr(), tr("Submitted"), tr("Approved", e=0x99)], "names evidence")
+    machine_rejects("a Reject naming other evidence", [cr(), tr("Submitted"), tr("Rejected", e=0x99)], "names evidence")
+    machine_rejects("a Reject whose counter skips", [cr(), tr("Submitted"), tr("Rejected", rej=2)], "expected 1")
+    machine_rejects("a replayed Reject", [cr(), tr("Submitted"), tr("Rejected"), tr("Rejected")], "from Funded")
+    machine_rejects("a Submit after Approve", [cr(), tr("Submitted"), tr("Approved"), tr("Submitted", e=0xE2)], "from Approved")
+    machine_rejects("a replayed Approve", [cr(), tr("Submitted"), tr("Approved"), tr("Approved")], "from Approved")
+    machine_rejects("a Submit on an unused milestone", [cr(n=2), tr("Submitted", m=2)], "unused milestone")
+    machine_rejects("a Submit on an agreement that was never created", [tr("Submitted")], "never created")
+    machine_rejects("a transition on another contract's agreement", [cr(a="c1"), tr("Submitted", a="c2")], "never created")
+    cases.append(("a replay keeps contracts separate: the same id on two contracts is fine", not check_machine(mk, [cr(a="c1"), cr(a="c2"), tr("Submitted", a="c1"), tr("Submitted", a="c2"), tr("Approved", a="c1")])))
+    cases.append(("an expected transition sequence that differs is reported", any("transition events" in p for p in check({("settlane_dev", "transitions_are_not_payable_and_never_move_money"): [tlog("Submitted"), tlog("Rejected")]})[0])))
     # sequences
     cases.append(("a mismatch with the expected sequence is reported", any("provider is" in p for p in check({("settlane", "creates_a_single_milestone_agreement"): [make_log(provider=B1)]})[0])))
     cases.append(("an unexpected event in a no-event test is reported", any("expected none" in p for p in check({NO_EVENTS[0]: [good]})[0])))
@@ -336,7 +514,7 @@ def main(argv):
     if problems:
         print("check_events: FAILED")
         return 1
-    print(f"check_events: ok ({checked} events decoded in {sum(1 for v in logs.values() if v)} tests, {len(EXPECTED)} exact sequences, every client verified against the real caller)")
+    print(f"check_events: ok ({checked} events decoded in {sum(1 for v in logs.values() if v)} tests, {len(EXPECTED)} creation sequences and {len(EXPECTED_TRANSITIONS)} transition sequences checked exactly, every test replayed as the milestone state machine, every client verified against the real caller)")
     return 0
 
 

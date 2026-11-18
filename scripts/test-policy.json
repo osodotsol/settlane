@@ -3,11 +3,11 @@
   "ingots": {
     "settlane": {
       "path": "ingots/settlane",
-      "min_tests": 28
+      "min_tests": 36
     },
     "settlane_dev": {
       "path": "ingots/settlane-dev",
-      "min_tests": 7
+      "min_tests": 19
     }
   }
 }

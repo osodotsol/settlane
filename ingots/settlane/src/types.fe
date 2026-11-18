@@ -47,6 +47,8 @@ pub struct Milestone {
     pub decide_by: Timestamp,
     pub spec: u256,
     pub evidence: u256,
+    // How many times the verifier has asked for a revision (T4). Only `Reject` changes it.
+    pub rejections: u256,
 }
 
 impl Copy for Milestone {}
@@ -62,4 +64,39 @@ pub struct AgreementCreated {
     pub verifier: Address,
     pub total: Wei,
     pub milestones: u8,
+}
+
+// T2: the provider submitted (or resubmitted) evidence for a milestone.
+#[event]
+pub struct MilestoneSubmitted {
+    #[indexed]
+    pub id: u256,
+    #[indexed]
+    pub m: u8,
+    #[indexed]
+    pub evidence: u256,
+}
+
+// T3: the verifier approved the evidence it names. The milestone is immutable from here on.
+#[event]
+pub struct MilestoneApproved {
+    #[indexed]
+    pub id: u256,
+    #[indexed]
+    pub m: u8,
+    #[indexed]
+    pub evidence: u256,
+}
+
+// T4: the verifier asked for a revision of the evidence it names (D-006b, D-015).
+// `rejections` is the new total for this milestone.
+#[event]
+pub struct MilestoneRejected {
+    #[indexed]
+    pub id: u256,
+    #[indexed]
+    pub m: u8,
+    #[indexed]
+    pub evidence: u256,
+    pub rejections: u256,
 }

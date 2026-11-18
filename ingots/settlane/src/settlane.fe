@@ -1,8 +1,9 @@
-// The Settlane contract and its message type. Every arm is one line of glue (D-016): it
-// provides the Clock and calls a shared handler.
+// The Settlane contract and its message type. Every arm is glue (D-016): it provides the Clock
+// and calls a shared handler.
 //
 // Declared effects: `Ctx` and `Log` only. There is no `Call` and no `Create`, so this
-// contract cannot send ETH. Phase 3 adds `Call`, in the payout arms only (lint E-CALL).
+// contract cannot send ETH. Phase 2B adds Submit, Approve and Reject (no ETH moves in any of
+// them). Phase 3 adds `Call`, in the payout arms only (lint E-CALL).
 use ingot::handlers
 use ingot::types::{Agreement, Clock, Milestone, Totals}
 use std::evm::StorageMap
@@ -23,10 +24,19 @@ pub msg SettleMsg {
         deliver_by: [Timestamp; 3],
         specs: [u256; 3],
     } -> u256,
+    // T2: the provider submits (or resubmits) a nonzero evidence hash for milestone `m`.
+    #[selector = sol("submit(uint256,uint8,uint256)")]
+    Submit { id: u256, m: u8, evidence: u256 },
+    // T3: the verifier approves the evidence it names. It must equal the stored evidence.
+    #[selector = sol("approve(uint256,uint8,uint256)")]
+    Approve { id: u256, m: u8, evidence: u256 },
+    // T4: the verifier asks for a revision of the evidence it names (D-015). Back to `Funded`.
+    #[selector = sol("reject(uint256,uint8,uint256)")]
+    Reject { id: u256, m: u8, evidence: u256 },
     #[selector = sol("getAgreement(uint256)")]
     GetAgreement { id: u256 } -> (Address, Address, Address, Duration, u8),
     #[selector = sol("getMilestone(uint256,uint8)")]
-    GetMilestone { id: u256, m: u8 } -> (u8, Wei, Timestamp, Timestamp, u256, u256),
+    GetMilestone { id: u256, m: u8 } -> (u8, Wei, Timestamp, Timestamp, u256, u256, u256),
     #[selector = sol("getAccounting(uint256)")]
     GetAccounting { id: u256 } -> (Wei, Wei, Wei, Wei),
     #[selector = sol("totalOutstanding()")]
@@ -59,13 +69,31 @@ pub contract Settlane uses (ctx: Ctx, log: mut Log) {
             id
         }
 
+        Submit { id, m, evidence } uses (ctx, mut log, agreements, mut milestones) {
+            with (Clock = Clock { now: ctx.timestamp() }) {
+                handlers::submit_handler(id, m, evidence)
+            }
+        }
+
+        Approve { id, m, evidence } uses (ctx, mut log, agreements, mut milestones) {
+            with (Clock = Clock { now: ctx.timestamp() }) {
+                handlers::approve_handler(id, m, evidence)
+            }
+        }
+
+        Reject { id, m, evidence } uses (ctx, mut log, agreements, mut milestones) {
+            with (Clock = Clock { now: ctx.timestamp() }) {
+                handlers::reject_handler(id, m, evidence)
+            }
+        }
+
         GetAgreement { id } -> (Address, Address, Address, Duration, u8)
         uses (agreements)
         {
             handlers::get_agreement_handler(id)
         }
 
-        GetMilestone { id, m } -> (u8, Wei, Timestamp, Timestamp, u256, u256)
+        GetMilestone { id, m } -> (u8, Wei, Timestamp, Timestamp, u256, u256, u256)
         uses (milestones)
         {
             handlers::get_milestone_handler(id, m)

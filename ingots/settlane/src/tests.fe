@@ -5,10 +5,11 @@
 // would also pass on a revert in the setup (lint T-REVERT, review M2). Tests that need a
 // different caller or a movable clock are in the dev ingot (ingots/settlane-dev).
 use ingot::rules
-use ingot::rules::CreateCheck
+use ingot::rules::{CreateCheck, ReviewCheck, SubmitCheck}
 use ingot::settlane::{SettleMsg, Settlane}
 use ingot::types::MilestoneState
 use std::evm::{ether, predict_create2, seconds, wei}
+use std::evm::CallOutcome
 
 const MAX: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 
@@ -106,7 +107,7 @@ fn outstanding(_ s: Address) -> Wei uses (evm: mut Evm) {
     )
 }
 
-fn milestone(_ s: Address, _ id: u256, _ m: u8) -> (u8, Wei, Timestamp, Timestamp, u256, u256)
+fn milestone(_ s: Address, _ id: u256, _ m: u8) -> (u8, Wei, Timestamp, Timestamp, u256, u256, u256)
 uses (evm: mut Evm)
 {
     evm.call(
@@ -211,6 +212,88 @@ uses (evm: mut Evm)
         !exists(s, last_id + 1),
         "rejected call created an agreement",
     )
+}
+
+// ------------------------------------------------------------ Phase 2B helpers
+
+// The reason a call reverted. Each negative test asserts WHY it failed, not only that it did:
+// the revert data carries the message, and a wrong reason is a failed test.
+enum Why {
+    UnknownAgreement,
+    NotProvider,
+    NotVerifier,
+    NoSuchMilestone,
+    WrongState,
+    NotSubmitted,
+    DeliveryClosed,
+    ReviewClosed,
+    ZeroEvidence,
+    EvidenceMismatch,
+}
+
+impl Copy for Why {}
+
+fn because(_ out: CallOutcome, _ why: Why) -> bool {
+    if out.success() {
+        return false
+    }
+    match why {
+        Why::UnknownAgreement => out.returndata().index_of("unknown agreement").is_some(),
+        Why::NotProvider => out.returndata().index_of("caller is not the provider").is_some(),
+        Why::NotVerifier => out.returndata().index_of("caller is not the verifier").is_some(),
+        Why::NoSuchMilestone => out.returndata().index_of("no such milestone").is_some(),
+        Why::WrongState => out.returndata()
+            .index_of("cannot take evidence in this state")
+            .is_some(),
+        Why::NotSubmitted => out.returndata().index_of("milestone is not submitted").is_some(),
+        Why::DeliveryClosed => out.returndata().index_of("delivery window is closed").is_some(),
+        Why::ReviewClosed => out.returndata().index_of("review window is closed").is_some(),
+        Why::ZeroEvidence => out.returndata().index_of("evidence is zero").is_some(),
+        Why::EvidenceMismatch => out.returndata()
+            .index_of("does not match the submitted evidence")
+            .is_some(),
+    }
+}
+
+// Direct calls from the test contract, which is the client and holds no provider or verifier role.
+fn submit_as_client(_ s: Address, _ id: u256, _ m: u8, _ e: u256) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: s,
+        gas: 500000,
+        value: Wei::zero(),
+        message: SettleMsg::Submit { id, m, evidence: e },
+    )
+}
+
+fn approve_as_client(_ s: Address, _ id: u256, _ m: u8, _ e: u256) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: s,
+        gas: 500000,
+        value: Wei::zero(),
+        message: SettleMsg::Approve { id, m, evidence: e },
+    )
+}
+
+fn reject_as_client(_ s: Address, _ id: u256, _ m: u8, _ e: u256) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: s,
+        gas: 500000,
+        value: Wei::zero(),
+        message: SettleMsg::Reject { id, m, evidence: e },
+    )
+}
+
+fn same_milestone(
+    _ a: (u8, Wei, Timestamp, Timestamp, u256, u256, u256),
+    _ b: (u8, Wei, Timestamp, Timestamp, u256, u256, u256),
+) -> bool {
+    a.0 == b.0 && a.1 == b.1 && a.2 == b.2 && a.3 == b.3 && a.4 == b.4 && a.5 == b.5 && a.6 == b.6
 }
 
 // ---------------------------------------------------------------- valid creation
@@ -716,6 +799,119 @@ uses (evm: mut Evm)
     }
     assert!(created == 3 && outstanding(s) == ether(18))
     check_invariants(s, 3, Wei::zero())
+}
+
+// ------------------------------------------------ Phase 2B: callers without a role
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn a_caller_with_no_role_cannot_submit_approve_or_reject_and_changes_nothing()
+uses (evm: mut Evm)
+{
+    let s = deploy()
+    let now = evm.timestamp()
+    assert!(
+        create(s, valid(now), ether(6)) == 1,
+        "positive control: the agreement exists",
+    )
+    let before0 = milestone(s, 1, 0)
+    let before1 = milestone(s, 1, 1)
+    let before2 = milestone(s, 1, 2)
+    var m: u8 = 0
+    while m < 3 {
+        // The test contract is the client: not the provider, not the verifier.
+        assert!(
+            because(submit_as_client(s, 1, m, 0xe1), Why::NotProvider),
+            "client cannot submit",
+        )
+        assert!(
+            because(approve_as_client(s, 1, m, 0xe1), Why::NotVerifier),
+            "client cannot approve",
+        )
+        assert!(
+            because(reject_as_client(s, 1, m, 0xe1), Why::NotVerifier),
+            "client cannot reject",
+        )
+        m += 1
+    }
+    assert!(same_milestone(milestone(s, 1, 0), before0))
+    assert!(same_milestone(milestone(s, 1, 1), before1))
+    assert!(same_milestone(milestone(s, 1, 2), before2))
+    assert_untouched(s, 1, ether(6), Wei::zero())
+    check_invariants(s, 1, Wei::zero())
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn transitions_on_an_unknown_agreement_are_rejected_for_any_caller()
+uses (evm: mut Evm)
+{
+    let s = deploy()
+    // Nothing exists yet: ids 0 and 1 are unknown. The agreement check comes before the role check.
+    assert!(
+        because(submit_as_client(s, 0, 0, 0xe1), Why::UnknownAgreement),
+        "submit on id 0",
+    )
+    assert!(
+        because(approve_as_client(s, 0, 0, 0xe1), Why::UnknownAgreement),
+        "approve on id 0",
+    )
+    assert!(
+        because(reject_as_client(s, 0, 0, 0xe1), Why::UnknownAgreement),
+        "reject on id 0",
+    )
+    assert!(
+        because(submit_as_client(s, 1, 0, 0xe1), Why::UnknownAgreement),
+        "submit before any agreement",
+    )
+    assert!(
+        because(approve_as_client(s, 1, 0, 0xe1), Why::UnknownAgreement),
+    )
+    assert!(
+        because(reject_as_client(s, 1, 0, 0xe1), Why::UnknownAgreement),
+    )
+
+    let now = evm.timestamp()
+    var a = valid(now)
+    a.n = 1
+    a.amounts = [ether(1), Wei::zero(), Wei::zero()]
+    a.deliver_by = [at(now, 100), Timestamp::from_seconds(0), Timestamp::from_seconds(0)]
+    a.specs = [0x51, 0, 0]
+    assert!(
+        create(s, a, ether(1)) == 1,
+        "positive control: agreement 1 now exists",
+    )
+    // Positive control for the reason itself: on the known agreement the reason is the ROLE.
+    assert!(
+        because(submit_as_client(s, 1, 0, 0xe1), Why::NotProvider),
+        "known agreement: a role problem",
+    )
+    assert!(
+        because(submit_as_client(s, 2, 0, 0xe1), Why::UnknownAgreement),
+        "id 2 is unknown",
+    )
+    assert!(
+        because(approve_as_client(s, 2, 0, 0xe1), Why::UnknownAgreement),
+    )
+    assert!(
+        because(reject_as_client(s, 2, 0, 0xe1), Why::UnknownAgreement),
+    )
+    assert!(
+        because(submit_as_client(s, MAX, 0, 0xe1), Why::UnknownAgreement),
+        "id 2^256 - 1",
+    )
+    assert!(
+        because(approve_as_client(s, MAX, 0, 0xe1), Why::UnknownAgreement),
+    )
+    assert!(
+        because(reject_as_client(s, MAX, 0, 0xe1), Why::UnknownAgreement),
+    )
+    // An unused slot of a known agreement: the role is checked before the slot.
+    assert!(
+        because(submit_as_client(s, 1, 1, 0xe1), Why::NotProvider),
+        "slot 1 is unused, role first",
+    )
+    assert!(milestone(s, 1, 0).0 == 1, "nothing changed")
+    assert_untouched(s, 1, ether(1), Wei::zero())
+    check_invariants(s, 1, Wei::zero())
 }
 
 // ------------------------------------------------------------------- unknown ids
@@ -1263,6 +1459,282 @@ fn rules_judge_every_used_slot_against_the_same_now() {
         }
         n += 1
     }
+}
+
+fn submit_code_of(
+    _ exists: bool,
+    _ caller: Address,
+    _ state: MilestoneState,
+    _ deliver_by: u256,
+    _ now: u256,
+    _ evidence: u256,
+) -> u8 {
+    rules::submit_code(
+        rules::check_submit(
+            agreement_exists: exists,
+            caller,
+            provider: Address::new(0xa1),
+            state,
+            deliver_by: Timestamp::from_seconds(deliver_by),
+            now: Timestamp::from_seconds(now),
+            evidence,
+        ),
+    )
+}
+
+fn review_code_of(
+    _ exists: bool,
+    _ caller: Address,
+    _ state: MilestoneState,
+    _ decide_by: u256,
+    _ now: u256,
+    _ stored: u256,
+    _ evidence: u256,
+) -> u8 {
+    rules::review_code(
+        rules::check_review(
+            agreement_exists: exists,
+            caller,
+            verifier: Address::new(0xa2),
+            state,
+            decide_by: Timestamp::from_seconds(decide_by),
+            now: Timestamp::from_seconds(now),
+            stored_evidence: stored,
+            evidence,
+        ),
+    )
+}
+
+#[test]
+fn rules_submit_reports_each_failure_and_accepts_a_valid_submission() {
+    let p = Address::new(0xa1)
+    let other = Address::new(0xc1)
+    // base: the provider submits nonzero evidence for a Funded milestone due at 2000, at time 1000.
+    assert!(
+        submit_code_of(true, p, MilestoneState::Funded, 2000, 1000, 7) == 0,
+        "valid",
+    )
+    assert!(
+        submit_code_of(true, p, MilestoneState::Submitted, 2000, 1000, 7) == 0,
+        "a resubmission is valid",
+    )
+    assert!(
+        submit_code_of(false, p, MilestoneState::Funded, 2000, 1000, 7) == 1,
+        "UnknownAgreement",
+    )
+    assert!(
+        submit_code_of(true, other, MilestoneState::Funded, 2000, 1000, 7) == 2,
+        "NotProvider",
+    )
+    assert!(
+        submit_code_of(
+                true,
+                Address::new(0xa2),
+                MilestoneState::Funded,
+                2000,
+                1000,
+                7,
+            ) == 2,
+        "the verifier is not the provider",
+    )
+    assert!(
+        submit_code_of(true, p, MilestoneState::None, 2000, 1000, 7) == 3,
+        "NoSuchMilestone",
+    )
+    assert!(
+        submit_code_of(true, p, MilestoneState::Approved, 2000, 1000, 7) == 4,
+        "WrongState: Approved",
+    )
+    assert!(
+        submit_code_of(true, p, MilestoneState::Paid, 2000, 1000, 7) == 4,
+        "WrongState: Paid",
+    )
+    assert!(
+        submit_code_of(true, p, MilestoneState::Refunded, 2000, 1000, 7) == 4,
+        "WrongState: Refunded",
+    )
+    assert!(
+        submit_code_of(true, p, MilestoneState::Funded, 2000, 2000, 7) == 5,
+        "DeliveryClosed at d",
+    )
+    assert!(
+        submit_code_of(true, p, MilestoneState::Funded, 2000, 2001, 7) == 5,
+        "DeliveryClosed at d + 1",
+    )
+    assert!(
+        submit_code_of(true, p, MilestoneState::Funded, 2000, 1999, 7) == 0,
+        "open at d - 1",
+    )
+    assert!(
+        submit_code_of(true, p, MilestoneState::Funded, 2000, 1000, 0) == 6,
+        "ZeroEvidence",
+    )
+}
+
+#[test]
+fn rules_submit_checks_run_in_the_documented_order() {
+    let p = Address::new(0xa1)
+    let other = Address::new(0xc1)
+    // Each pair puts a fault of a LATER rule alongside a fault of an EARLIER one: the earlier wins.
+    assert!(
+        submit_code_of(false, other, MilestoneState::None, 2000, 3000, 0) == 1,
+        "agreement before role",
+    )
+    assert!(
+        submit_code_of(true, other, MilestoneState::None, 2000, 3000, 0) == 2,
+        "role before milestone",
+    )
+    assert!(
+        submit_code_of(true, p, MilestoneState::None, 2000, 3000, 0) == 3,
+        "milestone before state, window and evidence",
+    )
+    assert!(
+        submit_code_of(true, p, MilestoneState::Approved, 2000, 3000, 0) == 4,
+        "state before window and evidence",
+    )
+    assert!(
+        submit_code_of(true, p, MilestoneState::Funded, 2000, 3000, 0) == 5,
+        "window before evidence",
+    )
+}
+
+#[test]
+fn rules_review_reports_each_failure_and_accepts_a_valid_review() {
+    let v = Address::new(0xa2)
+    let other = Address::new(0xc1)
+    // base: the verifier names the stored evidence 7 of a Submitted milestone, decide_by 5600, time 1000.
+    assert!(
+        review_code_of(true, v, MilestoneState::Submitted, 5600, 1000, 7, 7) == 0,
+        "valid",
+    )
+    assert!(
+        review_code_of(false, v, MilestoneState::Submitted, 5600, 1000, 7, 7) == 1,
+        "UnknownAgreement",
+    )
+    assert!(
+        review_code_of(true, other, MilestoneState::Submitted, 5600, 1000, 7, 7) == 2,
+        "NotVerifier",
+    )
+    assert!(
+        review_code_of(
+                true,
+                Address::new(0xa1),
+                MilestoneState::Submitted,
+                5600,
+                1000,
+                7,
+                7,
+            ) == 2,
+        "the provider is not the verifier",
+    )
+    assert!(
+        review_code_of(true, v, MilestoneState::None, 5600, 1000, 0, 7) == 3,
+        "NoSuchMilestone",
+    )
+    assert!(
+        review_code_of(true, v, MilestoneState::Funded, 5600, 1000, 0, 7) == 4,
+        "NotSubmitted: Funded",
+    )
+    assert!(
+        review_code_of(true, v, MilestoneState::Approved, 5600, 1000, 7, 7) == 4,
+        "NotSubmitted: Approved (a replay)",
+    )
+    assert!(
+        review_code_of(true, v, MilestoneState::Paid, 5600, 1000, 7, 7) == 4,
+        "NotSubmitted: Paid",
+    )
+    assert!(
+        review_code_of(true, v, MilestoneState::Refunded, 5600, 1000, 7, 7) == 4,
+        "NotSubmitted: Refunded",
+    )
+    assert!(
+        review_code_of(true, v, MilestoneState::Submitted, 5600, 5599, 7, 7) == 0,
+        "open at decide_by - 1",
+    )
+    assert!(
+        review_code_of(true, v, MilestoneState::Submitted, 5600, 5600, 7, 7) == 5,
+        "ReviewClosed at decide_by",
+    )
+    assert!(
+        review_code_of(true, v, MilestoneState::Submitted, 5600, 5601, 7, 7) == 5,
+        "ReviewClosed at decide_by + 1",
+    )
+    assert!(
+        review_code_of(true, v, MilestoneState::Submitted, 5600, 1000, 7, 8) == 6,
+        "EvidenceMismatch",
+    )
+    assert!(
+        review_code_of(true, v, MilestoneState::Submitted, 5600, 1000, 7, 0) == 6,
+        "zero evidence never matches",
+    )
+}
+
+#[test]
+fn rules_review_checks_run_in_the_documented_order() {
+    let v = Address::new(0xa2)
+    let other = Address::new(0xc1)
+    assert!(
+        review_code_of(false, other, MilestoneState::None, 5600, 9000, 7, 9) == 1,
+        "agreement before role",
+    )
+    assert!(
+        review_code_of(true, other, MilestoneState::None, 5600, 9000, 7, 9) == 2,
+        "role before milestone",
+    )
+    assert!(
+        review_code_of(true, v, MilestoneState::None, 5600, 9000, 7, 9) == 3,
+        "milestone before state",
+    )
+    assert!(
+        review_code_of(true, v, MilestoneState::Funded, 5600, 9000, 7, 9) == 4,
+        "state before window and evidence",
+    )
+    assert!(
+        review_code_of(true, v, MilestoneState::Submitted, 5600, 9000, 7, 9) == 5,
+        "window before evidence",
+    )
+}
+
+#[test]
+fn rules_delivery_and_review_windows_at_d_minus_1_d_and_d_plus_1() {
+    let d = Timestamp::from_seconds(1000)
+    let decide = Timestamp::from_seconds(4600)
+    assert!(
+        rules::delivery_open(now: Timestamp::from_seconds(999), deliver_by: d),
+    )
+    assert!(
+        !rules::delivery_open(now: Timestamp::from_seconds(1000), deliver_by: d),
+    )
+    assert!(
+        !rules::delivery_open(now: Timestamp::from_seconds(1001), deliver_by: d),
+    )
+    assert!(
+        rules::review_open(now: Timestamp::from_seconds(4599), decide_by: decide),
+    )
+    assert!(
+        !rules::review_open(now: Timestamp::from_seconds(4600), decide_by: decide),
+    )
+    assert!(
+        !rules::review_open(now: Timestamp::from_seconds(4601), decide_by: decide),
+    )
+    // A submission made just before the delivery deadline still gets the whole review window:
+    // the delivery window is closed at 1001, the review window is open until 4600.
+    assert!(
+        !rules::delivery_open(now: Timestamp::from_seconds(1001), deliver_by: d),
+    )
+    assert!(
+        rules::review_open(now: Timestamp::from_seconds(1001), decide_by: decide),
+    )
+}
+
+#[test]
+fn rules_only_funded_and_submitted_milestones_take_evidence() {
+    assert!(!rules::can_submit_from(MilestoneState::None))
+    assert!(rules::can_submit_from(MilestoneState::Funded))
+    assert!(rules::can_submit_from(MilestoneState::Submitted))
+    assert!(!rules::can_submit_from(MilestoneState::Approved))
+    assert!(!rules::can_submit_from(MilestoneState::Paid))
+    assert!(!rules::can_submit_from(MilestoneState::Refunded))
 }
 
 #[test]
