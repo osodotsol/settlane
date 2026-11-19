@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# R-005 Phase 3A review (docs/reviews/2026-11-19-phase3a.md): F-1 reproductions and probes.
+# R-005 Phase 3A review (docs/reviews/2026-11-19-phase3a.md): the F-1 reproductions, AFTER the fix.
 #
-# F-1 is an OPEN finding: the policy lint and the reentrancy test can be bypassed. This runner
-# proves the bypasses still reproduce on the current code. Each mutation is applied to a
-# TEMPORARY copy of the workspace (fe.toml, ingots, scripts); nothing in the repo is changed.
-# It is deliberately NOT wired into experiments/review/run.sh or CI: once F-1 is fixed, the
-# expected outcomes below flip (the lint or a test must then reject each shape), and the
-# fix should turn these into lint fixtures and negative controls.
+# Before the fix (b3a12f1) each patch in patches/ produced a compiling production handler that the
+# policy lint accepted, and b7 (a double payout out of another agreement's escrow) passed the whole
+# CI gate. This runner applies each patch to a TEMPORARY copy of the workspace (fe.toml, ingots,
+# scripts; nothing in the repo changes) and checks that:
+#   1. the policy lint now rejects every one of them, with the rule recorded below;
+#   2. b6 still crashes the Fe 26.6.0 backend in `fe test` (a compiler panic, kept as a separate
+#      FE_NOTES entry; the lint now rejects the shape before it matters);
+#   3. the reentrancy tests catch the shapes that forward gas (b1, b2, b3b, b7), including both
+#      attackers that have no gas threshold.
+# The same patches are permanent negative controls in scripts/ci_negative_controls.py
+# (`r005-*`), which run the whole CI pipeline on each.
 #
-# Usage: bash experiments/review/r005/run.sh   (exit 0 = every reproduction behaves as recorded)
+# Usage: bash experiments/review/r005/run.sh   (exit 0 = every expectation holds)
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../../.." && pwd)"
@@ -16,7 +21,7 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 fail=0
 fe --version
 
-copy() { # name -> prints the path of a fresh workspace copy
+copy() {
   local ws="$tmp/$1"; rm -rf "$ws"; mkdir -p "$ws"
   cp -r "$repo/fe.toml" "$repo/ingots" "$repo/scripts" "$ws/"
   rm -rf "$ws/scripts/__pycache__"
@@ -24,88 +29,53 @@ copy() { # name -> prints the path of a fresh workspace copy
 }
 mutate() { # name -> workspace with patches/<name>.patch applied and formatted
   local ws; ws="$(copy "$1")"
-  # Runs inside $(..): report on stderr and return 1; the caller records the failure.
-  if ! (cd "$ws" && patch -s -p1 < "$here/patches/$1.patch" >&2); then echo "UNEXPECTED  $1: patch no longer applies" >&2; return 1; fi
+  if ! (cd "$ws" && patch -s -p1 -F3 < "$here/patches/$1.patch" >&2); then echo "UNEXPECTED  $1: the patch no longer applies" >&2; return 1; fi
   (cd "$ws" && fe fmt ingots >/dev/null 2>&1)
   echo "$ws"
 }
-add_probes() { # ws: append the probe contracts and tests to its dev ingot
-  cat "$here/dev_lib_additions.fe.in" >> "$1/ingots/settlane-dev/src/lib.fe"
-  cat "$here/dev_tests_additions.fe.in" >> "$1/ingots/settlane-dev/src/tests.fe"
-  sed -i 's/^use ingot::{Actor, ActorMsg, AttackMsg, DevMsg, Reentrant, SettlaneTestClock}/use ingot::{Actor, ActorMsg, AttackMsg, DevMsg, GasCap, Greedy, Once, Reentrant, SettlaneTestClock}/' "$1/ingots/settlane-dev/src/tests.fe"
-  grep -q "GasCap, Greedy, Once" "$1/ingots/settlane-dev/src/tests.fe" || { echo "UNEXPECTED  the dev tests import line changed; update add_probes"; fail=1; }
+lint_rules() { # ws -> sorted rule ids the text lint reports
+  (cd "$1" && python3 scripts/settlane_lint.py ingots 2>&1) | sed -n 's/^\(C-[A-Z-]*\|E-[A-Z]*\):.*/\1/p' | sort -u | tr '\n' ' ' | sed 's/ $//'
 }
-failing_tests() { # ws ingot -> sorted names of failing tests (empty if all pass)
-  (cd "$1" && fe test "$2" 2>&1) | sed -n 's/^FAIL *\[[^]]*\] *\([A-Za-z0-9_]*\).*/\1/p' | sort | tr '\n' ' ' | sed 's/ $//'
+expect_lint() { # name "expected rules"
+  local ws got; ws="$(mutate "$1")" || { fail=1; return; }
+  got="$(lint_rules "$ws")"
+  if [ "$got" = "$2" ]; then echo "REJECTED    $1 by the policy lint: $got"
+  else echo "UNEXPECTED  $1: lint rules = '${got:-none}', expected '$2'"; fail=1; fi
 }
-hexmsg() { python3 -I -c "import sys; print(sys.argv[1].encode().hex())" "$1"; }
+failing_tests() { (cd "$1" && fe test "$2" 2>&1) | sed -n 's/^FAIL *\[[^]]*\] *\([A-Za-z0-9_]*\).*/\1/p' | sort | tr '\n' ' ' | sed 's/ $//'; }
 
-gate_passes_and_lint_ok() { # name ws: compiles and the policy lint accepts it (the bypass)
-  if ! (cd "$2" && fe check >/dev/null 2>&1 && fe check ingots/settlane-dev >/dev/null 2>&1); then echo "UNEXPECTED  $1: does not compile"; fail=1; return 1; fi
-  if (cd "$2" && rm -rf out && fe build >/dev/null 2>&1 && python3 scripts/settlane_lint.py ingots --abi-dir out >"$tmp/l" 2>&1); then
-    echo "LINT-OK     $1 compiles and passes settlane_lint (bypass reproduces)"
-  else echo "UNEXPECTED  $1: the lint now rejects it (F-1 fixed? update this runner):"; tail -5 "$tmp/l"; fail=1; return 1; fi
-}
-expect_failing() { # name ws ingot "expected sorted failing tests" (empty = all pass)
-  local got; got="$(failing_tests "$2" "$3")"
-  if [ "$got" = "$4" ]; then echo "AS-RECORDED $1 [$3]: failing tests = ${4:-none}"
-  else echo "UNEXPECTED  $1 [$3]: failing tests = '${got:-none}', recorded '${4:-none}'"; fail=1; fi
-}
+# --- 1. The lint rejects every reproduction (it accepted all nine before the fix).
+expect_lint b1_gas_expression "C-XFER"
+expect_lint b2_try_call_raw_forwards_gas "C-XFER C-XFER-RAW"
+expect_lint b2b_try_call_raw_stipend_write_after "C-XFER C-XFER-RAW"
+expect_lint b3_cei_nested_block "C-XFER"
+expect_lint b3b_cei_nested_block_with_gas "C-XFER"
+expect_lint b4_cei_helper_before_writes "C-XFER"
+expect_lint b5_send_result_ignored_or_true "C-XFER"
+expect_lint b6_test_attribute_on_helper "C-TEST C-XFER"
+expect_lint b7_double_pay_under_60k "C-XFER"
+ws="$(copy control)"; got="$(lint_rules "$ws")"
+if [ -z "$got" ]; then echo "ACCEPTED    the unmodified code passes the lint (control)"; else echo "UNEXPECTED  control: the lint rejects the real code: $got"; fail=1; fi
 
-expect_codegen_panic() { # name ws: fe check and fe build accept it, but `fe test` of the production
-  # ingot crashes in the Sonatina backend while emitting the #[test] helper (a compiler panic)
-  if (cd "$2" && fe test ingots/settlane 2>&1) | grep -q "Sonatina backend panicked.*synthetic owner-effect arg count mismatch"; then
-    echo "AS-RECORDED $1 [ingots/settlane]: fe test crashes in the Sonatina backend (codegen panic), not a test failure"
-  else echo "UNEXPECTED  $1 [ingots/settlane]: no Sonatina codegen panic"; fail=1; return 1; fi
-}
-
-REENT="a_reentrant_provider_is_paid_exactly_once"
-FAILED_T="a_failed_transfer_reverts_the_whole_claim_and_a_retry_to_another_payee_succeeds"
-NEVER_EXP="approval_never_expires_and_production_and_the_shell_agree_on_claims"
-
-# --- Control: the unmodified code passes, and the probes behave as the report states.
-ws="$(copy control)"; add_probes "$ws"
-expect_failing "control (unmodified + probes)" "$ws" ingots/settlane-dev "r005_b7_once_is_paid_twice"
-# Under the stipend the Once fallback cannot even store its flag, so the send fails and the
-# shipped Claim reverts with `transfer failed`: the attacker is not paid at all.
-if (cd "$ws" && fe test ingots/settlane-dev -f r005_b7 2>&1) | grep -q "$(hexmsg 'transfer failed')"; then
-  echo "AS-RECORDED control: the shipped Claim refuses the Once attacker (\`transfer failed\`, nothing paid)"
-else echo "UNEXPECTED  control: the Once test failed for another reason"; fail=1; fi
-ws="$(copy control-plain)"
-expect_failing "control (unmodified)" "$ws" ingots/settlane-dev ""
-
-# --- Gas forwarded: the lint misses it, only the reentrancy test catches it.
-for m in b1_gas_expression b2_try_call_raw_forwards_gas b3b_cei_nested_block_with_gas; do
-  ws="$(mutate $m)" || { fail=1; continue; }
-  gate_passes_and_lint_ok $m "$ws" && expect_failing $m "$ws" ingots/settlane-dev "$REENT"
-done
-# --- Effects after the transfer under the stipend: neither the lint nor any test sees it.
-for m in b2b_try_call_raw_stipend_write_after b3_cei_nested_block b4_cei_helper_before_writes; do
-  ws="$(mutate $m)" || { fail=1; continue; }
-  gate_passes_and_lint_ok $m "$ws" && expect_failing $m "$ws" ingots/settlane-dev "" && expect_failing $m "$ws" ingots/settlane ""
-done
-# --- Result not really asserted: the lint misses it, the failed-transfer tests catch it.
-m=b5_send_result_ignored_or_true; if ! ws="$(mutate $m)"; then fail=1; else gate_passes_and_lint_ok $m "$ws" \
-  && expect_failing $m "$ws" ingots/settlane-dev "$FAILED_T $NEVER_EXP"; fi
-# --- #[test] on a production helper: exempt from the transfer rules and callable by the contract.
-m=b6_test_attribute_on_helper; if ! ws="$(mutate $m)"; then fail=1; else gate_passes_and_lint_ok $m "$ws" \
-  && expect_codegen_panic $m "$ws" \
-  && expect_failing $m "$ws" ingots/settlane-dev "$FAILED_T $REENT $NEVER_EXP"; fi
-
-# --- B7: double payout that passes the FULL gate.
-m=b7_double_pay_under_60k
-if ! ws="$(mutate $m)"; then fail=1; else
-  ok=1
-  for step in "fe fmt --check ingots" "fe check" "fe check ingots/settlane-dev" "python3 scripts/check_tests.py" \
-              "python3 scripts/check_events.py" "rm -rf out && fe build && python3 scripts/settlane_lint.py ingots --abi-dir out"; do
-    if (cd "$ws" && eval "$step" >"$tmp/s" 2>&1); then :; else echo "UNEXPECTED  $m: gate step failed: $step"; tail -5 "$tmp/s"; ok=0; fail=1; fi
-  done
-  [ $ok -eq 1 ] && echo "GATE-PASSES $m: fmt, check (both), check_tests, check_events, build and lint all pass"
-  add_probes "$ws"
-  if (cd "$ws" && fe test ingots/settlane-dev -f r005_b7 >"$tmp/s" 2>&1) && grep -q "1 passed; 0 failed" "$tmp/s"; then
-    echo "REPRODUCES  $m: the Once attacker is paid 2 ETH for a 1 ETH milestone; 7 ETH held vs 8 ETH owed (I1, I9 broken)"
-  else echo "UNEXPECTED  $m: the double payout no longer reproduces:"; tail -8 "$tmp/s"; fail=1; fi
+# --- 2. b6: `fe check` and `fe build` accept a #[test] helper that the contract calls, but
+# `fe test` of the production ingot crashes the Sonatina backend (docs/FE_NOTES.md, "b6").
+ws="$(mutate b6_test_attribute_on_helper)" || fail=1
+if [ -n "${ws:-}" ]; then
+  if (cd "$ws" && fe check >/dev/null 2>&1 && rm -rf out && fe build >/dev/null 2>&1) && \
+     (cd "$ws" && fe test ingots/settlane 2>&1) | grep -q "Sonatina backend panicked.*synthetic owner-effect arg count mismatch"; then
+    echo "AS-RECORDED b6: fe check and fe build accept it; fe test crashes in the Sonatina backend (a compiler panic, not a test failure)"
+  else echo "UNEXPECTED  b6: the compiler behaviour recorded in FE_NOTES changed (fixed upstream? update the note)"; fail=1; fi
 fi
 
-[ $fail -eq 0 ] && echo "r005 reproductions: all behave as recorded" || echo "r005 reproductions: FAILED"
+# --- 3. The tests see the shapes that forward gas, by name: both attackers with no threshold fail.
+ATT1="a_provider_that_always_re_enters_is_never_paid_under_the_stipend_and_never_twice"
+ATT2="a_provider_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_paid"
+for m in b1_gas_expression b7_double_pay_under_60k; do
+  ws="$(mutate $m)" || { fail=1; continue; }
+  got="$(failing_tests "$ws" ingots/settlane-dev)"
+  if echo " $got " | grep -q " $ATT1 " && echo " $got " | grep -q " $ATT2 "; then echo "CAUGHT      $m: both always-re-entering attackers fail ($ATT1, $ATT2)"
+  else echo "UNEXPECTED  $m: failing tests = '${got:-none}'"; fail=1; fi
+done
+
+[ $fail -eq 0 ] && echo "r005 reproductions: all behave as recorded after the fix" || echo "r005 reproductions: FAILED"
 exit $fail

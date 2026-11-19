@@ -1,4 +1,5 @@
 // EXPECT: fail E-UNLISTED
+// IGNORE: C-XFER,C-XFER-RAW
 // The dev-ingot exemption does not apply to production code: an unlisted contract
 // with value-moving effects in the production ingot is rejected.
 use std::evm::ether

@@ -1,4 +1,5 @@
 // EXPECT: fail E-EFFECT
+// IGNORE: C-XFER,C-XFER-RAW
 // Review H1: an effect type the lint cannot resolve in this file (for example an alias
 // defined in another module and imported plainly) fails closed.
 use std::evm::ether

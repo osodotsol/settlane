@@ -162,15 +162,37 @@ Evidence in `experiments/review/` (all re-run by `bash experiments/review/run.sh
 | Fact | Evidence |
 | --- | --- |
 | An untyped `recv { .. }` block can end with a **payable fallback** `#[payable] _ uses (..) { .. }`, which runs for empty calldata, so a Fe contract can receive plain ETH from `send_value`. A typed `recv Msg { .. }` block without it rejects plain ETH. | `Reentrant` in `ingots/settlane-dev/src/lib.fe`; `a_failed_transfer_..` (the Actor rejects) |
-| `ctx.gas()` reports the remaining gas. Inside a fallback reached by `send_value(gas: 0)` it is at most the 2300-gas stipend, so the fallback (threshold 60000) can tell a stipend send from a call with real gas. | `a_reentrant_provider_is_paid_exactly_once` (`stats == (0, 0)` under the stipend, `(1, 0)` with 500k gas) |
+| `ctx.gas()` reports the remaining gas. Inside a fallback reached by `send_value(gas: 0)` it is at most the 2300-gas stipend. **Caveat found by R-005 (F-2):** the first attacker (`Reentrant`) returned early below 60,000 gas, so its `stats == (0, 0)` showed its own threshold, not the stipend; the claim that it "cannot even attempt" a nested call was not measured. The tests that measure the stipend are the two attackers without a threshold (`Greedy`, `Once`) and `GasCap`. | `a_provider_that_always_re_enters_..`, `a_provider_that_re_enters_once_..`, `a_payee_is_given_no_more_than_the_2300_gas_stipend` |
 | A reverted call's events are discarded: `fe test --show-logs` does not print the `MilestoneClaimed` of a claim whose transfer failed. | the exact claim sequence of `a_failed_transfer_..` in `check_events.py` |
-| `send_value` returns a `#[must_use]` outcome: an unused result is `error[8-0082]`, so ignoring it needs an explicit `let _ =` (which lint `C-SEND` rejects in production). | `fe check` |
+| `send_value` returns a `#[must_use]` outcome: an unused result is `error[8-0082]`, so ignoring it needs an explicit `let _ =` (which lint `C-XFER` rejects in production). | `fe check` |
 | A test function cannot fund an `Actor` with `send_value` (it has no fallback), but a payable message arm forwards `ctx.value()`. | `claim_is_not_payable` |
 | `fe fmt` puts each item of a long arm `uses (..)` list on its own line. The lint's arm splitter now counts parentheses as well as braces, or it reads the wrapped list as extra arms. | fixtures `ok_multiline_uses_payout_arm.fe`, `bad_multiline_uses_nonpayout_arm.fe` |
 
+### R-005 facts (2026-11-19, all [ran])
+| Fact | Evidence |
+| --- | --- |
+| `Call` exposes `raw_call`, `try_call_raw`, `call`, `try_call`, `raw_delegatecall` and `delegate`, not only `send_value`. Any code holding `mut call` can use them, so a rule that looks for `send_value` alone sees nothing. The lint now rejects every method but `send_value` on the Call binding, and any Call binding not named `call`. | `experiments/review/r005/patches/b2*`, fixtures `bad_xfer_*` |
+| `gas: 0 + 57000` compiles and forwards 57,000 gas. A check that searches the argument text for `gas: 0` accepts it. | patch b1, b7 |
+| A **write after the send is invisible to every test** while the stipend is intact (a stipend send cannot re-enter, and a failed send reverts the writes). Only the code shape can enforce checks, effects, interaction. | patches b2b, b3, b4 (all green before R-005) |
+| `fe fmt` reflows a long call, so a text mutation must target the formatted text; the controls run `fe fmt` after mutating, and the saved patches are applied with `-F3`. | `scripts/ci_negative_controls.py` |
+| A stipend send to the `Once` attacker succeeds when the callee only reads a storage slot that the same transaction already wrote (warm, about 100 gas), and fails when the fallback must write it (an SSTORE needs more than 2300 gas). | `a_provider_that_re_enters_once_..` (control and attack) |
+
+### b6: Fe 26.6.0 backend panic on a `#[test]` helper that a contract calls (R-005, recorded separately)
+**Not a Settlane bug, and not caused by the lint.** A function carrying `#[test]` in the production ingot's `handlers.fe`, called from the handler `claim_handler` (`uses (call: mut Call)`, body `let _ = call.send_value(..)`), is accepted by `fe check` and by `fe build` (the build emits `Settlane.runtime.bin`), but `fe test ingots/settlane` panics while emitting the test module:
+```
+thread '<unnamed>' panicked at crates/mir/src/runtime/synthetic.rs:945:9:
+assertion `left == right` failed: synthetic owner-effect arg count mismatch for RuntimeInstance(..)
+  left: 0
+ right: 2
+Sonatina backend panicked while emitting test module: assertion `left == right` failed: synthetic owner-effect arg count mismatch ...
+test result: FAILED. 0 passed; 1 failed
+    settlane::codegen
+```
+fe 26.6.0 (5b3f96a). Reproduction: `experiments/review/r005/patches/b6_test_attribute_on_helper.patch` applied to `ingots/settlane/src/handlers.fe` at `b3a12f1`, then `fe fmt ingots && fe check && fe build && fe test ingots/settlane`. `bash experiments/review/r005/run.sh` asserts this behavior, so an upstream fix shows up as a changed result. What matters for Settlane: before R-005 the old lint exempted every `#[test]` function from the transfer rules, so this shape also passed the lint; now `C-TEST` rejects `#[test]` outside `tests.fe` and `C-XFER` rejects the send. The crash was only the incidental reason the tests failed. Draft upstream report: a `#[test]` function that is also reachable from a contract entry point with an owner effect should be rejected with a diagnostic, not crash codegen.
+
 ## Still unverified (Phase 2–4 checks)
 - Is the production contract deployed by the dev-ingot tests byte-identical to the shipped `Prod` artifact? It is the same source and compiler, but `fe` offers no way to compare. Mitigation: all tests that do not need time travel live in the production ingot.
-- A reentrant recipient under the 2300 stipend: **tested in Phase 3A** for Claim (see Phase 3A facts). The test shows the attacker cannot even attempt a nested call; it does not separately probe EIP-2200's SSTORE rule. Refund needs the same test in Phase 3B.
+- A reentrant recipient under the 2300 stipend: **tested for Claim** (Phase 3A, strengthened by R-005). Measured: an attacker that always re-enters cannot finish its fallback under the stipend (the send fails and the claim reverts with `transfer failed`), and the same attacker given 500k gas re-enters and claims. EIP-2200's SSTORE rule is not probed separately. Refund needs the same tests in Phase 3B.
 - `#[event]` with `Wei` and `u8` fields, and the event ABI.
 - Gas and code size of the full contract (`fe build --emit sizes`).
 

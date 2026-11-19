@@ -19,7 +19,7 @@ Do not modify src/ unless the assignment allows it. Do not commit or push.
 ## Active assignment
 - **ID:** R-005 Phase 3A review (Claim, the first transition that moves ETH; Refund is not implemented)
 - **Commit:** the Phase 3A commit on `settlane/dev` (see `git log -1`).
-- **Status: NOT RUN.** Codex is not installed in this environment. Nothing under `docs/reviews/` exists for R-005 unless the owner runs it.
+- **Status: NOT RUN by Codex.** Codex is not installed in this environment. A Claude-side review of the same commit was run at the owner's request (`docs/reviews/2026-11-19-phase3a.md`, F-1 to F-5), and **its findings are fixed** (D-023). The fixes are not independently re-reviewed: when Codex runs this assignment it should treat the commit as `b3a12f1` plus the R-005 fix commit (see `git log`), and question 5 below is now about the one-approved-form lint.
 - **Scope:** `ingots/settlane/src/*.fe` (`rules.fe` `check_claim`, `handlers.fe` `claim_handler` and `require_claim`, the `Claim` arm in `settlane.fe`, `MilestoneClaimed` in `types.fe`), `ingots/settlane-dev/src/*.fe` (`Reentrant`, `Actor::ClaimVia`, the Phase 3A tests), `scripts/settlane_lint.py` (`C-STIPEND`, `C-SEND`, `C-CEI`, the arm-splitter change), `scripts/lint-policy.json`, `scripts/check_events.py`, `scripts/ci_negative_controls.py`, `docs/LIFECYCLE.md` T5 and "Phase 3A" notes, `docs/SECURITY.md` "Phase 3A coverage" and "Reentrancy policy", `docs/DECISIONS.md` D-022.
 - **Edit permission:** you may add new files under `experiments/review/` to reproduce a doubt. Do not edit any other file.
 - **Questions:**
@@ -27,7 +27,7 @@ Do not modify src/ unless the assignment allows it. Do not commit or push.
   2. Can any sequence pay a milestone twice, pay more than its amount, or pay from another agreement's funds? Try reentrancy through the payee, a payee that is the shell or Settlane, and a payee that is a precompile.
   3. A failed transfer: is every write (state, both counters, the event) reverted? Is there a payee for which `send_value(gas: 0)` reports success without the ETH arriving, or the reverse?
   4. Stipend only: what payees can never be paid (contract wallets, Settlane, the shell)? Is the documented fallback (choose another `to`) always available to the provider?
-  5. Lint: write a compiling production shape that writes storage after `send_value`, forwards gas, or ignores the result, and passes `C-CEI`, `C-STIPEND` and `C-SEND` (multi-line calls, helpers, a send in a nested block, a write in a later block of the same function, a `#[test]` attribute on a non-test function).
+  5. Lint (after R-005): write a compiling production shape that moves ETH, or writes storage after the send, and passes `C-XFER`, `C-XFER-RAW`, `C-XFER-ORDER`, `C-XFER-MISSING` and `C-TEST` (the policy allows one transfer form in `claim_handler`; `experiments/review/r005/` lists the nine shapes already found: gas expressions, raw calls, nested blocks, helpers, `|| true`, `#[test]` helpers, send-before-write). Try std APIs and effect shapes the lint has no rule for.
   6. Does any arm other than `Claim` reach `call`? Does the arm splitter change open a bypass of `E-CALL`/`E-BODY`?
   7. Events: can `check_events.py` pass on logs where a milestone is claimed twice, claimed before approval, or claims exceed the deposit?
   8. Tests: is any assertion vacuous? Is the reentrancy positive control strong enough to prove the attacker is live? Run `python3 scripts/ci_negative_controls.py` and propose mutations the tests would miss.

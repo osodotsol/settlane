@@ -1,0 +1,5 @@
+// EXPECT: fail C-XFER
+// `evm.send_value` is allowed only inside a #[test] function of tests.fe, not in a production helper.
+fn fund(_ to: Address) uses (evm: mut Evm) {
+    let _ = evm.send_value(addr: to, gas: 100000, value: Wei::zero())
+}

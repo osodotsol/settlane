@@ -1,4 +1,5 @@
 // EXPECT: fail E-DUP
+// IGNORE: C-XFER,C-XFER-RAW
 // Reusing a payout arm name is rejected even when the duplicate moves no ETH.
 use std::evm::ether
 

@@ -1,4 +1,4 @@
-// EXPECT: fail E-CALL,E-UNSAFE
+// EXPECT: fail E-CALL,E-EFFECT,E-UNSAFE
 // Review H3: RawStorage lets a non-payout arm overwrite any field (a milestone state, a
 // deadline) without the access checker seeing it.
 use std::evm::RawStorage

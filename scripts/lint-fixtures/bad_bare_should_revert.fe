@@ -1,4 +1,5 @@
 // EXPECT: fail T-REVERT
+// PATH: tests.fe
 // Review M2: a bare should_revert passes when the setup reverts, before the call under test.
 use std::evm::ether
 

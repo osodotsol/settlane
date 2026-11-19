@@ -261,6 +261,10 @@ EXPECTED_TRANSITIONS = {
     ("settlane_dev", "claim_is_not_payable"): [S(1, 0, 0xE1), A(1, 0, 0xE1)],
     ("settlane_dev", "approval_never_expires_and_production_and_the_shell_agree_on_claims"): [
         S(1, 0, 0xE1), A(1, 0, 0xE1), S(1, 0, 0xE1), A(1, 0, 0xE1), S(1, 2, 0xE3), A(1, 2, 0xE3), S(1, 2, 0xE3), A(1, 2, 0xE3)],
+    ("settlane_dev", "a_provider_that_always_re_enters_is_never_paid_under_the_stipend_and_never_twice"): [S(1, 0, 0xE1), A(1, 0, 0xE1), S(1, 1, 0xE2), A(1, 1, 0xE2)],
+    ("settlane_dev", "a_provider_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_paid"): [S(1, 0, 0xE1), A(1, 0, 0xE1), S(1, 1, 0xE2), A(1, 1, 0xE2)],
+    ("settlane_dev", "a_payee_is_given_no_more_than_the_2300_gas_stipend"): [S(1, 0, 0xE1), A(1, 0, 0xE1)],
+    ("settlane_dev", "precompile_payees_are_the_providers_own_choice_and_some_strand_the_eth"): [S(1, 0, 0xE1), A(1, 0, 0xE1), S(1, 1, 0xE2), A(1, 1, 0xE2)],
     ("settlane_dev", "third_slot_revision_lifecycle_at_both_deadlines"): [
         S(1, 2, 0xD1), R(1, 2, 0xD1, 1), S(1, 2, 0xD2, 2), S(2, 2, 0xD3), S(3, 2, 0xD5), A(1, 2, 0xD2, 2), R(3, 2, 0xD5, 1),
     ],
@@ -269,6 +273,7 @@ EXPECTED_TRANSITIONS = {
 
 PAYEE = 0x9B1
 PAYEE2 = 0x9B2
+LOOT = 0x9C1  # the third address of the always-re-entering attacker
 
 
 def C(i, m, to, amount, contract=0):
@@ -286,6 +291,11 @@ EXPECTED_CLAIMS = {
     ("settlane_dev", "a_failed_transfer_reverts_the_whole_claim_and_a_retry_to_another_payee_succeeds"): [C(1, 1, PAYEE, 2 * ETHER)],
     ("settlane_dev", "a_reentrant_provider_is_paid_exactly_once"): [C(1, 0, "provider", ETHER)],
     ("settlane_dev", "claim_is_not_payable"): [C(1, 0, PAYEE, ETHER)],
+    ("settlane_dev", "a_provider_that_always_re_enters_is_never_paid_under_the_stipend_and_never_twice"): [C(1, 0, LOOT, ETHER), C(1, 1, PAYEE, 2 * ETHER)],
+    # the control's nested claim (the fallback had real gas, and a stipend send to it succeeds)
+    ("settlane_dev", "a_provider_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_paid"): [C(1, 0, "provider", ETHER)],
+    ("settlane_dev", "a_payee_is_given_no_more_than_the_2300_gas_stipend"): [C(1, 0, "any", ETHER)],  # the payee is a contract created at run time
+    ("settlane_dev", "precompile_payees_are_the_providers_own_choice_and_some_strand_the_eth"): [C(1, 0, 4, ETHER), C(1, 1, 2, 2 * ETHER)],
     ("settlane_dev", "approval_never_expires_and_production_and_the_shell_agree_on_claims"): [
         C(1, 0, PAYEE, ETHER, 0), C(1, 0, PAYEE, ETHER, 1), C(1, 2, PAYEE, 3 * ETHER, 1)],
 }
@@ -433,6 +443,7 @@ def check(logs):
             problems.append(f"expected test {key[1]} did not run")
             continue
         got = claims_of(decoded[key])
+        got = [g[:3] + ("any",) + g[4:] if w[3] == "any" else g for g, w in zip(got, want)] + got[len(want):]
         if got != want:
             problems.append(f"{key[1]}: claim events {got}, expected {want}")
     for key, want in TRANSITION_DIFFERENTIAL.items():

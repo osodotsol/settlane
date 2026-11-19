@@ -1,10 +1,16 @@
-// EXPECT: fail C-CEI
-// The write happens after the transfer: with forwarded gas the recipient could re-enter first.
+// EXPECT: fail C-XFER
+// A storage write after the transfer: with forwarded gas the recipient could re-enter first.
 use std::evm::StorageMap
 
-pub fn claim_like(id: u256, to: Address) -> Wei uses (call: mut Call, owed: mut StorageMap<u256, Wei>) {
-    let amount = owed.get(key: id)
+pub fn claim_handler(id: u256, m: u8, to: Address) -> Wei
+uses (ctx: Ctx, call: mut Call, log: mut Log, totals: mut Totals, agreements: mut StorageMap<u256, Agreement>, milestones: mut StorageMap<(u256, u8), Milestone>)
+{
+    let a = agreements.get(key: id)
+    let x = milestones.get(key: (id, m))
+    let amount = x.amount
+    milestones.set(key: (id, m), value: x)
+    agreements.set(key: id, value: a)
     assert!(call.send_value(addr: to, gas: 0, value: amount).success(), "transfer failed")
-    owed.set(key: id, value: Wei::zero())
+    totals.outstanding = totals.outstanding - amount
     amount
 }

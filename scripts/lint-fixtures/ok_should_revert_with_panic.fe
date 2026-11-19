@@ -1,4 +1,5 @@
 // EXPECT: pass
+// PATH: tests.fe
 // A should_revert with a specific panic code names the reason, so T-REVERT allows it.
 use std::evm::wei
 

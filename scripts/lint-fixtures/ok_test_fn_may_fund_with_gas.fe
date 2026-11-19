@@ -1,4 +1,5 @@
 // EXPECT: pass
+// PATH: tests.fe
 // A #[test] function is a test entry point: it may fund an address with forwarded gas and keep
 // going. The transfer rules are for contract code.
 use std::evm::ether

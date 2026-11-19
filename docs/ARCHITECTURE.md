@@ -37,7 +37,7 @@ Rules of the layout, each enforced by `scripts/settlane_lint.py` or `scripts/che
 | Deadlines | `rules.fe` predicates on `ctx.timestamp()` | **Runtime** |
 | Exact funding and allocation | Checked sum against `ctx.value()` | **Runtime** |
 | Overflow | Checked arithmetic (Panic 0x11) | **Runtime**, default to be confirmed (E8) |
-| Reentrancy | State written before the external call, stipend-only send. No `Mutex` guard. | **Runtime** plus code structure, lint `C-CEI`/`C-STIPEND`/`C-SEND`, reentrant-recipient test |
+| Reentrancy | State written before the external call, stipend-only send. No `Mutex` guard. | **Runtime** plus code structure: lint `C-XFER` (one approved transfer form), `C-XFER-RAW`, `C-XFER-ORDER`, `C-TEST`, and the tests with attackers that have no gas threshold |
 | Verifier honesty | None | **Trust assumption** |
 
 Fe effects give *capability* guarantees, meaning which code can touch which state. They do **not** give caller authorization, which is a runtime check.
@@ -84,7 +84,7 @@ Events (implemented): `AgreementCreated` (`id`, `client` and `provider` indexed,
 - Pull only. Verification creates an entitlement, and `Claim` or `Refund` moves the ETH.
 - Checks, then effects (state and counters), then the interaction (`call.send_value`), then `assert!(success)`. A failed send reverts the whole call, so no counter or state change can record a transfer that did not happen.
 - Payouts go to a caller-chosen `to`, as in the starter's `Withdraw { to }`. A reverting recipient can only block its own claim, and the caller can retry with another `to`.
-- `send_value(gas: 0)` forwards only the 2300-gas stipend (E6, and Phase 3A's reentrancy test). Lint rules `C-STIPEND`, `C-SEND` and `C-CEI` enforce the stipend, the asserted result and that nothing is written after the send.
+- `send_value(gas: 0)` forwards only the 2300-gas stipend (E6, and Phase 3A's reentrancy test). Since R-005 the lint allows exactly one transfer form (`C-XFER`): `assert!(call.send_value(addr: to, gas: 0, value: amount).success(), "..")` as the last statement of a handler listed in `scripts/lint-policy.json` (`transfers.handlers`, today `claim_handler`), directly before the return value, after every required write (`C-XFER-ORDER`), with no other method on the Call binding (`C-XFER-RAW`) and no `#[test]` outside `tests.fe` (`C-TEST`). Refund (Phase 3B) is added to that policy in the same change that adds it.
 
 ## Time
 `ctx.timestamp()` with seconds granularity. Validators can skew it by a few seconds, which matters only at exact deadline boundaries. This is documented, not mitigated.

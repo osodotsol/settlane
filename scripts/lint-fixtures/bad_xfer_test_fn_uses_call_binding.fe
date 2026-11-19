@@ -1,0 +1,8 @@
+// EXPECT: fail C-XFER
+// PATH: tests.fe
+// In tests.fe only `evm.send_value` is allowed: a #[test] function that sends through the `call`
+// binding is rejected (b6 put a `call` send behind #[test]).
+#[test]
+fn sends_through_call() uses (call: mut Call) {
+    assert!(call.send_value(addr: Address::new(0x77), gas: 100000, value: Wei::zero()).success(), "sent")
+}

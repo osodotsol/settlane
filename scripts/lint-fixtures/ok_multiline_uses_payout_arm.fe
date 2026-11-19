@@ -1,4 +1,5 @@
 // EXPECT: pass
+// IGNORE: C-XFER,C-XFER-RAW
 // `fe fmt` breaks a long `uses` list one item per line. The payout arm must still be one arm
 // (Phase 3A: the splitter used to count only braces and saw `mut call,` as a new arm).
 use std::evm::ether

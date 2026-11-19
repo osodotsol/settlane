@@ -179,6 +179,20 @@ def move_claim_effects_after_transfer(root):
 CLAIM_STIPEND = "call.send_value(addr: to, gas: 0, value: amount)"
 
 
+PATCHES = REPO / "experiments/review/r005/patches"
+
+
+def apply_patch(name):
+    """Mutation: apply one saved R-005 reproduction (a diff of handlers.fe at b3a12f1) to the copy.
+    A patch that no longer applies is reported by the runner as WRONG, never skipped."""
+
+    def mutate(root):
+        r = subprocess.run(["patch", "-s", "-p1", "-F3"], input=(PATCHES / f"{name}.patch").read_text(), cwd=root, capture_output=True, text=True)
+        assert r.returncode == 0, f"patch {name} does not apply: {r.stdout}{r.stderr}"
+
+    return mutate
+
+
 def chain(*mutators):
     def mutate(root):
         for m in mutators:
@@ -192,9 +206,40 @@ ONLY_FAILING = {
     # R-003 f5: nothing but the surplus test exposes these two, so they prove that test has teeth.
     "mut-deposited-includes-surplus": "surplus_eth_keeps_balance_at_or_above_outstanding_and_is_never_owed",
     "mut-outstanding-follows-the-balance": "surplus_eth_keeps_balance_at_or_above_outstanding_and_is_never_owed",
-    # Phase 3A: only the reentrant-provider test can see a forwarded-gas payout.
-    "mut-claim-forwards-gas": "a_reentrant_provider_is_paid_exactly_once",
-    "mut-claim-effects-after-transfer-with-gas": "a_reentrant_provider_is_paid_exactly_once",
+}
+
+# Tests that MUST be among the failing ones (a subset check: other tests may fail too). R-005:
+# a forwarded-gas payout is seen by the reentrant providers, not by incidental assertions, and the
+# two attackers without a gas threshold must each fail on their own.
+ATTACKERS = {"a_reentrant_provider_is_paid_exactly_once", "a_provider_that_always_re_enters_is_never_paid_under_the_stipend_and_never_twice", "a_provider_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_paid"}
+MUST_FAIL = {
+    "mut-claim-forwards-gas": ATTACKERS,
+    "mut-claim-effects-after-transfer-with-gas": ATTACKERS,
+    "r005-b1-gas-expression": ATTACKERS,
+    "r005-b2-try-call-raw-forwards-gas": ATTACKERS,
+    "r005-b3b-nested-send-with-gas": ATTACKERS,
+    "r005-b7-double-pay-under-60k": {"a_provider_that_always_re_enters_is_never_paid_under_the_stipend_and_never_twice", "a_provider_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_paid"},
+}
+
+# After CI has run, the policy lint is also run on the mutated copy and must reject it with every
+# rule listed (R-005 F-1): a bypass the tests happen to catch must not be one the lint lets through.
+LINT_ALSO = {
+    "r005-b1-gas-expression": ["C-XFER"],
+    "r005-b2-try-call-raw-forwards-gas": ["C-XFER", "C-XFER-RAW"],
+    "r005-b2b-try-call-raw-stipend-write-after": ["C-XFER", "C-XFER-RAW"],
+    "r005-b3-nested-send-write-after": ["C-XFER"],
+    "r005-b3b-nested-send-with-gas": ["C-XFER"],
+    "r005-b4-helper-before-writes": ["C-XFER"],
+    "r005-b5-result-or-true": ["C-XFER"],
+    "r005-b6-test-attribute-helper": ["C-TEST", "C-XFER"],
+    "r005-b7-double-pay-under-60k": ["C-XFER"],
+    "mut-claim-forwards-gas": ["C-XFER"],
+    "mut-claim-effects-after-transfer-with-gas": ["C-XFER"],
+    "mut-claim-ignores-failed-transfer": ["C-XFER"],
+    "mut-claim-effects-after-transfer": ["C-XFER"],
+    "r005-evm-send-in-production-helper": ["C-XFER"],
+    "r005-test-fn-in-production-file": ["C-TEST", "C-XFER"],
+    "r005-tests-module-reference": ["C-TEST"],
 }
 
 SETTLANE = "ingots/settlane/src/settlane.fe"
@@ -301,13 +346,28 @@ MUTATIONS = {
     "mut-claim-skips-outstanding": ("T5: total outstanding is not decreased", "Tests for both ingots", replace_in(HANDLERS, "totals.outstanding = totals.outstanding - amount", "totals.outstanding = totals.outstanding")),
     "mut-claim-ignores-failed-transfer": ("T5: a failed transfer is ignored and the milestone is marked Paid anyway", "Tests for both ingots", replace_in(HANDLERS, "    assert!(\n        " + CLAIM_STIPEND + ".success(),\n        \"transfer failed\",\n    )", "    let _ = " + CLAIM_STIPEND)),
     "mut-claim-forwards-gas": ("T5: the transfer forwards 500k gas instead of the stipend (the attacker gets to try)", "Tests for both ingots", replace_in(HANDLERS, CLAIM_STIPEND, "call.send_value(addr: to, gas: 500000, value: amount)")),
-    "mut-claim-effects-after-transfer": ("T5: effects written after the transfer, stipend kept (no test can see it, so the lint C-CEI must)", "policy lint (fails", move_claim_effects_after_transfer),
+    "mut-claim-effects-after-transfer": ("T5: effects written after the transfer, stipend kept (no test can see it, so the lint C-XFER must)", "policy lint (fails", move_claim_effects_after_transfer),
     "mut-claim-effects-after-transfer-with-gas": ("T5: effects after the transfer AND gas forwarded: the reentrant provider is paid twice", "Tests for both ingots", chain(move_claim_effects_after_transfer, replace_in(HANDLERS, CLAIM_STIPEND, "call.send_value(addr: to, gas: 500000, value: amount)"))),
     "mut-claim-becomes-payable": ("T5: Claim is payable", "Tests for both ingots", replace_in(SETTLANE, "        Claim { id, m, to } -> Wei uses (", "        #[payable]\n        Claim { id, m, to } -> Wei uses (")),
     "mut-claim-event-wrong-amount": ("T5: MilestoneClaimed reports twice the amount (tests and ABI cannot see it)", "Events of both ingots", replace_in(HANDLERS, "MilestoneClaimed { id, m, to, amount }", "MilestoneClaimed { id, m, to, amount: amount + amount }")),
     "mut-claim-event-names-the-caller": ("T5: MilestoneClaimed names the caller instead of the payee", "Events of both ingots", replace_in(HANDLERS, "MilestoneClaimed { id, m, to, amount }", "MilestoneClaimed { id, m, to: ctx.caller(), amount }")),
     "mut-claimed-event-not-emitted": ("T5: MilestoneClaimed is never emitted", "Events of both ingots", replace_in(HANDLERS, "log.emit(MilestoneClaimed { id, m, to, amount })", "let _ = id")),
     "mut-claim-reason-has-extra-text": ("T5: the state error contains an unrelated diagnostic (exact reason match)", "Tests for both ingots", replace_in(HANDLERS, "\"milestone is not approved\"", "\"milestone is not approved: payee is zero\"")),
+    # R-005 F-1: the nine saved reproductions of a transfer the old lint accepted. Each must fail CI
+    # for its own reason AND be rejected by the policy lint (LINT_ALSO), so a shape the tests happen
+    # to see is not one the lint lets through. b7 passed the whole gate before R-005.
+    "r005-b1-gas-expression": ("R-005 b1: `gas: 0 + 100000` instead of the literal 0 (forwarded gas)", "Tests for both ingots", apply_patch("b1_gas_expression")),
+    "r005-b2-try-call-raw-forwards-gas": ("R-005 b2: `try_call_raw` with 100k gas instead of send_value", "Tests for both ingots", apply_patch("b2_try_call_raw_forwards_gas")),
+    "r005-b2b-try-call-raw-stipend-write-after": ("R-005 b2b: a stipend-only raw call with a write after it (no test can see it)", "policy lint (fails", apply_patch("b2b_try_call_raw_stipend_write_after")),
+    "r005-b3-nested-send-write-after": ("R-005 b3: the send is nested in an `if` and a write follows (no test can see it)", "policy lint (fails", apply_patch("b3_cei_nested_block")),
+    "r005-b3b-nested-send-with-gas": ("R-005 b3b: a nested send forwarding gas by expression, with a write after", "Tests for both ingots", apply_patch("b3b_cei_nested_block_with_gas")),
+    "r005-b4-helper-before-writes": ("R-005 b4: the transfer is in a helper called before every write (no test can see it)", "policy lint (fails", apply_patch("b4_cei_helper_before_writes")),
+    "r005-b5-result-or-true": ("R-005 b5: `.success() || true` asserts nothing", "Tests for both ingots", apply_patch("b5_send_result_ignored_or_true")),
+    "r005-b6-test-attribute-helper": ("R-005 b6: `#[test]` on a production helper the contract calls (also a Fe 26.6.0 backend crash in `fe test`)", "Tests for both ingots", apply_patch("b6_test_attribute_on_helper")),
+    "r005-b7-double-pay-under-60k": ("R-005 b7: send first with 57,000 forwarded gas, writes after: a 1 ETH milestone pays 2 ETH out of another agreement's escrow", "Tests for both ingots", apply_patch("b7_double_pay_under_60k")),
+    "r005-evm-send-in-production-helper": ("R-005: `evm.send_value` in a production helper (only a #[test] fn of tests.fe may use it)", "policy lint (fails", add_fixture("bad_xfer_evm_send_in_helper.fe", "ingots/settlane/src/attack.fe")),
+    "r005-test-fn-in-production-file": ("R-005: a #[test] function in a production file other than tests.fe", "policy lint (fails", add_fixture("bad_xfer_send_in_test_fn_of_production_file.fe", "ingots/settlane/src/attack.fe")),
+    "r005-tests-module-reference": ("R-005: a production file imports the tests module", "policy lint (fails", replace_in(HANDLERS, "use ingot::rules\n", "use ingot::rules\nuse ingot::tests\n")),
     "unformatted-dev-code": ("badly formatted dev code", "Format check", lambda r: write(r, "ingots/settlane-dev/src/messy.fe", "pub fn   messy ( )   ->  u256 {   1 }\n")),
 }
 
@@ -365,7 +425,22 @@ def main(argv):
             if name not in ("control-unmodified", "unformatted-dev-code"):
                 subprocess.run(["fe", "fmt", "ingots"], cwd=root, capture_output=True)  # so the mistake reaches its own step
             failed_step, output = run_ci(root)
+            lint_result = None
+            if name in LINT_ALSO:  # the copy still exists here
+                lint_result = subprocess.run([sys.executable, "scripts/settlane_lint.py", "ingots"], cwd=root, capture_output=True, text=True)
         good = (failed_step is None) if expect is None else (failed_step is not None and expect in failed_step)
+        must = MUST_FAIL.get(name)
+        if must is not None and good:
+            failing = set(re.findall(r"^FAIL\s+\[[^\]]*\]\s+\S+\s+(\S+)", output, re.M))
+            if not must <= failing:
+                good = False
+                failed_step = f"{failed_step}, but these required tests did not fail: {sorted(must - failing)}"
+        wanted = LINT_ALSO.get(name)
+        if wanted is not None:
+            missing = [r for r in wanted if not re.search(rf"^{re.escape(r)}:", lint_result.stdout, re.M)]
+            if lint_result.returncode == 0 or missing:
+                good = False
+                failed_step = f"{failed_step}, but the policy lint did not reject it with {missing or wanted} (exit {lint_result.returncode})"
         only = ONLY_FAILING.get(name)
         if only is not None and good:
             # The step is right; the failing test must be exactly the named one, so the control

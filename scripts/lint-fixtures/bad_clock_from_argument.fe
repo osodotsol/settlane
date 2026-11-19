@@ -1,4 +1,5 @@
 // EXPECT: fail C-CLOCK
+// IGNORE: C-XFER,C-XFER-RAW
 use std::evm::ether
 
 msg SettleMsg {

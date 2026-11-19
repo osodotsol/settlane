@@ -3,6 +3,7 @@
 # 1. Each repro still behaves as recorded under the pinned Fe (the compiler facts).
 # 2. The policy lint now REJECTS every attack repro (H1-H4), and the real M1 shape:
 #    a dev contract's bytecode built into out/ without an ABI.
+# 3. R-005 (2026-11-19): the F-1 transfer bypasses are rejected (experiments/review/r005/run.sh).
 # Usage: bash experiments/review/run.sh   (from the repo root; exit 0 = all hold)
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -102,6 +103,9 @@ PYEOF
 else
   echo "UNEXPECTED  R-003 f3: no clean production ABI to edit"; fail=1
 fi
+
+# R-005 (docs/reviews/2026-11-19-phase3a.md): the nine transfer bypasses are now rejected.
+bash "$here/r005/run.sh" || fail=1
 
 [ $fail -eq 0 ] && echo "review regressions: all hold" || echo "review regressions: FAILED"
 exit $fail

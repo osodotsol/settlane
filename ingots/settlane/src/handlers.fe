@@ -2,8 +2,11 @@
 // `SettlaneTestClock`, only supplies the Clock and calls one of these. Handlers see
 // contract state through `uses` parameters, and time only through the `clock` effect.
 //
-// Phase 2A: creation and queries. No handler here lists `call` or `create`, so none can
-// move ETH (and the contract does not even declare those effects).
+// Only `claim_handler` lists `call`, and it sends ETH exactly once, in the one approved form
+// (the asserted stipend-only `send_value` as its last statement, after every write; the
+// exact text is in scripts/settlane_lint.py and the policy, lint C-XFER, R-005 F-1). The other handlers omit `call`
+// and `create` entirely, which the compiler enforces (`8-0012`, `8-0036`), so they cannot move
+// ETH even though the contract declares `Call`.
 use ingot::rules
 use ingot::rules::{ClaimCheck, CreateCheck, ReviewCheck, SubmitCheck}
 use ingot::types::{
@@ -253,7 +256,7 @@ uses (
 
 // T3: the verifier approves the evidence it names. The milestone becomes `Approved`, which no
 // handler can change again, and the evidence stays as it was. No ETH moves: approval only
-// creates the provider's entitlement (it is claimed in a later phase).
+// creates the provider's entitlement, which `claim_handler` pays out.
 pub fn approve_handler(id: u256, m: u8, evidence: u256, revision: u256)
 uses (
     clock: Clock,
@@ -376,7 +379,7 @@ pub fn require_claim(_ c: ClaimCheck) {
 //      send reverts every write above and the milestone stays `Approved` (I7).
 // A second claim finds `Paid`, which is not `Approved`, and reverts (I4). The arm is the only
 // one besides `Refund` that may list `call` (lint E-CALL), and the lint also requires `gas: 0`,
-// an asserted result and no write after the transfer (C-STIPEND, C-SEND, C-CEI).
+// an asserted result and no write after the transfer (lint C-XFER, C-XFER-ORDER).
 pub fn claim_handler(id: u256, m: u8, to: Address) -> Wei
 uses (
     ctx: Ctx,

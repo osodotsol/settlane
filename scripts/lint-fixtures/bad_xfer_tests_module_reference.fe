@@ -1,0 +1,8 @@
+// EXPECT: fail C-TEST
+// Production code may not reach into the tests module: a test-attributed helper there would be
+// callable by a contract.
+use ingot::tests::pay
+
+pub fn claim_handler_like(to: Address) -> Wei {
+    Wei::zero()
+}

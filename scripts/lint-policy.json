@@ -39,7 +39,12 @@
           "MilestoneRejected(uint256 indexed,uint8 indexed,uint256 indexed,uint256,uint256)",
           "MilestoneClaimed(uint256 indexed,uint8 indexed,address indexed,uint256)"
         ]
-      }
+      },
+      "effects": [
+        "Ctx",
+        "Log",
+        "Call"
+      ]
     },
     "SettlaneTestClock": {
       "payout_arms": [
@@ -58,5 +63,18 @@
   "benign_contract_effects": [
     "Ctx",
     "Log"
-  ]
+  ],
+  "transfers": {
+    "_note": "R-005 F-1: the only way ETH may leave a production contract. Each handler listed here must end with the one approved transfer (see C-XFER in scripts/settlane_lint.py) and must match every `required_before_send` pattern before it. Adding a payout (Refund) means adding its handler here in the same change.",
+    "handlers": {
+      "claim_handler": {
+        "required_before_send": [
+          "milestones\\s*\\.\\s*set\\s*\\(",
+          "agreements\\s*\\.\\s*set\\s*\\(",
+          "totals\\s*\\.\\s*outstanding\\s*=\\s*totals\\s*\\.\\s*outstanding\\s*-\\s*amount\\b",
+          "log\\s*\\.\\s*emit\\s*\\(\\s*MilestoneClaimed\\b"
+        ]
+      }
+    }
+  }
 }

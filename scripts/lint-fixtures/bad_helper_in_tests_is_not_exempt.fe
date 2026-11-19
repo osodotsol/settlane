@@ -1,5 +1,7 @@
-// EXPECT: fail C-CEI,C-STIPEND
-// A plain helper (no #[test]) is not exempt, even in a test file: a contract could call it.
+// EXPECT: fail C-XFER
+// PATH: tests.fe
+// Even in tests.fe, a plain helper (no #[test]) that sends through the `call` binding is rejected:
+// a contract could call it. Only `evm.send_value` inside a #[test] function is allowed there.
 use std::evm::StorageMap
 
 pub fn pay_out(to: Address, amount: Wei) uses (call: mut Call, owed: mut StorageMap<u256, Wei>) {

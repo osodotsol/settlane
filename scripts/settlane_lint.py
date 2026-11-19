@@ -53,12 +53,27 @@ Rules (a violation exits 1):
   C-LAYOUT    a test-only contract is defined in the production ingot, a
               production or deployable contract is defined in the dev ingot,
               or an ingot directory is not classified in the policy.
-  C-STIPEND   (production) a `send_value(..)` that does not pass `gas: 0` (Phase 3A).
-  C-SEND      (production) a `send_value(..)` whose result is not asserted with
-              `assert!(x.send_value(..).success(), ..)`, so a failed send could be ignored.
-  C-CEI       (production) a storage write (`.set(..)`, an assignment, a compound
-              assignment) after a `send_value(..)` in the same block: effects must come
-              before the interaction.
+  C-XFER      (production) a `send_value(..)` that is not THE approved transfer (R-005 F-1).
+              The only accepted form is, as the last statement of a handler listed under
+              `transfers.handlers` in the policy (today `claim_handler`), directly before its
+              return value `amount`:
+                  assert!(call.send_value(addr: to, gas: 0, value: amount).success(), "..")
+              with the literal `gas: 0` (no expression such as `0 + 57000`), the result asserted,
+              nothing after it, not nested in a block, not in a helper, and no second send in
+              the handler. Anything else is rejected, including a send in a test-attributed or
+              ordinary helper. The one exception: `evm.send_value(..)` inside a `#[test]`
+              function of a file named `tests.fe` (it funds an address in a test).
+  C-XFER-RAW  (production) any method on the Call binding other than `send_value` (`raw_call`,
+              `try_call_raw`, `call`, `try_call`, `raw_delegatecall`, `delegate`, ..), `call`
+              used as a value, the `Call` type outside `uses` lists and imports, or a `uses`
+              item of type Call that is not named `call` (so the other rules cannot be dodged by
+              renaming the binding).
+  C-XFER-ORDER (production) the approved handler does not write its state, its accounting and
+              its event before the transfer: each pattern listed in `required_before_send` must
+              appear before the send. A missing or duplicated handler is `C-XFER-MISSING`.
+  C-TEST      (production) a `#[test]` attribute outside `tests.fe`, or a reference to the
+              `tests` module from another production file, so a test-attributed helper cannot
+              be reached by a contract (the b6 shape: it also crashes the Fe 26.6.0 backend).
   C-ABI       a production arm uses a selector that is not `sol("..")` (a numeric
               selector makes the arm callable but leaves it out of the ABI JSON, so
               the allowlist cannot see it, R-002 finding 1), or the number of
@@ -274,7 +289,7 @@ def lint_text(text, policy, path="<src>", kind="production"):
     aliases = aliases_in(text)
     found = []
     if kind == "production":
-        found += production_text_rules(text, aliases, reserved, path)
+        found += production_text_rules(text, aliases, reserved, path, policy)
     for tm in re.finditer(r"#\[test\b([^\]]*)\]", text):
         if re.search(r"\bshould_revert\b", tm.group(1)) and not re.search(r"\bpanic\s*=", tm.group(1)):
             line = text.count("\n", 0, tm.start()) + 1
@@ -288,6 +303,10 @@ def lint_text(text, policy, path="<src>", kind="production"):
             unknown = sorted(f"{n}: {t}" for n, t in effects if t is None or t not in value_types | benign)
             if unknown:
                 found.append(("E-EFFECT", f"{path}: contract {cname} declares effects the lint cannot classify {unknown}; allowed: {sorted(value_types | benign)}"))
+            if production and entry.get("effects"):
+                extra = sorted(f"{n}: {t}" for n, t in effects if t not in entry["effects"])
+                if extra:
+                    found.append(("E-EFFECT", f"{path}: contract {cname} declares {extra}; this contract may declare only {sorted(entry['effects'])}"))
         if kind == "production" and entry and entry.get("test_only"):
             found.append(("C-LAYOUT", f"{path}: test-only contract {cname} is defined in the production ingot"))
         if kind == "dev" and entry and (entry.get("production") or entry.get("deployable")):
@@ -387,56 +406,89 @@ def lint_text(text, policy, path="<src>", kind="production"):
     return found
 
 
-def block_end(text, start):
-    """Index of the `}` that closes the block containing position `start`."""
-    depth = 0
-    for k in range(start, len(text)):
-        if text[k] == "{":
-            depth += 1
-        elif text[k] == "}":
-            if depth == 0:
-                return k
-            depth -= 1
-    return len(text)
+APPROVED_TAIL = re.compile(r'assert!\(call\.send_value\(addr:to,gas:0,value:amount\)\.success\(\),"",?\)amount$')
+SEND = re.compile(r"\bsend_value\b")
 
 
-def transfer_rules(text, path):
-    """C-STIPEND, C-SEND and C-CEI for every `send_value(..)` in the production ingot (Phase 3A).
-
-    C-STIPEND  the call forwards no gas beyond the 2300 stipend (`gas: 0`), so a recipient
-               cannot re-enter;
-    C-SEND     its result is asserted (`assert!(x.send_value(..).success() ..)`), so a failed
-               send reverts every write before it (I7);
-    C-CEI      nothing is written after it in the same block (checks, effects, interaction):
-               no `.set(..)`, no assignment and no compound assignment."""
-    found = []
-    for m in re.finditer(r"\bsend_value\s*\(", text):
-        line = text.count("\n", 0, m.start()) + 1
-        # A `#[test]` function is a test entry point (it funds addresses, for example), not
-        # contract code, so it is exempt. Only that attribute exempts: a plain helper function,
-        # even one in tests.fe, could be called by a contract and stays subject to the rules.
-        heads = list(re.finditer(r"\bfn\s+\w+", text[: m.start()]))
-        if heads:
-            zone = text[max(0, heads[-1].start() - 300) : heads[-1].start()]
-            if re.search(r"#\[test\b[^\]]*\]\s*(?:pub\s+)?$", zone):
-                continue
-        open_idx = m.end() - 1
-        close = match_close(text, open_idx)
-        args = text[open_idx + 1 : close]
-        if not re.search(r"\bgas\s*:\s*0\b", args):
-            found.append(("C-STIPEND", f"{path}:{line}: send_value must pass `gas: 0` (the 2300 stipend only), so the recipient cannot re-enter"))
-        asserted = re.search(r"assert!\s*\(\s*\w+\s*\.\s*$", text[: m.start()]) and re.match(r"\s*\.\s*success\s*\(\s*\)", text[close + 1 :])
-        if not asserted:
-            found.append(("C-SEND", f"{path}:{line}: the result of send_value must be asserted (`assert!(x.send_value(..).success(), ..)`), so a failed send reverts every write"))
-        rest = text[close + 1 : block_end(text, close + 1)]
-        if re.search(r"\.\s*set\s*\(|(?<![=!<>+\-*/])=(?![=>])|\+=|-=|\*=", rest):
-            found.append(("C-CEI", f"{path}:{line}: storage is written after send_value in the same block; every write must come before the transfer (checks, effects, interaction)"))
+def handler_bodies(text, names):
+    """{name: [(body_start, body_end)]}: the brace span of every `fn <name>` in text."""
+    found = {n: [] for n in names}
+    for m in re.finditer(r"\bfn\s+(\w+)", text):
+        if m.group(1) in found:
+            brace = text.find("{", m.end())
+            if brace >= 0:
+                found[m.group(1)].append((brace + 1, match_close(text, brace)))
     return found
 
 
-def production_text_rules(text, aliases, reserved, path):
+def is_test_file(path):
+    return pathlib.PurePath(path).name == "tests.fe"
+
+
+def test_attributed(text, pos):
+    """True if the function containing `pos` carries `#[test..]` (a test entry point)."""
+    heads = list(re.finditer(r"\bfn\s+\w+", text[:pos]))
+    if not heads:
+        return False
+    zone = text[max(0, heads[-1].start() - 300) : heads[-1].start()]
+    return bool(re.search(r"#\[test\b[^\]]*\]\s*(?:pub\s+)?$", zone))
+
+
+def transfer_rules(text, path, policy, aliases):
+    """The transfer rules for one production source (R-005 F-1): C-XFER, C-XFER-RAW,
+    C-XFER-ORDER and C-TEST. Every way to move ETH other than the single approved form is
+    rejected, so the check is on the SHAPE, not on a list of known bad shapes."""
+    found = []
+    handlers = (policy.get("transfers") or {}).get("handlers", {})
+    bodies = handler_bodies(text, list(handlers))
+    approved = []  # send_value offsets accepted as THE transfer
+    for name, spans in bodies.items():
+        for start, end in spans:
+            body = text[start:end]
+            sends = [start + m.start() for m in SEND.finditer(body)]
+            compact = re.sub(r"\s+", "", body)
+            line = text.count("\n", 0, start) + 1
+            if len(sends) != 1 or not APPROVED_TAIL.search(compact):
+                found.append(("C-XFER", f"{path}:{line}: {name} must end with the approved transfer `assert!(call.send_value(addr: to, gas: 0, value: amount).success(), ..)` followed only by `amount`, with exactly one send_value in its body"))
+                continue  # every send in it is also reported below as not approved
+            approved.append(sends[0])
+            before = body[: sends[0] - start]
+            for pat in handlers[name].get("required_before_send", []):
+                if not re.search(pat, before):
+                    found.append(("C-XFER-ORDER", f"{path}:{line}: {name} does not match `{pat}` before the transfer: state, accounting and event must be written first"))
+    for m in SEND.finditer(text):
+        line = text.count("\n", 0, m.start()) + 1
+        if m.start() in approved:
+            continue
+        before = text[max(0, m.start() - 40) : m.start()]
+        if is_test_file(path) and re.search(r"(?<![\w.])evm\s*\.\s*$", before) and test_attributed(text, m.start()):
+            continue  # a #[test] function funding an address through the Evm harness
+        found.append(("C-XFER", f"{path}:{line}: `send_value` outside the one approved transfer: it must be `assert!(call.send_value(addr: to, gas: 0, value: amount).success(), ..)` as the last statement of a handler listed in the policy (literal `gas: 0`, result asserted, nothing after it, not nested, not in a helper)"))
+    scrub = blank_uses(text)
+    scrub = re.sub(r"\buse\b[^\n{]*(?:\{[^}]*\})?[^\n]*", lambda m: re.sub(r"[^\n]", " ", m.group(0)), scrub)
+    for m in re.finditer(r"(?<![\w.])call\b(?!\s*:)", scrub):
+        line = scrub.count("\n", 0, m.start()) + 1
+        mm = re.match(r"\s*\.\s*(\w+)", scrub[m.end() :])
+        if not mm:
+            found.append(("C-XFER-RAW", f"{path}:{line}: `call` used as a value; only `call.send_value(..)` in the approved transfer is allowed"))
+        elif mm.group(1) != "send_value":
+            found.append(("C-XFER-RAW", f"{path}:{line}: `call.{mm.group(1)}(..)` is not allowed in the production ingot: only `call.send_value(..)` in the approved transfer"))
+    for m in re.finditer(r"\bCall\b", scrub):
+        found.append(("C-XFER-RAW", f"{path}:{scrub.count(chr(10), 0, m.start()) + 1}: the `Call` type is named outside a `uses` list or an import"))
+    for n, t in all_uses_items(text, aliases):
+        if t == "Call" and n != "call":
+            found.append(("C-XFER-RAW", f"{path}: the Call effect is bound as `{n}`; it must be named `call` so the transfer rules can see every use"))
+    if not is_test_file(path):
+        for m in re.finditer(r"#\[test\b", text):
+            found.append(("C-TEST", f"{path}:{text.count(chr(10), 0, m.start()) + 1}: `#[test]` outside tests.fe: a test-attributed helper can be called by a contract and is exempt from nothing"))
+        for m in re.finditer(r"(?<![\w.])tests\s*::|\buse\b[^\n]*\btests\b", text):
+            found.append(("C-TEST", f"{path}:{text.count(chr(10), 0, m.start()) + 1}: production code references the `tests` module"))
+    return found
+
+
+def production_text_rules(text, aliases, reserved, path, policy):
     """E-UNSAFE, E-SHADOW and the transfer rules over one production source text (noise stripped)."""
-    found = transfer_rules(text, path)
+    found = transfer_rules(text, path, policy, aliases)
     for m in re.finditer(r"\bunsafe\b", text):
         found.append(("E-UNSAFE", f"{path}:{text.count(chr(10), 0, m.start()) + 1}: `unsafe` is not allowed in the production ingot"))
     for m in re.finditer(r"\b(?:struct|enum|trait|type|msg|contract)\s+(\w+)", text):
@@ -601,6 +653,8 @@ def lint_tree(src_dir, policy, abi_dir=None):
         return [("E-PARSE", f"{src_dir}: no .fe files found, nothing was scanned")]
     seen_deployable = set()
     newest_source = None
+    handler_names = list((policy.get("transfers") or {}).get("handlers", {}))
+    handler_count = {n: 0 for n in handler_names}
     for f in files:
         kind = classify(f, policy)
         if kind is None:
@@ -609,6 +663,8 @@ def lint_tree(src_dir, policy, abi_dir=None):
         text = f.read_text()
         found += lint_text(text, policy, str(f), kind)
         if kind == "production":
+            for n, spans in handler_bodies(strip_noise(text), handler_names).items():
+                handler_count[n] += len(spans)
             newest_source = max(newest_source or 0, f.stat().st_mtime)
             for cname, _, _ in contracts_in(strip_noise(text)):
                 entry = policy["contracts"].get(cname, {})
@@ -617,6 +673,10 @@ def lint_tree(src_dir, policy, abi_dir=None):
                     arms_by_contract[cname] = arms_by_contract.get(cname, 0) + arm_count(strip_noise(text), cname)
                 if entry.get("deployable"):
                     seen_deployable.add(cname)
+    if seen_deployable:
+        for n, count in handler_count.items():
+            if count != 1:
+                found.append(("C-XFER-MISSING", f"production handler `{n}` is defined {count} times; the transfer policy needs exactly one, or the approved transfer is not where the policy says"))
     if abi_dir is not None:
         found += check_artifacts(abi_dir, policy)
         for cname in sorted(seen_deployable):
@@ -636,7 +696,13 @@ def selftest(policy):
         m = re.match(r"// EXPECT: (pass|fail)(?: ([A-Z,\-]+))?", text)
         assert m, f"{f.name}: missing EXPECT header"
         km = re.search(r"^// KIND: (production|dev)", text, re.M)
-        rules = {r for r, _ in lint_text(text, policy, f.name, km.group(1) if km else "production")}
+        # `// PATH: tests.fe` makes the fixture a test file; `// IGNORE: RULE,..` drops rules that
+        # are orthogonal to what the fixture shows (a payout-arm fixture that sends ETH in its arm
+        # is not about the transfer rules, which have their own fixtures).
+        pm = re.search(r"^// PATH: (\S+)", text, re.M)
+        im = re.search(r"^// IGNORE: ([A-Z,\-]+)", text, re.M)
+        ignored = set(im.group(1).split(",")) if im else set()
+        rules = {r for r, _ in lint_text(text, policy, pm.group(1) if pm else f.name, km.group(1) if km else "production")} - ignored
         if m.group(1) == "pass":
             good = not rules
         else:

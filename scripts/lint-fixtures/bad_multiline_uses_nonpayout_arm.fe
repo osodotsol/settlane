@@ -1,4 +1,5 @@
 // EXPECT: fail E-CALL
+// IGNORE: C-XFER,C-XFER-RAW
 // The same multi-line `uses` shape on a NON-payout arm that lists `call` must still be caught,
 // and attributed to the real arm.
 use std::evm::ether

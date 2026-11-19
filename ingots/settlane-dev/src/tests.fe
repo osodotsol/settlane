@@ -3,7 +3,18 @@ use std::evm::returndata::decode_error_string
 // a clock that moves (the test-clock shell) and a caller other than the test contract (the
 // Actor). The shell runs the production handlers (D-016), so what is tested here is the
 // shipped creation logic under other clocks and other callers.
-use ingot::{Actor, ActorMsg, AttackMsg, DevMsg, Reentrant, SettlaneTestClock}
+use ingot::{
+    Actor,
+    ActorMsg,
+    AttackMsg,
+    DevMsg,
+    GasCap,
+    Greedy,
+    LOOT,
+    Once,
+    Reentrant,
+    SettlaneTestClock,
+}
 use std::evm::CallOutcome
 use settlane::settlane::{SettleMsg, Settlane}
 use std::evm::{ether, seconds, wei}
@@ -1812,34 +1823,38 @@ fn transitions_are_not_payable_and_never_move_money() uses (evm: mut Evm) {
     // The same calls with value attached are rejected (non-payable) and keep nothing. Each has a
     // zero-value positive control that succeeds, so value is the only difference.
     let with_value = ether(1)
-    assert!(
-        !evm.try_call(
+    let submit_value = evm
+        .try_call(
             addr: p,
             gas: 2000000,
             value: with_value,
             message: ActorMsg::SubmitVia { target: prod, id: 1, m: 0, evidence: 0xe1 },
         )
-            .success(),
-        "submit with value is rejected",
+    assert!(!submit_value.success(), "submit with value is rejected")
+    assert!(
+        empty_revert(submit_value),
+        "submit with value: the revert data is empty (non-payable), not a reasoned revert",
     )
     assert!(state_of(prod, 1, 0) == 1, "and it changed nothing")
     assert!(
         submit_out(p, prod, 1, 0, 0xe1).success(),
         "positive control: submit without value",
     )
-    assert!(
-        !evm.try_call(
+    let reject_value = evm
+        .try_call(
             addr: v,
             gas: 2000000,
             value: with_value,
             message: ActorMsg::RejectVia { target: prod, id: 1, m: 0, evidence: 0xe1, revision: 1 },
         )
-            .success(),
-        "reject with value is rejected",
+    assert!(!reject_value.success(), "reject with value is rejected")
+    assert!(
+        empty_revert(reject_value),
+        "reject with value: the revert data is empty (non-payable), not a reasoned revert",
     )
     assert!(state_of(prod, 1, 0) == 2, "still Submitted")
-    assert!(
-        !evm.try_call(
+    let approve_value = evm
+        .try_call(
             addr: v,
             gas: 2000000,
             value: with_value,
@@ -1851,8 +1866,10 @@ fn transitions_are_not_payable_and_never_move_money() uses (evm: mut Evm) {
                 revision: 1,
             },
         )
-            .success(),
-        "approve with value is rejected",
+    assert!(!approve_value.success(), "approve with value is rejected")
+    assert!(
+        empty_revert(approve_value),
+        "approve with value: the revert data is empty (non-payable), not a reasoned revert",
     )
     assert!(state_of(prod, 1, 0) == 2, "still Submitted")
     assert!(
@@ -1995,6 +2012,58 @@ fn third_slot_revision_lifecycle_at_both_deadlines() uses (evm: mut Evm) {
     assert_money(shell, ether(18))
 }
 
+// The accounting invariants (docs/SECURITY.md I1, I2, I9) for agreements 1..=last_id, and
+// that agreement last_id + 1 does not exist. Called after every state-changing step.
+// I9 is `balance >= outstanding` in general: ETH can reach the contract without an agreement
+// (it is pre-funded at its address before deployment, forced in by selfdestruct or a coinbase
+// reward), and nothing in the contract can claim it. `surplus` is the extra ETH the test knows
+// about (zero for most tests), and the balance must be exactly `outstanding + surplus`.
+fn check_invariants(_ s: Address, _ last_id: u256, _ surplus: Wei)
+uses (evm: mut Evm)
+{
+    var id: u256 = 1
+    var sum = Wei::zero()
+    while id <= last_id {
+        let acc = accounting(s, id)
+        // I1: deposited == paid + refunded + outstanding.
+        assert!(acc.0 == acc.1 + acc.2 + acc.3, "I1 conservation")
+        var live = Wei::zero()
+        var m: u8 = 0
+        while m < 3 {
+            let x = milestone(s, id, m)
+            // states 1..=3 (Funded, Submitted, Approved) are still owed.
+            if x.0 >= 1 && x.0 <= 3 {
+                live = live + x.1
+            }
+            m += 1
+        }
+        assert!(
+            live == acc.3,
+            "outstanding equals the live milestone amounts",
+        )
+        sum = sum + acc.3
+        id += 1
+    }
+    assert!(
+        outstanding(s) == sum,
+        "total outstanding equals the per-agreement sum",
+    )
+    // I9, general form: the contract always holds at least what it owes.
+    assert!(evm.balance(s) >= sum, "I9 balance >= outstanding")
+    // And exactly what the test knows: nothing was lost and nothing was created.
+    assert!(
+        evm.balance(s) == sum + surplus,
+        "balance == outstanding + known surplus",
+    )
+    assert!(!exists(s, last_id + 1), "no agreement beyond last_id")
+}
+
+// F-3 (R-005): a non-payable function rejects attached value with EMPTY revert data, which tells it
+// apart from every reasoned revert (`because` needs a decodable `Error(string)`).
+fn empty_revert(_ out: CallOutcome) -> bool {
+    !out.success() && out.returndata_len() == 0
+}
+
 // ------------------------------------------------------------------------- Phase 3A: Claim
 // T5: from Approved, Claim(to) by the provider, to != 0, goes to Paid, paid += amount,
 // outstanding -= amount, and sends exactly the stored amount to `to` with the 2300-gas stipend.
@@ -2070,6 +2139,7 @@ uses (evm: mut Evm)
         create(prod, parties(two(now + 100, now + 200), p, v), ether(3)) == 2,
     )
     assert_money(prod, ether(9))
+    check_invariants(prod, 2, Wei::zero())
     approve_first(p, v, prod, 1, 1, 0xe2)
     let before = milestone(prod, 1, 1)
     let other0 = milestone(prod, 1, 0)
@@ -2106,6 +2176,7 @@ uses (evm: mut Evm)
         "deposited 6, paid 2, refunded 0, outstanding 4",
     )
     assert_money(prod, ether(7))
+    check_invariants(prod, 2, Wei::zero())
     assert!(
         same_milestone(milestone(prod, 1, 0), other0),
         "milestone 0 is untouched",
@@ -2151,6 +2222,7 @@ uses (evm: mut Evm)
     )
     assert!(evm.balance(payee) == ether(2), "still paid exactly once")
     assert_money(prod, ether(7))
+    check_invariants(prod, 2, Wei::zero())
 
     // The other milestones can still be claimed, each once: the payout total equals the deposit.
     approve_first(p, v, prod, 1, 0, 0xe1)
@@ -2169,6 +2241,7 @@ uses (evm: mut Evm)
         "fully paid: paid == deposited and nothing is outstanding",
     )
     assert_money(prod, ether(3))
+    check_invariants(prod, 2, Wei::zero())
     assert!(
         same_accounting(accounting(prod, 2), second),
         "agreement 2 is still untouched",
@@ -2288,6 +2361,7 @@ uses (evm: mut Evm)
         "accounting unchanged",
     )
     assert_money(prod, ether(3))
+    check_invariants(prod, 1, Wei::zero())
     assert!(
         evm.balance(payee) == Wei::zero()
             && evm.balance(p) == Wei::zero()
@@ -2302,6 +2376,7 @@ uses (evm: mut Evm)
     )
     assert!(evm.balance(payee) == ether(2))
     assert_money(prod, ether(1))
+    check_invariants(prod, 1, Wei::zero())
 }
 
 #[test(balance = 300_000_000_000_000_000_000)]
@@ -2345,6 +2420,7 @@ uses (evm: mut Evm)
         "paid and outstanding unchanged",
     )
     assert_money(prod, ether(3))
+    check_invariants(prod, 1, Wei::zero())
     assert!(
         evm.balance(refuses) == Wei::zero(),
         "the refusing payee holds nothing",
@@ -2359,6 +2435,7 @@ uses (evm: mut Evm)
         evm.balance(payee) == ether(2) && state_of(prod, 1, 1) == 4,
     )
     assert_money(prod, ether(1))
+    check_invariants(prod, 1, Wei::zero())
     assert!(
         because(claim_out(p, prod, 1, 1, payee), Why::NotApproved),
         "and only once",
@@ -2425,6 +2502,7 @@ fn a_reentrant_provider_is_paid_exactly_once() uses (evm: mut Evm) {
     )
     assert!(state_of(prod, 1, 0) == 4, "Paid")
     assert_money(prod, ether(8))
+    check_invariants(prod, 2, Wei::zero())
     let acc = accounting(prod, 1)
     assert!(
         acc.1 == ether(1) && acc.3 == ether(2),
@@ -2466,6 +2544,7 @@ fn a_reentrant_provider_is_paid_exactly_once() uses (evm: mut Evm) {
         "still exactly one payout",
     )
     assert_money(prod, ether(8))
+    check_invariants(prod, 2, Wei::zero())
 }
 
 #[test(balance = 300_000_000_000_000_000_000)]
@@ -2489,8 +2568,13 @@ fn claim_is_not_payable() uses (evm: mut Evm) {
             message: ActorMsg::ClaimVia { target: prod, id: 1, m: 0, to: payee },
         )
     assert!(!out.success(), "a claim with value is rejected")
+    assert!(
+        empty_revert(out),
+        "and its revert data is empty, unlike every reasoned revert",
+    )
     assert!(state_of(prod, 1, 0) == 3, "still Approved")
     assert_money(prod, ether(1))
+    check_invariants(prod, 1, Wei::zero())
     assert!(evm.balance(payee) == Wei::zero(), "nothing was paid")
     // Positive control: the same claim with no value succeeds.
     assert!(
@@ -2498,6 +2582,7 @@ fn claim_is_not_payable() uses (evm: mut Evm) {
         "positive control",
     )
     assert_money(prod, Wei::zero())
+    check_invariants(prod, 1, Wei::zero())
 }
 
 #[test(balance = 300_000_000_000_000_000_000)]
@@ -2546,7 +2631,9 @@ uses (evm: mut Evm)
     assert!(claim_ok(p, shell, 1, 0, payee) == ether(1))
     same_state(prod, shell, 1)
     assert_money(prod, ether(5))
+    check_invariants(prod, 1, Wei::zero())
     assert_money(shell, ether(5))
+    check_invariants(shell, 1, Wei::zero())
 
     // Approval never expires: long after deliver_by and decide_by of every milestone, the
     // shell still pays the approved milestone 2 (Claim has no time guard).
@@ -2565,8 +2652,285 @@ uses (evm: mut Evm)
         "once",
     )
     assert_money(shell, ether(2))
+    check_invariants(shell, 1, Wei::zero())
     assert!(
         evm.balance(payee) == ether(5),
         "1 + 1 + 3 ETH in total across both contracts",
     )
+}
+
+// ------------------------------------------------------------- R-005: reentrancy without a threshold
+
+// Two agreements funded for the same provider, so a second payout of one milestone would come out
+// of another milestone's escrow. Returns the contract.
+fn funded_for(_ provider: Address, _ v: Address) -> Address
+uses (evm: mut Evm)
+{
+    let prod = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let now = evm.timestamp().as_seconds()
+    assert!(
+        create(
+                prod,
+                parties(three(now + 100, now + 200, now + 300), provider, v),
+                ether(6),
+            ) == 1,
+    )
+    assert!(
+        create(
+                prod,
+                parties(two(now + 100, now + 200), provider, v),
+                ether(3),
+            ) == 2,
+    )
+    prod
+}
+
+fn aim(_ attacker: Address, _ prod: Address, _ id: u256, _ m: u8)
+uses (evm: mut Evm)
+{
+    evm.call(
+        addr: attacker,
+        gas: 200000,
+        value: Wei::zero(),
+        message: AttackMsg::Setup { target: prod, id, m },
+    )
+}
+
+// The attacker submits (as the provider) and the verifier approves milestone m of agreement 1.
+fn approve_attacker(_ attacker: Address, _ v: Address, _ prod: Address, _ m: u8, _ e: u256)
+uses (evm: mut Evm)
+{
+    aim(attacker, prod, 1, m)
+    evm.call(
+        addr: attacker,
+        gas: 2000000,
+        value: Wei::zero(),
+        message: AttackMsg::SubmitAs { evidence: e },
+    )
+    assert!(
+        approve_out(v, prod, 1, m, e, 1).success(),
+        "setup: approve",
+    )
+}
+
+fn attacker_claims(_ attacker: Address, _ to: Address) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: attacker,
+        gas: 5000000,
+        value: Wei::zero(),
+        message: AttackMsg::ClaimTo { to },
+    )
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn a_provider_that_always_re_enters_is_never_paid_under_the_stipend_and_never_twice()
+uses (evm: mut Evm)
+{
+    probe()
+    let v = actor(12)
+    let g = evm.create2<Greedy>(value: Wei::zero(), args: (), salt: 24)
+    let prod = funded_for(g, v)
+    approve_attacker(g, v, prod, 0, 0xe1)
+    approve_attacker(g, v, prod, 1, 0xe2)
+    let loot = Address::new(LOOT)
+    let honest = Address::new(0x9b1)
+    check_invariants(prod, 2, Wei::zero())
+
+    // Positive control: the attacker IS live. Given real gas its fallback re-enters and claims
+    // milestone 0, the ETH goes to the third address, and nothing in the attacker stops it.
+    aim(g, prod, 1, 0)
+    assert!(
+        evm.send_value(addr: g, gas: 500000, value: wei(1)).success(),
+        "control: the fallback ran with real gas",
+    )
+    assert!(
+        evm.balance(loot) == ether(1),
+        "control: the re-entrant claim paid the third address",
+    )
+    assert!(state_of(prod, 1, 0) == 4, "control: milestone 0 is Paid")
+    assert!(
+        evm.balance(g) == wei(1),
+        "control: the attacker kept only the wei it was sent",
+    )
+    check_invariants(prod, 2, Wei::zero())
+
+    // The attack: claim milestone 1 to the attacker itself. The send carries only the stipend, the
+    // fallback cannot finish, the send fails and the whole claim reverts (nothing was paid).
+    aim(g, prod, 1, 1)
+    let before = milestone(prod, 1, 1)
+    let acc = accounting(prod, 1)
+    assert!(
+        because(attacker_claims(g, g), Why::TransferFailed),
+        "an always-re-entering payee cannot be paid with the stipend",
+    )
+    assert!(
+        same_milestone(milestone(prod, 1, 1), before),
+        "still Approved, unchanged",
+    )
+    assert!(
+        same_accounting(accounting(prod, 1), acc),
+        "paid and outstanding unchanged",
+    )
+    assert!(
+        evm.balance(loot) == ether(1),
+        "the third address got nothing more",
+    )
+    assert!(evm.balance(g) == wei(1), "the attacker got nothing")
+    check_invariants(prod, 2, Wei::zero())
+
+    // The provider is not locked out: the same milestone pays once to an ordinary address.
+    let got: Wei = evm
+        .call(
+            addr: g,
+            gas: 5000000,
+            value: Wei::zero(),
+            message: AttackMsg::ClaimTo { to: honest },
+        )
+    assert!(
+        got == ether(2) && evm.balance(honest) == ether(2),
+        "paid once to an address that can receive it",
+    )
+    assert!(state_of(prod, 1, 1) == 4)
+    assert!(
+        because(attacker_claims(g, honest), Why::NotApproved),
+        "and only once",
+    )
+    assert!(
+        because(attacker_claims(g, g), Why::NotApproved),
+        "not to itself either",
+    )
+    check_invariants(prod, 2, Wei::zero())
+    assert!(
+        evm.balance(prod) == ether(9) - ether(1) - ether(2),
+        "exactly 1 + 2 ETH left the contract",
+    )
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn a_provider_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_paid()
+uses (evm: mut Evm)
+{
+    probe()
+    let v = actor(12)
+    let o = evm.create2<Once>(value: Wei::zero(), args: (), salt: 25)
+    let prod = funded_for(o, v)
+    approve_attacker(o, v, prod, 0, 0xe1)
+    approve_attacker(o, v, prod, 1, 0xe2)
+    check_invariants(prod, 2, Wei::zero())
+
+    // Positive control: with real gas the fallback records its re-entry (`entered` becomes 2). It
+    // needs more than the stipend to do that, which is exactly what the claim must never give it.
+    aim(o, prod, 1, 0)
+    assert!(
+        evm.send_value(addr: o, gas: 500000, value: wei(1)).success(),
+        "control: the fallback ran",
+    )
+    let seen: (u256, u256) = evm
+        .call(
+            addr: o,
+            gas: 100000,
+            value: Wei::zero(),
+            message: AttackMsg::Stats {},
+        )
+    assert!(
+        seen.0 == 2,
+        "control: the attacker re-entered once with real gas",
+    )
+    check_invariants(prod, 2, Wei::zero())
+
+    // The attack on milestone 1: with the stipend the fallback cannot even record its re-entry.
+    aim(o, prod, 1, 1)
+    let held = evm.balance(o)
+    let before = milestone(prod, 1, 1)
+    let acc = accounting(prod, 1)
+    let owed = outstanding(prod)
+    assert!(
+        because(attacker_claims(o, o), Why::TransferFailed),
+        "the claim reverts",
+    )
+    let after: (u256, u256) = evm
+        .call(
+            addr: o,
+            gas: 100000,
+            value: Wei::zero(),
+            message: AttackMsg::Stats {},
+        )
+    assert!(
+        after.0 == 1,
+        "the fallback never got far enough to record a re-entry",
+    )
+    assert!(evm.balance(o) == held, "the attacker was paid nothing")
+    assert!(
+        same_milestone(milestone(prod, 1, 1), before),
+        "still Approved, unchanged",
+    )
+    assert!(
+        same_accounting(accounting(prod, 1), acc),
+        "accounting unchanged",
+    )
+    assert!(outstanding(prod) == owed, "total outstanding unchanged")
+    check_invariants(prod, 2, Wei::zero())
+    assert!(
+        evm.balance(prod) >= acc.3 + accounting(prod, 2).3,
+        "the contract still holds everything it owes (I9)",
+    )
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn a_payee_is_given_no_more_than_the_2300_gas_stipend() uses (evm: mut Evm) {
+    probe()
+    let p = actor(11)
+    let v = actor(12)
+    let prod = funded_for(p, v)
+    approve_first(p, v, prod, 1, 0, 0xe1)
+    let cap = evm.create2<GasCap>(value: Wei::zero(), args: (), salt: 31)
+    // Positive control: GasCap really rejects a send with more gas.
+    assert!(
+        !evm.send_value(addr: cap, gas: 10000, value: wei(1)).success(),
+        "control: the payee rejects 10000 gas",
+    )
+    assert!(
+        claim_ok(p, prod, 1, 0, cap) == ether(1),
+        "the fallback saw at most the stipend",
+    )
+    assert!(evm.balance(cap) == ether(1))
+    check_invariants(prod, 2, Wei::zero())
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn precompile_payees_are_the_providers_own_choice_and_some_strand_the_eth()
+uses (evm: mut Evm)
+{
+    probe()
+    let p = actor(11)
+    let v = actor(12)
+    let prod = funded_for(p, v)
+    approve_first(p, v, prod, 1, 0, 0xe1)
+    approve_first(p, v, prod, 1, 1, 0xe2)
+    // ecrecover (0x01) costs 3000 gas, above the stipend: the send fails and the claim reverts.
+    assert!(
+        because(
+            claim_out(p, prod, 1, 0, Address::new(1)),
+            Why::TransferFailed,
+        ),
+        "0x01 fails",
+    )
+    assert!(state_of(prod, 1, 0) == 3, "and nothing changed")
+    // identity (0x04) and sha256 (0x02) are cheap: the claim succeeds and the ETH is stranded at
+    // the precompile. This is the provider's own `to`; it is documented, not prevented.
+    assert!(
+        claim_ok(p, prod, 1, 0, Address::new(4)) == ether(1),
+        "0x04 accepts",
+    )
+    assert!(
+        evm.balance(Address::new(4)) == ether(1),
+        "the ETH sits at the identity precompile",
+    )
+    assert!(
+        claim_ok(p, prod, 1, 1, Address::new(2)) == ether(2),
+        "0x02 accepts",
+    )
+    check_invariants(prod, 2, Wei::zero())
 }

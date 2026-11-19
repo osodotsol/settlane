@@ -1,4 +1,4 @@
-// EXPECT: fail E-CALL
+// EXPECT: fail E-CALL,E-EFFECT
 use std::evm::ether
 
 msg SettleMsg {

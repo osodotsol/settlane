@@ -1,4 +1,5 @@
 // EXPECT: fail E-CALL
+// IGNORE: C-XFER,C-XFER-RAW
 // Review H1: `use std::evm::Call as Pay` hid the contract from the lint.
 use std::evm::ether
 use std::evm::Call as Pay

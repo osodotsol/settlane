@@ -1,4 +1,5 @@
 // EXPECT: pass
+// IGNORE: C-XFER,C-XFER-RAW
 // S-2 (D-015): the whole handler is one shared function in the production ingot; the
 // arm only provides the Clock. This shape must stay lint-clean.
 use std::evm::StorageMap

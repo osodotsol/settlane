@@ -1,4 +1,5 @@
 // EXPECT: pass
+// IGNORE: C-XFER,C-XFER-RAW
 // A second message type is fine when it neither reuses a payout name nor moves value.
 use std::evm::ether
 
