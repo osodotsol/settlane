@@ -1,0 +1,117 @@
+// R-005 (docs/reviews/2026-11-19-phase3a.md): contracts appended to a TEMPORARY copy of
+// ingots/settlane-dev/src/lib.fe by run.sh. Not compilable on its own; never part of the dev ingot.
+// A payee whose fallback reverts if it was given more than the 2300-gas stipend.
+pub contract GasCap uses (ctx: Ctx) {
+    recv {
+        #[payable]
+        _ uses (ctx) {
+            assert!(ctx.gas() <= 2300, "more than the stipend")
+        }
+    }
+}
+
+// A provider whose fallback ALWAYS tries to claim again, whatever gas it has (no threshold).
+pub contract Greedy uses (ctx: Ctx, call: mut Call) {
+    mut target: Address,
+    mut id: u256,
+    mut m: u8,
+
+    recv {
+        AttackMsg::Setup { target: t, id: i, m: k }
+        uses (mut target, mut id, mut m)
+        {
+            target = t
+            id = i
+            m = k
+        }
+
+        AttackMsg::SubmitAs { evidence } uses (mut call, target, id, m) {
+            call.call(
+                addr: target,
+                gas: 1000000,
+                value: Wei::zero(),
+                message: SettleMsg::Submit { id, m, evidence },
+            )
+        }
+
+        AttackMsg::ClaimTo { to } -> Wei uses (mut call, target, id, m) {
+            call.call(
+                addr: target,
+                gas: 2000000,
+                value: Wei::zero(),
+                message: SettleMsg::Claim { id, m, to },
+            )
+        }
+
+        AttackMsg::Stats {} -> (u256, u256) {
+            (0, 0)
+        }
+
+        #[payable]
+        _ uses (ctx, mut call, target, id, m) {
+            let _ = call
+                .try_call(
+                    addr: target,
+                    gas: ctx.gas(),
+                    value: Wei::zero(),
+                    message: SettleMsg::Claim { id, m, to: ctx.address() },
+                )
+        }
+    }
+}
+
+// Re-enters exactly once. `entered` is preset to 1 in Setup so the flag write is nonzero -> nonzero.
+pub contract Once uses (ctx: Ctx, call: mut Call) {
+    mut target: Address,
+    mut id: u256,
+    mut m: u8,
+    mut entered: u256,
+
+    recv {
+        AttackMsg::Setup { target: t, id: i, m: k }
+        uses (mut target, mut id, mut m, mut entered)
+        {
+            target = t
+            id = i
+            m = k
+            entered = 1
+        }
+
+        AttackMsg::SubmitAs { evidence } uses (mut call, target, id, m) {
+            call.call(
+                addr: target,
+                gas: 1000000,
+                value: Wei::zero(),
+                message: SettleMsg::Submit { id, m, evidence },
+            )
+        }
+
+        AttackMsg::ClaimTo { to } -> Wei uses (mut call, target, id, m) {
+            call.call(
+                addr: target,
+                gas: 2000000,
+                value: Wei::zero(),
+                message: SettleMsg::Claim { id, m, to },
+            )
+        }
+
+        AttackMsg::Stats {} -> (u256, u256) uses (entered) {
+            (entered, 0)
+        }
+
+        #[payable]
+        _ uses (ctx, mut call, target, id, m, mut entered) {
+            if entered != 1 {
+                return
+            }
+            entered = 2
+            let _ = call
+                .try_call(
+                    addr: target,
+                    gas: ctx.gas(),
+                    value: Wei::zero(),
+                    message: SettleMsg::Claim { id, m, to: ctx.address() },
+                )
+        }
+    }
+}

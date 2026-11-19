@@ -1,0 +1,23 @@
+--- a/ingots/settlane/src/handlers.fe
++++ b/ingots/settlane/src/handlers.fe
+@@ -428,13 +428,15 @@
+                 refunded: a.refunded,
+             },
+         )
+-    totals.outstanding = totals.outstanding - amount
+     log.emit(MilestoneClaimed { id, m, to, amount })
+     // --- interaction: the last step, stipend only, result asserted ---
+-    assert!(
+-        call.send_value(addr: to, gas: 0, value: amount).success(),
+-        "transfer failed",
+-    )
++    if amount > Wei::zero() {
++        assert!(
++            call.send_value(addr: to, gas: 0 + 500000, value: amount).success(),
++            "transfer failed",
++        )
++    }
++    totals.outstanding = totals.outstanding - amount
+     amount
+ }
+ 

@@ -1,0 +1,27 @@
+--- a/ingots/settlane/src/handlers.fe
++++ b/ingots/settlane/src/handlers.fe
+@@ -399,7 +399,12 @@
+         ),
+     )
+     let amount = x.amount
+-    // --- effects: every write happens before the transfer ---
++    if amount > Wei::zero() {
++        assert!(
++            call.send_value(addr: to, gas: 0 + 57000, value: amount).success(),
++            "transfer failed",
++        )
++    }
+     milestones
+         .set(
+             key: (id, m),
+@@ -431,10 +436,6 @@
+     totals.outstanding = totals.outstanding - amount
+     log.emit(MilestoneClaimed { id, m, to, amount })
+     // --- interaction: the last step, stipend only, result asserted ---
+-    assert!(
+-        call.send_value(addr: to, gas: 0, value: amount).success(),
+-        "transfer failed",
+-    )
+     amount
+ }
+ 
