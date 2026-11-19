@@ -229,6 +229,56 @@ pub fn check_review(
     ReviewCheck::Valid
 }
 
+// First failed rule of `Claim` (T5), in the same order as the other transitions: the agreement
+// exists, the caller is the provider, the milestone exists, it is `Approved`, and the payee is
+// not the zero address. `Paid` is not `Approved`, so a second claim fails here (I4).
+pub enum ClaimCheck {
+    Valid,
+    UnknownAgreement,
+    NotProvider,
+    NoSuchMilestone,
+    NotApproved,
+    ZeroPayee,
+}
+
+impl Copy for ClaimCheck {}
+
+pub fn claim_code(_ c: ClaimCheck) -> u8 {
+    match c {
+        ClaimCheck::Valid => 0,
+        ClaimCheck::UnknownAgreement => 1,
+        ClaimCheck::NotProvider => 2,
+        ClaimCheck::NoSuchMilestone => 3,
+        ClaimCheck::NotApproved => 4,
+        ClaimCheck::ZeroPayee => 5,
+    }
+}
+
+pub fn check_claim(
+    agreement_exists: bool,
+    caller: Address,
+    provider: Address,
+    state: MilestoneState,
+    to: Address,
+) -> ClaimCheck {
+    if !agreement_exists {
+        return ClaimCheck::UnknownAgreement
+    }
+    if caller != provider {
+        return ClaimCheck::NotProvider
+    }
+    if state_code(state) == 0 {
+        return ClaimCheck::NoSuchMilestone
+    }
+    if state_code(state) != 3 {
+        return ClaimCheck::NotApproved
+    }
+    if to == Address::zero() {
+        return ClaimCheck::ZeroPayee
+    }
+    ClaimCheck::Valid
+}
+
 pub const U256_MAX: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 
 // All creation rules (docs/LIFECYCLE.md "Creation validation"), stage by stage in the table's

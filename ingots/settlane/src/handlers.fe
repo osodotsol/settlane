@@ -5,13 +5,14 @@
 // Phase 2A: creation and queries. No handler here lists `call` or `create`, so none can
 // move ETH (and the contract does not even declare those effects).
 use ingot::rules
-use ingot::rules::{CreateCheck, ReviewCheck, SubmitCheck}
+use ingot::rules::{ClaimCheck, CreateCheck, ReviewCheck, SubmitCheck}
 use ingot::types::{
     Agreement,
     AgreementCreated,
     Clock,
     Milestone,
     MilestoneApproved,
+    MilestoneClaimed,
     MilestoneRejected,
     MilestoneState,
     MilestoneSubmitted,
@@ -341,6 +342,100 @@ uses (
     log.emit(
         MilestoneRejected { id, m, evidence, revision, rejections },
     )
+}
+
+// Reverts with the reason for the first failed `Claim` rule.
+pub fn require_claim(_ c: ClaimCheck) {
+    match c {
+        ClaimCheck::Valid => {},
+        ClaimCheck::UnknownAgreement => {
+            assert!(false, "unknown agreement")
+        },
+        ClaimCheck::NotProvider => {
+            assert!(false, "caller is not the provider")
+        },
+        ClaimCheck::NoSuchMilestone => {
+            assert!(false, "no such milestone")
+        },
+        ClaimCheck::NotApproved => {
+            assert!(false, "milestone is not approved")
+        },
+        ClaimCheck::ZeroPayee => {
+            assert!(false, "payee is zero")
+        },
+    }
+}
+
+// T5: the provider claims an approved milestone and the stored amount is sent to `to`.
+// Checks, then effects, then the interaction (docs/SECURITY.md, reentrancy policy):
+//   1. every rule is checked first (rules::check_claim);
+//   2. every write happens before the transfer: the milestone becomes `Paid`, the agreement's
+//      `paid` and the global outstanding move by exactly the stored amount (I1, I9);
+//   3. the transfer is the last state-changing step. It forwards no gas beyond the 2300 stipend
+//      (`gas: 0`), so the recipient cannot re-enter, and its success is asserted, so a failed
+//      send reverts every write above and the milestone stays `Approved` (I7).
+// A second claim finds `Paid`, which is not `Approved`, and reverts (I4). The arm is the only
+// one besides `Refund` that may list `call` (lint E-CALL), and the lint also requires `gas: 0`,
+// an asserted result and no write after the transfer (C-STIPEND, C-SEND, C-CEI).
+pub fn claim_handler(id: u256, m: u8, to: Address) -> Wei
+uses (
+    ctx: Ctx,
+    call: mut Call,
+    log: mut Log,
+    totals: mut Totals,
+    agreements: mut StorageMap<u256, Agreement>,
+    milestones: mut StorageMap<(u256, u8), Milestone>,
+)
+{
+    let a = agreements.get(key: id)
+    let x = milestones.get(key: (id, m))
+    require_claim(
+        rules::check_claim(
+            agreement_exists: a.n != 0,
+            caller: ctx.caller(),
+            provider: a.provider,
+            state: x.state,
+            to,
+        ),
+    )
+    let amount = x.amount
+    // --- effects: every write happens before the transfer ---
+    milestones
+        .set(
+            key: (id, m),
+            value: Milestone {
+                state: MilestoneState::Paid,
+                amount: x.amount,
+                deliver_by: x.deliver_by,
+                decide_by: x.decide_by,
+                spec: x.spec,
+                evidence: x.evidence,
+                rejections: x.rejections,
+                revision: x.revision,
+            },
+        )
+    agreements
+        .set(
+            key: id,
+            value: Agreement {
+                client: a.client,
+                provider: a.provider,
+                verifier: a.verifier,
+                review_period: a.review_period,
+                n: a.n,
+                deposited: a.deposited,
+                paid: a.paid + amount,
+                refunded: a.refunded,
+            },
+        )
+    totals.outstanding = totals.outstanding - amount
+    log.emit(MilestoneClaimed { id, m, to, amount })
+    // --- interaction: the last step, stipend only, result asserted ---
+    assert!(
+        call.send_value(addr: to, gas: 0, value: amount).success(),
+        "transfer failed",
+    )
+    amount
 }
 
 // Parties and review window. Reverts for an unknown agreement id (including 0).

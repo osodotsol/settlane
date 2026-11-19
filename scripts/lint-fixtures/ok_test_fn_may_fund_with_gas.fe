@@ -1,0 +1,11 @@
+// EXPECT: pass
+// A #[test] function is a test entry point: it may fund an address with forwarded gas and keep
+// going. The transfer rules are for contract code.
+use std::evm::ether
+
+#[test(balance = 10_000_000_000_000_000_000)]
+fn funds_an_address() uses (evm: mut Evm) {
+    assert!(evm.send_value(addr: Address::new(0x77), gas: 100000, value: ether(1)).success(), "funded")
+    let seen = evm.balance(Address::new(0x77))
+    assert!(seen == ether(1))
+}

@@ -6,7 +6,7 @@ use std::evm::returndata::decode_error_string
 // would also pass on a revert in the setup (lint T-REVERT, review M2). Tests that need a
 // different caller or a movable clock are in the dev ingot (ingots/settlane-dev).
 use ingot::rules
-use ingot::rules::{CreateCheck, ReviewCheck, SubmitCheck}
+use ingot::rules::{ClaimCheck, CreateCheck, ReviewCheck, SubmitCheck}
 use ingot::settlane::{SettleMsg, Settlane}
 use ingot::types::MilestoneState
 use std::evm::{ether, predict_create2, seconds, wei}
@@ -240,6 +240,9 @@ enum Why {
     ZeroEvidence,
     EvidenceMismatch,
     RevisionMismatch,
+    NotApproved,
+    ZeroPayee,
+    TransferFailed,
 }
 
 impl Copy for Why {}
@@ -255,6 +258,9 @@ fn because(_ out: CallOutcome, _ why: Why) -> bool {
         },
     }
     match why {
+        Why::NotApproved => reason == "milestone is not approved",
+        Why::ZeroPayee => reason == "payee is zero",
+        Why::TransferFailed => reason == "transfer failed",
         Why::UnknownAgreement => reason == "unknown agreement",
         Why::NotProvider => reason == "caller is not the provider",
         Why::NotVerifier => reason == "caller is not the verifier",
@@ -932,6 +938,73 @@ uses (evm: mut Evm)
     )
     assert!(milestone(s, 1, 0).0 == 1, "nothing changed")
     assert_untouched(s, 1, ether(1), Wei::zero())
+    check_invariants(s, 1, Wei::zero())
+}
+
+// ---------------------------------------------- Phase 3A: claims by callers without a role
+
+fn claim_as_client(_ s: Address, _ id: u256, _ m: u8, _ to: Address) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: s,
+        gas: 500000,
+        value: Wei::zero(),
+        message: SettleMsg::Claim { id, m, to },
+    )
+}
+
+#[test(balance = 100_000_000_000_000_000_000)]
+fn the_client_cannot_claim_and_a_claim_on_an_unknown_agreement_is_rejected()
+uses (evm: mut Evm)
+{
+    let s = deploy()
+    let payee = Address::new(0x9a1)
+    // Nothing exists yet: the agreement check comes first, whoever calls.
+    assert!(
+        because(claim_as_client(s, 0, 0, payee), Why::UnknownAgreement),
+        "id 0",
+    )
+    assert!(
+        because(claim_as_client(s, 1, 0, payee), Why::UnknownAgreement),
+        "before any agreement",
+    )
+    let now = evm.timestamp()
+    assert!(
+        create(s, valid(now), ether(6)) == 1,
+        "positive control: agreement 1 exists",
+    )
+    let before = milestone(s, 1, 0)
+    var m: u8 = 0
+    while m < 3 {
+        // The test contract is the client: it can never claim, in any slot.
+        assert!(
+            because(claim_as_client(s, 1, m, payee), Why::NotProvider),
+            "the client cannot claim",
+        )
+        m += 1
+    }
+    assert!(
+        because(claim_as_client(s, 2, 0, payee), Why::UnknownAgreement),
+        "id 2",
+    )
+    assert!(
+        because(claim_as_client(s, MAX, 0, payee), Why::UnknownAgreement),
+        "id 2^256 - 1",
+    )
+    assert!(
+        because(
+            claim_as_client(s, 1, 0, Address::zero()),
+            Why::NotProvider,
+        ),
+        "the role is checked before the payee",
+    )
+    assert!(
+        same_milestone(milestone(s, 1, 0), before),
+        "nothing changed",
+    )
+    assert!(evm.balance(payee) == Wei::zero(), "nothing was paid")
+    assert_untouched(s, 1, ether(6), Wei::zero())
     check_invariants(s, 1, Wei::zero())
 }
 
@@ -1758,6 +1831,95 @@ fn rules_only_funded_and_submitted_milestones_take_evidence() {
     assert!(!rules::can_submit_from(MilestoneState::Approved))
     assert!(!rules::can_submit_from(MilestoneState::Paid))
     assert!(!rules::can_submit_from(MilestoneState::Refunded))
+}
+
+fn claim_code_of(_ exists: bool, _ caller: Address, _ state: MilestoneState, _ to: Address) -> u8 {
+    rules::claim_code(
+        rules::check_claim(
+            agreement_exists: exists,
+            caller,
+            provider: Address::new(0xa1),
+            state,
+            to,
+        ),
+    )
+}
+
+#[test]
+fn rules_claim_reports_each_failure_and_accepts_a_valid_claim() {
+    let p = Address::new(0xa1)
+    let payee = Address::new(0x9a1)
+    assert!(
+        claim_code_of(true, p, MilestoneState::Approved, payee) == 0,
+        "valid",
+    )
+    assert!(
+        claim_code_of(true, p, MilestoneState::Approved, p) == 0,
+        "the provider may pay itself",
+    )
+    assert!(
+        claim_code_of(false, p, MilestoneState::Approved, payee) == 1,
+        "UnknownAgreement",
+    )
+    assert!(
+        claim_code_of(true, Address::new(0xa2), MilestoneState::Approved, payee) == 2,
+        "the verifier is not the provider",
+    )
+    assert!(
+        claim_code_of(true, Address::new(0xc1), MilestoneState::Approved, payee) == 2,
+        "NotProvider",
+    )
+    assert!(
+        claim_code_of(true, p, MilestoneState::None, payee) == 3,
+        "NoSuchMilestone",
+    )
+    assert!(
+        claim_code_of(true, p, MilestoneState::Funded, payee) == 4,
+        "NotApproved: Funded",
+    )
+    assert!(
+        claim_code_of(true, p, MilestoneState::Submitted, payee) == 4,
+        "NotApproved: Submitted",
+    )
+    assert!(
+        claim_code_of(true, p, MilestoneState::Paid, payee) == 4,
+        "NotApproved: Paid (a second claim)",
+    )
+    assert!(
+        claim_code_of(true, p, MilestoneState::Refunded, payee) == 4,
+        "NotApproved: Refunded",
+    )
+    assert!(
+        claim_code_of(true, p, MilestoneState::Approved, Address::zero()) == 5,
+        "ZeroPayee",
+    )
+}
+
+#[test]
+fn rules_claim_checks_run_in_the_documented_order() {
+    let p = Address::new(0xa1)
+    let other = Address::new(0xc1)
+    let zero = Address::zero()
+    assert!(
+        claim_code_of(false, other, MilestoneState::None, zero) == 1,
+        "agreement before role",
+    )
+    assert!(
+        claim_code_of(true, other, MilestoneState::None, zero) == 2,
+        "role before milestone",
+    )
+    assert!(
+        claim_code_of(true, p, MilestoneState::None, zero) == 3,
+        "milestone before state",
+    )
+    assert!(
+        claim_code_of(true, p, MilestoneState::Paid, zero) == 4,
+        "state before payee",
+    )
+    assert!(
+        claim_code_of(true, p, MilestoneState::Approved, zero) == 5,
+        "payee last",
+    )
 }
 
 #[test]

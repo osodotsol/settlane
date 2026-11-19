@@ -164,6 +164,21 @@ def replace_nth_in(rel, old, new, n):
     return mutate
 
 
+def move_claim_effects_after_transfer(root):
+    """Phase 3A: the claim writes its effects AFTER the transfer (checks-effects-interactions broken).
+    Uses the `// --- effects` and `// --- interaction` markers in claim_handler."""
+    path = root / HANDLERS
+    text = path.read_text()
+    e = text.index("    // --- effects:")
+    i = text.index("    // --- interaction:", e)
+    end = text.index("    amount\n}", i)
+    effects, interaction = text[e:i], text[i:end]
+    path.write_text(text[:e] + interaction + effects + text[end:])
+
+
+CLAIM_STIPEND = "call.send_value(addr: to, gas: 0, value: amount)"
+
+
 def chain(*mutators):
     def mutate(root):
         for m in mutators:
@@ -177,6 +192,9 @@ ONLY_FAILING = {
     # R-003 f5: nothing but the surplus test exposes these two, so they prove that test has teeth.
     "mut-deposited-includes-surplus": "surplus_eth_keeps_balance_at_or_above_outstanding_and_is_never_owed",
     "mut-outstanding-follows-the-balance": "surplus_eth_keeps_balance_at_or_above_outstanding_and_is_never_owed",
+    # Phase 3A: only the reentrant-provider test can see a forwarded-gas payout.
+    "mut-claim-forwards-gas": "a_reentrant_provider_is_paid_exactly_once",
+    "mut-claim-effects-after-transfer-with-gas": "a_reentrant_provider_is_paid_exactly_once",
 }
 
 SETTLANE = "ingots/settlane/src/settlane.fe"
@@ -271,6 +289,25 @@ MUTATIONS = {
     "mut-third-slot-rejects-valid-submission": ("R-004: a valid third-slot submission is rejected", "Tests for both ingots", replace_in(HANDLERS, "    let revision = x.revision + 1", "    assert!(m != 2, \"no such milestone\")\n    let revision = x.revision + 1")),
     "mut-differential-approval-emits-submitted": ("R-004: both emitters report the same wrong event for the fixture's final approval", "Events of both ingots", replace_in(HANDLERS, "log.emit(MilestoneApproved { id, m, evidence, revision })", "if evidence == 0xe5 {\n        log.emit(MilestoneSubmitted { id, m, evidence, revision: revision + 1 })\n    } else {\n        log.emit(MilestoneApproved { id, m, evidence, revision })\n    }")),
     "mut-role-error-has-extra-text": ("R-004: the verifier role error contains an unrelated diagnostic", "Tests for both ingots", replace_in(HANDLERS, "caller is not the verifier", "caller is not the verifier: review window is closed")),
+    # Phase 3A: Claim (T5)
+    "mut-anyone-can-claim": ("T5: the caller need not be the provider", "Tests for both ingots", replace_in(RULES, "    if caller != provider {\n        return ClaimCheck::NotProvider", "    if caller != provider && false {\n        return ClaimCheck::NotProvider")),
+    "mut-claim-checks-the-verifier": ("T5: Claim compares the caller with the verifier (roles swapped)", "Tests for both ingots", replace_in(HANDLERS, "            provider: a.provider,\n            state: x.state,\n            to,", "            provider: a.verifier,\n            state: x.state,\n            to,")),
+    "mut-claim-from-any-state": ("T5: a milestone need not be Approved to be claimed (replay, Funded, Submitted)", "Tests for both ingots", replace_in(RULES, "    if state_code(state) != 3 {\n        return ClaimCheck::NotApproved", "    if false {\n        return ClaimCheck::NotApproved")),
+    "mut-claim-to-zero-allowed": ("T5: the payee may be the zero address", "Tests for both ingots", replace_in(RULES, "    if to == Address::zero() {", "    if false {")),
+    "mut-claim-state-checked-before-role": ("T5: the state is checked before the role (a stranger learns the state)", "Tests for both ingots", replace_in(RULES, "    if caller != provider {\n        return ClaimCheck::NotProvider\n    }\n    if state_code(state) == 0 {\n        return ClaimCheck::NoSuchMilestone\n    }\n    if state_code(state) != 3 {\n        return ClaimCheck::NotApproved\n    }\n", "    if state_code(state) == 0 {\n        return ClaimCheck::NoSuchMilestone\n    }\n    if state_code(state) != 3 {\n        return ClaimCheck::NotApproved\n    }\n    if caller != provider {\n        return ClaimCheck::NotProvider\n    }\n")),
+    "mut-claim-does-not-mark-paid": ("T5: the milestone stays Approved after a claim (double payment)", "Tests for both ingots", replace_in(HANDLERS, "state: MilestoneState::Paid,", "state: MilestoneState::Approved,")),
+    "mut-claim-pays-the-wrong-amount": ("T5: the claim pays the agreement deposit instead of the stored milestone amount", "Tests for both ingots", replace_in(HANDLERS, "let amount = x.amount", "let amount = a.deposited")),
+    "mut-claim-skips-paid": ("T5: `paid` is not increased", "Tests for both ingots", replace_in(HANDLERS, "paid: a.paid + amount,", "paid: a.paid,")),
+    "mut-claim-skips-outstanding": ("T5: total outstanding is not decreased", "Tests for both ingots", replace_in(HANDLERS, "totals.outstanding = totals.outstanding - amount", "totals.outstanding = totals.outstanding")),
+    "mut-claim-ignores-failed-transfer": ("T5: a failed transfer is ignored and the milestone is marked Paid anyway", "Tests for both ingots", replace_in(HANDLERS, "    assert!(\n        " + CLAIM_STIPEND + ".success(),\n        \"transfer failed\",\n    )", "    let _ = " + CLAIM_STIPEND)),
+    "mut-claim-forwards-gas": ("T5: the transfer forwards 500k gas instead of the stipend (the attacker gets to try)", "Tests for both ingots", replace_in(HANDLERS, CLAIM_STIPEND, "call.send_value(addr: to, gas: 500000, value: amount)")),
+    "mut-claim-effects-after-transfer": ("T5: effects written after the transfer, stipend kept (no test can see it, so the lint C-CEI must)", "policy lint (fails", move_claim_effects_after_transfer),
+    "mut-claim-effects-after-transfer-with-gas": ("T5: effects after the transfer AND gas forwarded: the reentrant provider is paid twice", "Tests for both ingots", chain(move_claim_effects_after_transfer, replace_in(HANDLERS, CLAIM_STIPEND, "call.send_value(addr: to, gas: 500000, value: amount)"))),
+    "mut-claim-becomes-payable": ("T5: Claim is payable", "Tests for both ingots", replace_in(SETTLANE, "        Claim { id, m, to } -> Wei uses (", "        #[payable]\n        Claim { id, m, to } -> Wei uses (")),
+    "mut-claim-event-wrong-amount": ("T5: MilestoneClaimed reports twice the amount (tests and ABI cannot see it)", "Events of both ingots", replace_in(HANDLERS, "MilestoneClaimed { id, m, to, amount }", "MilestoneClaimed { id, m, to, amount: amount + amount }")),
+    "mut-claim-event-names-the-caller": ("T5: MilestoneClaimed names the caller instead of the payee", "Events of both ingots", replace_in(HANDLERS, "MilestoneClaimed { id, m, to, amount }", "MilestoneClaimed { id, m, to: ctx.caller(), amount }")),
+    "mut-claimed-event-not-emitted": ("T5: MilestoneClaimed is never emitted", "Events of both ingots", replace_in(HANDLERS, "log.emit(MilestoneClaimed { id, m, to, amount })", "let _ = id")),
+    "mut-claim-reason-has-extra-text": ("T5: the state error contains an unrelated diagnostic (exact reason match)", "Tests for both ingots", replace_in(HANDLERS, "\"milestone is not approved\"", "\"milestone is not approved: payee is zero\"")),
     "unformatted-dev-code": ("badly formatted dev code", "Format check", lambda r: write(r, "ingots/settlane-dev/src/messy.fe", "pub fn   messy ( )   ->  u256 {   1 }\n")),
 }
 

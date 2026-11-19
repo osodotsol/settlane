@@ -1,9 +1,9 @@
 // The Settlane contract and its message type. Every arm is glue (D-016): it provides the Clock
 // and calls a shared handler.
 //
-// Declared effects: `Ctx` and `Log` only. There is no `Call` and no `Create`, so this
-// contract cannot send ETH. Phase 2B adds Submit, Approve and Reject (no ETH moves in any of
-// them). Phase 3 adds `Call`, in the payout arms only (lint E-CALL).
+// Declared effects: `Ctx`, `Log` and `Call`. `Call` is listed only by the `Claim` arm (lint
+// E-CALL), so Claim is the only way ETH leaves the contract. There is no `Create`. Refund (T6)
+// is not implemented yet.
 use ingot::handlers
 use ingot::types::{Agreement, Clock, Milestone, Totals}
 use std::evm::StorageMap
@@ -33,6 +33,9 @@ pub msg SettleMsg {
     // T4: the verifier asks for a revision of the evidence it names (D-015). Back to `Funded`.
     #[selector = sol("reject(uint256,uint8,uint256,uint256)")]
     Reject { id: u256, m: u8, evidence: u256, revision: u256 },
+    // T5: the provider claims an approved milestone. The stored amount is sent to `to` (D-004).
+    #[selector = sol("claim(uint256,uint8,address)")]
+    Claim { id: u256, m: u8, to: Address } -> Wei,
     #[selector = sol("getAgreement(uint256)")]
     GetAgreement { id: u256 } -> (Address, Address, Address, Duration, u8),
     #[selector = sol("getMilestone(uint256,uint8)")]
@@ -43,7 +46,7 @@ pub msg SettleMsg {
     TotalOutstanding -> Wei,
 }
 
-pub contract Settlane uses (ctx: Ctx, log: mut Log) {
+pub contract Settlane uses (ctx: Ctx, call: mut Call, log: mut Log) {
     mut totals: Totals,
     mut agreements: StorageMap<u256, Agreement>,
     mut milestones: StorageMap<(u256, u8), Milestone>,
@@ -85,6 +88,19 @@ pub contract Settlane uses (ctx: Ctx, log: mut Log) {
             with (Clock = Clock { now: ctx.timestamp() }) {
                 handlers::reject_handler(id, m, evidence, revision)
             }
+        }
+
+        // The only arm that lists `call` (lint E-CALL). Claim has no time guard: an approval
+        // never expires (docs/LIFECYCLE.md), so no Clock is needed here.
+        Claim { id, m, to } -> Wei uses (
+            ctx,
+            mut call,
+            mut log,
+            mut totals,
+            mut agreements,
+            mut milestones,
+        ) {
+            handlers::claim_handler(id, m, to)
         }
 
         GetAgreement { id } -> (Address, Address, Address, Duration, u8)

@@ -29,13 +29,15 @@
           "getAgreement(uint256)->(address,address,address,uint256,uint8)": "view",
           "getMilestone(uint256,uint8)->(uint8,uint256,uint256,uint256,uint256,uint256,uint256,uint256)": "view",
           "getAccounting(uint256)->(uint256,uint256,uint256,uint256)": "view",
-          "totalOutstanding()->(uint256)": "view"
+          "totalOutstanding()->(uint256)": "view",
+          "claim(uint256,uint8,address)->(uint256)": "nonpayable"
         },
         "events": [
           "AgreementCreated(uint256 indexed,address indexed,address indexed,address,uint256,uint8)",
           "MilestoneSubmitted(uint256 indexed,uint8 indexed,uint256 indexed,uint256)",
           "MilestoneApproved(uint256 indexed,uint8 indexed,uint256 indexed,uint256)",
-          "MilestoneRejected(uint256 indexed,uint8 indexed,uint256 indexed,uint256,uint256)"
+          "MilestoneRejected(uint256 indexed,uint8 indexed,uint256 indexed,uint256,uint256)",
+          "MilestoneClaimed(uint256 indexed,uint8 indexed,address indexed,uint256)"
         ]
       }
     },

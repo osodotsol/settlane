@@ -105,3 +105,15 @@ pub struct MilestoneRejected {
     pub revision: u256,
     pub rejections: u256,
 }
+
+// T5: the provider claimed an approved milestone, and `amount` was sent to `to`.
+#[event]
+pub struct MilestoneClaimed {
+    #[indexed]
+    pub id: u256,
+    #[indexed]
+    pub m: u8,
+    #[indexed]
+    pub to: Address,
+    pub amount: Wei,
+}

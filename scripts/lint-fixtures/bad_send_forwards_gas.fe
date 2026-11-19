@@ -1,0 +1,10 @@
+// EXPECT: fail C-STIPEND
+// Forwarding gas lets the recipient run code and re-enter.
+use std::evm::StorageMap
+
+pub fn claim_like(id: u256, to: Address) -> Wei uses (call: mut Call, owed: mut StorageMap<u256, Wei>) {
+    let amount = owed.get(key: id)
+    owed.set(key: id, value: Wei::zero())
+    assert!(call.send_value(addr: to, gas: 100000, value: amount).success(), "transfer failed")
+    amount
+}

@@ -1,0 +1,31 @@
+// EXPECT: fail E-CALL
+// The same multi-line `uses` shape on a NON-payout arm that lists `call` must still be caught,
+// and attributed to the real arm.
+use std::evm::ether
+
+msg SettleMsg {
+    #[selector = sol("claim(address)")]
+    Claim { to: Address },
+    #[selector = sol("approve(address)")]
+    Approve { to: Address },
+}
+
+pub contract Settlane uses (ctx: Ctx, call: mut Call, log: mut Log) {
+    mut paid: Wei,
+
+    recv SettleMsg {
+        Claim { to } uses (ctx, mut call, mut paid) {
+            paid = paid + ether(1)
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success(), "transfer failed")
+        }
+
+        Approve { to } uses (
+            ctx,
+            mut call,
+            mut log,
+            mut paid,
+        ) {
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success(), "transfer failed")
+        }
+    }
+}

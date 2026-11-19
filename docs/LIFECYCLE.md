@@ -1,6 +1,6 @@
 # Lifecycle specification
 
-**Status:** Phase 2B implements T1 to T4 and the queries. T5 and T6 (the payouts, the only transitions that move ETH) are Phase 3. Provisionally approved by the owner on 2026-11-18 (D-005a refund, D-006b revision-request rejection, D-009 Clock effect, D-011 distinct verifier). Final approval is at the Phase 2 review. This document is authoritative for settlement behavior, and any transition not listed here **must revert**.
+**Status:** Phase 3A implements T1 to T5 and the queries. T6 (Refund) is not implemented yet (Phase 3B), so `Claim` is the only transition that moves ETH. Provisionally approved by the owner on 2026-11-18 (D-005a refund, D-006b revision-request rejection, D-009 Clock effect, D-011 distinct verifier). Final approval is at the Phase 2 review. This document is authoritative for settlement behavior, and any transition not listed here **must revert**.
 
 ## Agreement
 - Creation and funding are one payable call (D-003), so an unfunded or partially funded agreement cannot exist on-chain.
@@ -42,6 +42,19 @@
 - **Money.** None of the three moves ETH, takes ETH (all are non-payable, tested with a zero-value control) or changes any total. `Settlane` still declares no `Call` effect, so the compiler guarantees it cannot send ETH.
 - **Views.** `getMilestone` returns `rejections` as output 7 and the submission `revision` as output 8. Unknown ids and unused slots still read as state `None`, all zero.
 - **Events.** `MilestoneSubmitted(id, m, evidence, revision)`, `MilestoneApproved(id, m, evidence, revision)` and `MilestoneRejected(id, m, evidence, revision, rejections)`. All three index `id`, `m` and `evidence`. The data contains the submission revision and, for rejection, the new rejection count.
+
+### Implementation notes (Phase 3A, T5 Claim)
+| Action | Order of the rules, with the revert reason |
+| --- | --- |
+| `Claim(id, m, to)` | the agreement exists (`unknown agreement`), the caller is the provider (`caller is not the provider`), the milestone exists (`no such milestone`), its state is `Approved` (`milestone is not approved`), `to != 0` (`payee is zero`); then the transfer must succeed (`transfer failed`) |
+
+- **One pure check.** `rules::check_claim` returns the first failed rule, before anything is written. Role precedes state, as for T2 to T4, so a caller with no role learns nothing about the milestone.
+- **No time guard.** An approval never expires, so `Claim` takes no Clock and works at any time after approval (tested far past both deadlines on the shell).
+- **Amount from storage.** The amount sent is the stored milestone amount. Nothing in calldata affects it. `Claim` returns the amount sent.
+- **Order: checks, effects, interaction.** The handler writes `Paid`, `paid += amount`, `outstanding -= amount` and emits `MilestoneClaimed`, and only then calls `send_value(to, gas: 0, amount)` and asserts success. `gas: 0` means only the 2300-gas stipend reaches the payee. A failed transfer reverts the whole call, including the event, so state, counters and logs stay as they were, and the provider can retry with another `to`. Paying Settlane itself fails the same way (it has no fallback).
+- **Paid is final.** After `Paid`, `Claim` reports `milestone is not approved`, `Submit` reports `milestone cannot take evidence in this state` and `Approve` and `Reject` report `milestone is not submitted`. All other milestone fields are kept.
+- **Non-payable.** `Claim` rejects attached value (tested with a zero-value control).
+- **Event.** `MilestoneClaimed(id, m, to, amount)` with `id`, `m` and `to` indexed and the amount as data.
 
 ## Milestone stored states
 `Funded`, `Submitted`, `Approved`, `Paid`, `Refunded`. Unused slots are `None`. There is no stored `Rejected` state (D-006b): a rejection returns the milestone to `Funded`.

@@ -1,0 +1,10 @@
+// EXPECT: fail C-CEI
+// A counter updated after the transfer.
+pub struct Totals {
+    pub outstanding: Wei,
+}
+
+pub fn claim_like(to: Address, amount: Wei) uses (call: mut Call, totals: mut Totals) {
+    assert!(call.send_value(addr: to, gas: 0, value: amount).success(), "transfer failed")
+    totals.outstanding -= amount
+}

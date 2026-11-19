@@ -53,6 +53,12 @@ Rules (a violation exits 1):
   C-LAYOUT    a test-only contract is defined in the production ingot, a
               production or deployable contract is defined in the dev ingot,
               or an ingot directory is not classified in the policy.
+  C-STIPEND   (production) a `send_value(..)` that does not pass `gas: 0` (Phase 3A).
+  C-SEND      (production) a `send_value(..)` whose result is not asserted with
+              `assert!(x.send_value(..).success(), ..)`, so a failed send could be ignored.
+  C-CEI       (production) a storage write (`.set(..)`, an assignment, a compound
+              assignment) after a `send_value(..)` in the same block: effects must come
+              before the interaction.
   C-ABI       a production arm uses a selector that is not `sol("..")` (a numeric
               selector makes the arm callable but leaves it out of the ABI JSON, so
               the allowlist cannot see it, R-002 finding 1), or the number of
@@ -232,7 +238,9 @@ def arms_in(recv_body):
                 arms.append((cur_name, "\n".join(cur)))
             cur_name, cur = m.group(1), []
         cur.append(line)
-        depth += line.count("{") - line.count("}")
+        # Parentheses count too: `fe fmt` breaks a long `uses (..)` list one item per line, and
+        # a line such as `mut call,` inside it is not a new arm (found in Phase 3A).
+        depth += line.count("{") + line.count("(") - line.count("}") - line.count(")")
     if cur_name:
         arms.append((cur_name, "\n".join(cur)))
     return arms
@@ -379,9 +387,56 @@ def lint_text(text, policy, path="<src>", kind="production"):
     return found
 
 
-def production_text_rules(text, aliases, reserved, path):
-    """E-UNSAFE and E-SHADOW over one production source text (noise already stripped)."""
+def block_end(text, start):
+    """Index of the `}` that closes the block containing position `start`."""
+    depth = 0
+    for k in range(start, len(text)):
+        if text[k] == "{":
+            depth += 1
+        elif text[k] == "}":
+            if depth == 0:
+                return k
+            depth -= 1
+    return len(text)
+
+
+def transfer_rules(text, path):
+    """C-STIPEND, C-SEND and C-CEI for every `send_value(..)` in the production ingot (Phase 3A).
+
+    C-STIPEND  the call forwards no gas beyond the 2300 stipend (`gas: 0`), so a recipient
+               cannot re-enter;
+    C-SEND     its result is asserted (`assert!(x.send_value(..).success() ..)`), so a failed
+               send reverts every write before it (I7);
+    C-CEI      nothing is written after it in the same block (checks, effects, interaction):
+               no `.set(..)`, no assignment and no compound assignment."""
     found = []
+    for m in re.finditer(r"\bsend_value\s*\(", text):
+        line = text.count("\n", 0, m.start()) + 1
+        # A `#[test]` function is a test entry point (it funds addresses, for example), not
+        # contract code, so it is exempt. Only that attribute exempts: a plain helper function,
+        # even one in tests.fe, could be called by a contract and stays subject to the rules.
+        heads = list(re.finditer(r"\bfn\s+\w+", text[: m.start()]))
+        if heads:
+            zone = text[max(0, heads[-1].start() - 300) : heads[-1].start()]
+            if re.search(r"#\[test\b[^\]]*\]\s*(?:pub\s+)?$", zone):
+                continue
+        open_idx = m.end() - 1
+        close = match_close(text, open_idx)
+        args = text[open_idx + 1 : close]
+        if not re.search(r"\bgas\s*:\s*0\b", args):
+            found.append(("C-STIPEND", f"{path}:{line}: send_value must pass `gas: 0` (the 2300 stipend only), so the recipient cannot re-enter"))
+        asserted = re.search(r"assert!\s*\(\s*\w+\s*\.\s*$", text[: m.start()]) and re.match(r"\s*\.\s*success\s*\(\s*\)", text[close + 1 :])
+        if not asserted:
+            found.append(("C-SEND", f"{path}:{line}: the result of send_value must be asserted (`assert!(x.send_value(..).success(), ..)`), so a failed send reverts every write"))
+        rest = text[close + 1 : block_end(text, close + 1)]
+        if re.search(r"\.\s*set\s*\(|(?<![=!<>+\-*/])=(?![=>])|\+=|-=|\*=", rest):
+            found.append(("C-CEI", f"{path}:{line}: storage is written after send_value in the same block; every write must come before the transfer (checks, effects, interaction)"))
+    return found
+
+
+def production_text_rules(text, aliases, reserved, path):
+    """E-UNSAFE, E-SHADOW and the transfer rules over one production source text (noise stripped)."""
+    found = transfer_rules(text, path)
     for m in re.finditer(r"\bunsafe\b", text):
         found.append(("E-UNSAFE", f"{path}:{text.count(chr(10), 0, m.start()) + 1}: `unsafe` is not allowed in the production ingot"))
     for m in re.finditer(r"\b(?:struct|enum|trait|type|msg|contract)\s+(\w+)", text):

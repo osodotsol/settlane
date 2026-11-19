@@ -17,6 +17,24 @@ Do not modify src/ unless the assignment allows it. Do not commit or push.
 ```
 
 ## Active assignment
+- **ID:** R-005 Phase 3A review (Claim, the first transition that moves ETH; Refund is not implemented)
+- **Commit:** the Phase 3A commit on `settlane/dev` (see `git log -1`).
+- **Status: NOT RUN.** Codex is not installed in this environment. Nothing under `docs/reviews/` exists for R-005 unless the owner runs it.
+- **Scope:** `ingots/settlane/src/*.fe` (`rules.fe` `check_claim`, `handlers.fe` `claim_handler` and `require_claim`, the `Claim` arm in `settlane.fe`, `MilestoneClaimed` in `types.fe`), `ingots/settlane-dev/src/*.fe` (`Reentrant`, `Actor::ClaimVia`, the Phase 3A tests), `scripts/settlane_lint.py` (`C-STIPEND`, `C-SEND`, `C-CEI`, the arm-splitter change), `scripts/lint-policy.json`, `scripts/check_events.py`, `scripts/ci_negative_controls.py`, `docs/LIFECYCLE.md` T5 and "Phase 3A" notes, `docs/SECURITY.md` "Phase 3A coverage" and "Reentrancy policy", `docs/DECISIONS.md` D-022.
+- **Edit permission:** you may add new files under `experiments/review/` to reproduce a doubt. Do not edit any other file.
+- **Questions:**
+  1. Does T5 hold exactly: only the provider, only `Approved`, `to != 0`, the stored amount, `Paid` after, `paid += amount` and `outstanding -= amount`? Find any (state, caller, `to`) accepted that should not be, or the reverse.
+  2. Can any sequence pay a milestone twice, pay more than its amount, or pay from another agreement's funds? Try reentrancy through the payee, a payee that is the shell or Settlane, and a payee that is a precompile.
+  3. A failed transfer: is every write (state, both counters, the event) reverted? Is there a payee for which `send_value(gas: 0)` reports success without the ETH arriving, or the reverse?
+  4. Stipend only: what payees can never be paid (contract wallets, Settlane, the shell)? Is the documented fallback (choose another `to`) always available to the provider?
+  5. Lint: write a compiling production shape that writes storage after `send_value`, forwards gas, or ignores the result, and passes `C-CEI`, `C-STIPEND` and `C-SEND` (multi-line calls, helpers, a send in a nested block, a write in a later block of the same function, a `#[test]` attribute on a non-test function).
+  6. Does any arm other than `Claim` reach `call`? Does the arm splitter change open a bypass of `E-CALL`/`E-BODY`?
+  7. Events: can `check_events.py` pass on logs where a milestone is claimed twice, claimed before approval, or claims exceed the deposit?
+  8. Tests: is any assertion vacuous? Is the reentrancy positive control strong enough to prove the attacker is live? Run `python3 scripts/ci_negative_controls.py` and propose mutations the tests would miss.
+- **Acceptance:** each finding gives a severity, a concrete sequence, the expected and actual (or predicted) outcome, and a fix or test. Doubts about Fe behavior come with an `fe check` or `fe test` command and its output.
+- **Output:** `docs/reviews/<date>-phase3a.md`
+
+## Previous assignment (R-004, done)
 - **ID:** R-004 Phase 2B review (evidence submission, approval, evidence-matched rejection; no payouts yet)
 - **Commit:** the Phase 2B commit on `settlane/dev` (see `git log -1`).
 - **Status: RUN.** The owner requested implementation of the R-004 findings. The fixes bind reviews to submission revisions, add slot-2 coverage, check exact events and full revert reasons, and clarify the delivery boundary. Phase 3 remains out of scope.

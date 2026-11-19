@@ -1,0 +1,8 @@
+// EXPECT: fail C-CEI,C-STIPEND
+// A plain helper (no #[test]) is not exempt, even in a test file: a contract could call it.
+use std::evm::StorageMap
+
+pub fn pay_out(to: Address, amount: Wei) uses (call: mut Call, owed: mut StorageMap<u256, Wei>) {
+    assert!(call.send_value(addr: to, gas: 50000, value: amount).success(), "transfer failed")
+    owed.set(key: 0, value: Wei::zero())
+}

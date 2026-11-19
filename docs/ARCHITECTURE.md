@@ -1,4 +1,4 @@
-# Architecture (Phase 2B implemented: creation, funding, evidence submission, review, queries)
+# Architecture (Phase 3A implemented: creation, funding, evidence, review, Claim, queries; Refund not yet)
 
 ## Shape
 A Fe **workspace** with two ingots (D-014, approved with conditions on 2026-11-18). There is no backend, database, frontend, or off-chain service.
@@ -8,14 +8,14 @@ fe.toml                  workspace manifest; default-members = ["ingots/settlane
 ingots/settlane/         PRODUCTION ingot: the only thing `fe build` emits
   fe.toml                [ingot] name = "settlane"
   src/lib.fe             module overview (comment only)
-  src/types.fe           Clock effect, Totals, MilestoneState, Agreement, Milestone, AgreementCreated
-  src/rules.fe           pure rules: check_create, total_amount, decide_by, delivery_open, state_code
-  src/handlers.fe        shared handler bodies (D-016): create_handler and the query handlers
+  src/types.fe           Clock effect, Totals, MilestoneState, Agreement, Milestone, the five events
+  src/rules.fe           pure rules: check_create, check_submit, check_review, check_claim, windows, state_code
+  src/handlers.fe        shared handler bodies (D-016): create, submit, approve, reject, claim, queries
   src/settlane.fe        pub msg SettleMsg and the contract Settlane (arms are glue only)
   src/tests.fe           tests that do not need to cross a deadline or use another caller
 ingots/settlane-dev/     DEV ingot: never built by default
   fe.toml                [ingot] name = "settlane_dev", depends on `settlane`
-  src/lib.fe             SettlaneTestClock (settable clock, same handlers), DevMsg, Actor, ActorMsg
+  src/lib.fe             SettlaneTestClock (settable clock, same handlers), DevMsg, Actor, ActorMsg, Reentrant, AttackMsg
   src/tests.fe           deadline-crossing, differential and multi-caller tests
 ```
 
@@ -37,7 +37,7 @@ Rules of the layout, each enforced by `scripts/settlane_lint.py` or `scripts/che
 | Deadlines | `rules.fe` predicates on `ctx.timestamp()` | **Runtime** |
 | Exact funding and allocation | Checked sum against `ctx.value()` | **Runtime** |
 | Overflow | Checked arithmetic (Panic 0x11) | **Runtime**, default to be confirmed (E8) |
-| Reentrancy | State written before the external call. Optional `std::evm::Mutex` guard. | **Runtime** plus code structure |
+| Reentrancy | State written before the external call, stipend-only send. No `Mutex` guard. | **Runtime** plus code structure, lint `C-CEI`/`C-STIPEND`/`C-SEND`, reentrant-recipient test |
 | Verifier honesty | None | **Trust assumption** |
 
 Fe effects give *capability* guarantees, meaning which code can touch which state. They do **not** give caller authorization, which is a runtime check.
@@ -56,13 +56,14 @@ milestones: StorageMap<(u256, u8), Milestone>        // state, amount, deliver_b
 Every `recv` arm body is a shared `pub fn` in the production ingot (for example `refund_handler(id, m, to) uses (clock: Clock, ctx: Ctx, call: mut Call, milestones: mut .., ..)`). Arms in `Settlane` are one line, `with (Clock = Clock { now: ctx.timestamp() }) { refund_handler(..) }`. `SettlaneTestClock` (dev ingot) calls the same handlers with a settable Clock. Pure predicates stay in `rules.fe` and take `clock.now`. Only the `Claim` and `Refund` arms, and the handlers they call, may require `call`. An arm that **omits** `call` cannot call a handler requiring it (`error[8-0036]`, `experiments/review/s2_handler_omit_call.fe`), but an arm listing `call` read-only still can (E7), so the lint remains the guard. Evidence: `experiments/review/s1_shared_arm.fe`.
 
 ## Interface (`pub msg SettleMsg`; selectors via `sol("...")`)
-Implemented in Phase 2A and 2B (the production ABI contains exactly these eight functions and four events, locked by the lint, including every output type and its order):
+Implemented in Phase 2A, 2B and 3A (the production ABI contains exactly these nine functions and five events, locked by the lint, including every output type and its order):
 | Message | Payable | Returns |
 | --- | --- | --- |
 | `Create { provider, verifier, review_period, n: u8, amounts: [Wei;3], deliver_by: [Timestamp;3], specs: [u256;3] }` | yes | agreement id (the first is 1) |
 | `Submit { id, m: u8, evidence }` (T2: the provider, `Funded` or `Submitted`, delivery window open, evidence nonzero, advances revision) | no | none |
 | `Approve { id, m: u8, evidence, revision }` (T3: the verifier, `Submitted`, review window open, evidence and revision match the stored values) | no | none |
 | `Reject { id, m: u8, evidence, revision }` (T4, D-015: the same guards, back to `Funded`, evidence cleared, `rejections + 1`) | no | none |
+| `Claim { id, m: u8, to }` (T5: the provider, `Approved`, `to != 0`, no time guard; pays the stored amount with the 2300-gas stipend after every write, and reverts entirely if the transfer fails) | no | amount sent |
 | `GetAgreement { id }` (reverts for an unknown id) | no | `(client, provider, verifier, review_period, n)` |
 | `GetMilestone { id, m: u8 }` (unknown id or unused slot reads as state 0, all zero) | no | `(state, amount, deliver_by, decide_by, spec, evidence, rejections, revision)` |
 | `GetAccounting { id }` (reverts for an unknown id) | no | `(deposited, paid, refunded, outstanding)` |
@@ -70,20 +71,20 @@ Implemented in Phase 2A and 2B (the production ABI contains exactly these eight 
 
 State codes: `None` 0, `Funded` 1, `Submitted` 2, `Approved` 3, `Paid` 4, `Refunded` 5. `n` is a `u8`, and the ABI decoder rejects a wider value rather than truncating it (tested, `experiments/review/u1_u8_abi.fe`).
 
-Planned for Phase 3, **not implemented**:
+Planned for Phase 3B, **not implemented**:
 | Message | Payable | Returns |
 | --- | --- | --- |
-| `Claim { id, m, to }`, `Refund { id, m, to }` | no | amount sent |
+| `Refund { id, m, to }` | no | amount sent |
 
-Events (implemented): `AgreementCreated` (`id`, `client` and `provider` indexed, plus `verifier`, `total`, `milestones`), `MilestoneSubmitted` and `MilestoneApproved` (indexed `id`, `m`, `evidence` and a revision data word) and `MilestoneRejected` (same topics and revision, followed by the new `rejections` total). Phase 3 adds `MilestoneClaimed` and `MilestoneRefunded`. Fe test code cannot read events, but `fe test --show-logs` prints them, and `scripts/check_events.py` decodes every event (topic hash, topics, payload) with an independent encoder, checks exact sequences, **replays each test's events as the milestone state machine of the lifecycle spec** (so the logs alone must obey it), that a rejected creation emits nothing, that the client is the real caller (the test contract emits `CallerProbe` with its own address for direct calls, and the dev Actor emits `Acted` for calls through it), and that production and the test-clock shell emit identical events. The ABI lock fixes the event's signature and indexed flags.
+Events (implemented): `AgreementCreated` (`id`, `client` and `provider` indexed, plus `verifier`, `total`, `milestones`), `MilestoneSubmitted` and `MilestoneApproved` (indexed `id`, `m`, `evidence` and a revision data word) and `MilestoneRejected` (same topics and revision, followed by the new `rejections` total) and `MilestoneClaimed` (indexed `id`, `m`, `to`, with the amount as data). Phase 3B adds `MilestoneRefunded`. Fe test code cannot read events, but `fe test --show-logs` prints them, and `scripts/check_events.py` decodes every event (topic hash, topics, payload) with an independent encoder, checks exact sequences, **replays each test's events as the milestone state machine of the lifecycle spec** (so the logs alone must obey it), that a rejected creation emits nothing, that the client is the real caller (the test contract emits `CallerProbe` with its own address for direct calls, and the dev Actor emits `Acted` for calls through it), and that production and the test-clock shell emit identical events. The ABI lock fixes the event's signature and indexed flags.
 
 ## Payments
-None yet: Phase 2A has no outgoing transfer, and `Settlane` declares no `Call` effect, so the compiler guarantees it cannot send ETH. The design below is for Phase 3.
+`Claim` is implemented (Phase 3A) and is the only arm that lists `call` (lint `E-CALL`). `Refund` follows in Phase 3B with the same shape.
 
 - Pull only. Verification creates an entitlement, and `Claim` or `Refund` moves the ETH.
 - Checks, then effects (state and counters), then the interaction (`call.send_value`), then `assert!(success)`. A failed send reverts the whole call, so no counter or state change can record a transfer that did not happen.
 - Payouts go to a caller-chosen `to`, as in the starter's `Withdraw { to }`. A reverting recipient can only block its own claim, and the caller can retry with another `to`.
-- `gas: 0` stipend semantics in `send_value` are to be confirmed (E6).
+- `send_value(gas: 0)` forwards only the 2300-gas stipend (E6, and Phase 3A's reentrancy test). Lint rules `C-STIPEND`, `C-SEND` and `C-CEI` enforce the stipend, the asserted result and that nothing is written after the send.
 
 ## Time
 `ctx.timestamp()` with seconds granularity. Validators can skew it by a few seconds, which matters only at exact deadline boundaries. This is documented, not mitigated.

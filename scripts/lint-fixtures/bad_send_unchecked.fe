@@ -1,0 +1,10 @@
+// EXPECT: fail C-SEND
+// An ignored send result: a failed transfer would leave the milestone marked paid (I7).
+use std::evm::StorageMap
+
+pub fn claim_like(id: u256, to: Address) -> Wei uses (call: mut Call, owed: mut StorageMap<u256, Wei>) {
+    let amount = owed.get(key: id)
+    owed.set(key: id, value: Wei::zero())
+    let _ = call.send_value(addr: to, gas: 0, value: amount)
+    amount
+}

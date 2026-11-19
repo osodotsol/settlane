@@ -22,10 +22,10 @@ python3 scripts/check_tests.py          # fe test for BOTH ingots, fails if too 
 python3 scripts/check_events.py         # fe test --show-logs: decodes every AgreementCreated and checks its client against the real caller
 rm -rf out && fe build                  # production ingot only; `fe build` never clears out/ (gitignored)
 python3 scripts/settlane_lint.py ingots --abi-dir out   # policy lint; fails on any violation
-python3 scripts/settlane_lint.py --selftest             # lint self-test (50 fixtures, 45 unit checks)
+python3 scripts/settlane_lint.py --selftest             # lint self-test (59 fixtures, 45 unit checks)
 python3 scripts/check_tests.py --selftest               # test-gate self-test (10 cases)
-python3 scripts/check_events.py --selftest              # event-checker self-test (62 cases, each negative asserts its reason); python3 scripts/keccak.py checks Keccak-256
-python3 scripts/ci_negative_controls.py # proves CI FAILS for each D-014 mistake, review finding and broken Phase 2A rule (local, ~25 min, 69 controls, needs PyYAML); --dry-run checks every mutation still applies
+python3 scripts/check_events.py --selftest              # event-checker self-test (89 cases, each negative asserts its reason); python3 scripts/keccak.py checks Keccak-256
+python3 scripts/ci_negative_controls.py # proves CI FAILS for each D-014 mistake, review finding and broken lifecycle rule (local, ~50 min, 92 controls, needs PyYAML); --dry-run checks every mutation still applies
 bash experiments/review/run.sh          # review 2026-11-18 repros still reproduce and the lint rejects them
 bash experiments/phase1/run.sh          # Phase 1 compiler experiments (remove before submission)
 fe test ingots/settlane-dev             # focused run of one ingot

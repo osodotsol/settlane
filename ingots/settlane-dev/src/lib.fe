@@ -15,7 +15,7 @@ pub msg DevMsg {
 // `SettleMsg` and every arm calls the same shared handler as `Settlane`. The two differ in
 // exactly one thing: where `Clock.now` comes from. Production reads the block, this reads
 // the `now` field, so tests can cross deadlines that a frozen test block never reaches.
-pub contract SettlaneTestClock uses (ctx: Ctx, log: mut Log) {
+pub contract SettlaneTestClock uses (ctx: Ctx, call: mut Call, log: mut Log) {
     mut now: Timestamp,
     mut totals: Totals,
     mut agreements: StorageMap<u256, Agreement>,
@@ -57,6 +57,17 @@ pub contract SettlaneTestClock uses (ctx: Ctx, log: mut Log) {
             with (Clock = Clock { now }) {
                 handlers::reject_handler(id, m, evidence, revision)
             }
+        }
+
+        Claim { id, m, to } -> Wei uses (
+            ctx,
+            mut call,
+            mut log,
+            mut totals,
+            mut agreements,
+            mut milestones,
+        ) {
+            handlers::claim_handler(id, m, to)
         }
 
         GetAgreement { id } -> (Address, Address, Address, Duration, u8)
@@ -112,6 +123,8 @@ pub msg ActorMsg {
     ApproveVia { target: Address, id: u256, m: u8, evidence: u256, revision: u256 },
     #[selector = sol("rejectVia(address,uint256,uint8,uint256,uint256)")]
     RejectVia { target: Address, id: u256, m: u8, evidence: u256, revision: u256 },
+    #[selector = sol("claimVia(address,uint256,uint8,address)")]
+    ClaimVia { target: Address, id: u256, m: u8, to: Address } -> Wei,
 }
 
 // Emitted by the Actor with its own address before it forwards a call. scripts/check_events.py
@@ -187,6 +200,94 @@ pub contract Actor uses (ctx: Ctx, call: mut Call, log: mut Log) {
                 value: ctx.value(),
                 message: SettleMsg::Reject { id, m, evidence, revision },
             )
+        }
+
+        #[payable]
+        ClaimVia { target, id, m, to } -> Wei uses (ctx, mut call) {
+            call.call(
+                addr: target,
+                gas: 1000000,
+                value: ctx.value(),
+                message: SettleMsg::Claim { id, m, to },
+            )
+        }
+    }
+}
+
+// A provider that tries to be paid twice. It forwards Submit and Claim to Settlane as itself,
+// and it can RECEIVE plain ETH through a payable fallback, which tries to claim the same
+// milestone again while the first payout is still in flight. Settlane must pay it exactly once:
+//   - with the 2300-gas stipend (`send_value(gas: 0)`) the fallback cannot even attempt the call;
+//   - if gas were forwarded, the milestone is already `Paid` before the transfer (checks,
+//     effects, interaction), so the nested claim reverts.
+// `attempts` and `succeeded` count nested claims; both stay 0 under the production code.
+pub msg AttackMsg {
+    #[selector = sol("setup(address,uint256,uint8)")]
+    Setup { target: Address, id: u256, m: u8 },
+    #[selector = sol("submitAs(uint256)")]
+    SubmitAs { evidence: u256 },
+    #[selector = sol("claimTo(address)")]
+    ClaimTo { to: Address } -> Wei,
+    #[selector = sol("stats()")]
+    Stats -> (u256, u256),
+}
+
+pub contract Reentrant uses (ctx: Ctx, call: mut Call) {
+    mut target: Address,
+    mut id: u256,
+    mut m: u8,
+    mut attempts: u256,
+    mut succeeded: u256,
+
+    recv {
+        AttackMsg::Setup { target: t, id: i, m: k }
+        uses (mut target, mut id, mut m)
+        {
+            target = t
+            id = i
+            m = k
+        }
+
+        AttackMsg::SubmitAs { evidence } uses (mut call, target, id, m) {
+            call.call(
+                addr: target,
+                gas: 1000000,
+                value: Wei::zero(),
+                message: SettleMsg::Submit { id, m, evidence },
+            )
+        }
+
+        AttackMsg::ClaimTo { to } -> Wei uses (mut call, target, id, m) {
+            call.call(
+                addr: target,
+                gas: 2000000,
+                value: Wei::zero(),
+                message: SettleMsg::Claim { id, m, to },
+            )
+        }
+
+        AttackMsg::Stats {} -> (u256, u256) uses (attempts, succeeded) {
+            (attempts, succeeded)
+        }
+
+        // Receiving the payout. With only the stipend there is not enough gas to call or write,
+        // so just accept the ETH. With more gas, try to claim the same milestone again.
+        #[payable]
+        _ uses (ctx, mut call, target, id, m, mut attempts, mut succeeded) {
+            if ctx.gas() < 60000 {
+                return
+            }
+            attempts += 1
+            let again = call
+                .try_call(
+                    addr: target,
+                    gas: ctx.gas() - 20000,
+                    value: Wei::zero(),
+                    message: SettleMsg::Claim { id, m, to: ctx.address() },
+                )
+            if again.success() {
+                succeeded += 1
+            }
         }
     }
 }

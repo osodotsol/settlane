@@ -3,7 +3,7 @@ use std::evm::returndata::decode_error_string
 // a clock that moves (the test-clock shell) and a caller other than the test contract (the
 // Actor). The shell runs the production handlers (D-016), so what is tested here is the
 // shipped creation logic under other clocks and other callers.
-use ingot::{Actor, ActorMsg, DevMsg, SettlaneTestClock}
+use ingot::{Actor, ActorMsg, AttackMsg, DevMsg, Reentrant, SettlaneTestClock}
 use std::evm::CallOutcome
 use settlane::settlane::{SettleMsg, Settlane}
 use std::evm::{ether, seconds, wei}
@@ -732,6 +732,9 @@ enum Why {
     ZeroEvidence,
     EvidenceMismatch,
     RevisionMismatch,
+    NotApproved,
+    ZeroPayee,
+    TransferFailed,
 }
 
 impl Copy for Why {}
@@ -747,6 +750,9 @@ fn because(_ out: CallOutcome, _ why: Why) -> bool {
         },
     }
     match why {
+        Why::NotApproved => reason == "milestone is not approved",
+        Why::ZeroPayee => reason == "payee is zero",
+        Why::TransferFailed => reason == "transfer failed",
         Why::UnknownAgreement => reason == "unknown agreement",
         Why::NotProvider => reason == "caller is not the provider",
         Why::NotVerifier => reason == "caller is not the verifier",
@@ -1987,4 +1993,580 @@ fn third_slot_revision_lifecycle_at_both_deadlines() uses (evm: mut Evm) {
     assert!(same_milestone(sibling0, milestone(shell, 1, 0)))
     assert!(same_milestone(sibling1, milestone(shell, 1, 1)))
     assert_money(shell, ether(18))
+}
+
+// ------------------------------------------------------------------------- Phase 3A: Claim
+// T5: from Approved, Claim(to) by the provider, to != 0, goes to Paid, paid += amount,
+// outstanding -= amount, and sends exactly the stored amount to `to` with the 2300-gas stipend.
+// Every write happens before the transfer, and a failed transfer reverts all of them.
+
+// `by` forwards Claim to `s`, so Settlane sees `by` as the caller.
+fn claim_out(_ by: Address, _ s: Address, _ id: u256, _ m: u8, _ to: Address) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: by,
+        gas: 2000000,
+        value: Wei::zero(),
+        message: ActorMsg::ClaimVia { target: s, id, m, to },
+    )
+}
+
+// A claim that must succeed. Returns what Settlane reports it sent.
+fn claim_ok(_ by: Address, _ s: Address, _ id: u256, _ m: u8, _ to: Address) -> Wei
+uses (evm: mut Evm)
+{
+    evm.call(
+        addr: by,
+        gas: 2000000,
+        value: Wei::zero(),
+        message: ActorMsg::ClaimVia { target: s, id, m, to },
+    )
+}
+
+fn claim_direct(_ s: Address, _ id: u256, _ m: u8, _ to: Address) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: s,
+        gas: 500000,
+        value: Wei::zero(),
+        message: SettleMsg::Claim { id, m, to },
+    )
+}
+
+// Submits and approves milestone m with evidence e (first submission, so revision 1).
+fn approve_first(_ p: Address, _ v: Address, _ s: Address, _ id: u256, _ m: u8, _ e: u256)
+uses (evm: mut Evm)
+{
+    assert!(submit_out(p, s, id, m, e).success(), "setup: submit")
+    assert!(approve_out(v, s, id, m, e, 1).success(), "setup: approve")
+    assert!(state_of(s, id, m) == 3, "setup: Approved")
+}
+
+fn same_accounting(_ a: (Wei, Wei, Wei, Wei), _ b: (Wei, Wei, Wei, Wei)) -> bool {
+    a.0 == b.0 && a.1 == b.1 && a.2 == b.2 && a.3 == b.3
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn the_provider_claims_an_approved_milestone_and_is_paid_the_stored_amount_once()
+uses (evm: mut Evm)
+{
+    probe()
+    let prod = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let p = actor(11)
+    let v = actor(12)
+    let payee = Address::new(0x9b1)
+    let now = evm.timestamp().as_seconds()
+    assert!(
+        create(
+                prod,
+                parties(three(now + 100, now + 200, now + 300), p, v),
+                ether(6),
+            ) == 1,
+    )
+    // A second agreement with the same parties: a claim on agreement 1 must not touch it.
+    assert!(
+        create(prod, parties(two(now + 100, now + 200), p, v), ether(3)) == 2,
+    )
+    assert_money(prod, ether(9))
+    approve_first(p, v, prod, 1, 1, 0xe2)
+    let before = milestone(prod, 1, 1)
+    let other0 = milestone(prod, 1, 0)
+    let other2 = milestone(prod, 1, 2)
+    let second = accounting(prod, 2)
+    let second0 = milestone(prod, 2, 0)
+
+    // Milestone 1 holds 2 ETH: exactly that is paid, to the chosen payee, and reported.
+    assert!(
+        claim_ok(p, prod, 1, 1, payee) == ether(2),
+        "the claim reports the stored amount",
+    )
+    assert!(
+        evm.balance(payee) == ether(2),
+        "the payee received exactly the stored amount",
+    )
+    assert!(
+        evm.balance(p) == Wei::zero(),
+        "nothing went to the caller: `to` is the payee",
+    )
+    let paid = milestone(prod, 1, 1)
+    assert!(paid.0 == 4, "Paid")
+    assert!(
+        fixed_fields(before, paid),
+        "amount, deadlines and spec are unchanged",
+    )
+    assert!(
+        paid.5 == before.5 && paid.6 == before.6 && paid.7 == before.7,
+        "evidence, rejections and revision are kept",
+    )
+    let acc = accounting(prod, 1)
+    assert!(
+        acc.0 == ether(6) && acc.1 == ether(2) && acc.2 == Wei::zero() && acc.3 == ether(4),
+        "deposited 6, paid 2, refunded 0, outstanding 4",
+    )
+    assert_money(prod, ether(7))
+    assert!(
+        same_milestone(milestone(prod, 1, 0), other0),
+        "milestone 0 is untouched",
+    )
+    assert!(
+        same_milestone(milestone(prod, 1, 2), other2),
+        "milestone 2 is untouched",
+    )
+    assert!(
+        same_accounting(accounting(prod, 2), second),
+        "agreement 2 is untouched",
+    )
+    assert!(
+        same_milestone(milestone(prod, 2, 0), second0),
+        "agreement 2 milestone 0 is untouched",
+    )
+
+    // Replay: the same claim, to the same or another payee, is rejected and pays nothing more.
+    assert!(
+        because(claim_out(p, prod, 1, 1, payee), Why::NotApproved),
+        "a second claim",
+    )
+    assert!(
+        because(claim_out(p, prod, 1, 1, p), Why::NotApproved),
+        "a second claim to another payee",
+    )
+    // Paid is final: no transition reopens it.
+    assert!(
+        because(submit_out(p, prod, 1, 1, 0xe9), Why::WrongState),
+        "no submission after Paid",
+    )
+    assert!(
+        because(approve_out(v, prod, 1, 1, 0xe2, 1), Why::NotSubmitted),
+        "no approval after Paid",
+    )
+    assert!(
+        because(reject_out(v, prod, 1, 1, 0xe2, 1), Why::NotSubmitted),
+        "no rejection after Paid",
+    )
+    assert!(
+        same_milestone(milestone(prod, 1, 1), paid),
+        "the paid milestone never changes",
+    )
+    assert!(evm.balance(payee) == ether(2), "still paid exactly once")
+    assert_money(prod, ether(7))
+
+    // The other milestones can still be claimed, each once: the payout total equals the deposit.
+    approve_first(p, v, prod, 1, 0, 0xe1)
+    approve_first(p, v, prod, 1, 2, 0xe3)
+    assert!(claim_ok(p, prod, 1, 0, payee) == ether(1))
+    assert!(
+        claim_ok(p, prod, 1, 2, Address::new(0x9b2)) == ether(3),
+        "each claim chooses its own payee",
+    )
+    assert!(
+        evm.balance(payee) == ether(3) && evm.balance(Address::new(0x9b2)) == ether(3),
+    )
+    let done = accounting(prod, 1)
+    assert!(
+        done.0 == ether(6) && done.1 == ether(6) && done.2 == Wei::zero() && done.3 == Wei::zero(),
+        "fully paid: paid == deposited and nothing is outstanding",
+    )
+    assert_money(prod, ether(3))
+    assert!(
+        same_accounting(accounting(prod, 2), second),
+        "agreement 2 is still untouched",
+    )
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn only_the_provider_may_claim_and_only_an_approved_milestone_to_a_nonzero_payee()
+uses (evm: mut Evm)
+{
+    probe()
+    let prod = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let p = actor(11)
+    let v = actor(12)
+    let st = actor(13)
+    let payee = Address::new(0x9b1)
+    let now = evm.timestamp().as_seconds()
+    assert!(
+        create(prod, parties(two(now + 100, now + 200), p, v), ether(3)) == 1,
+    )
+    let acc0 = accounting(prod, 1)
+
+    // Funded: the others lack the role, and the provider has the wrong state.
+    assert!(
+        because(claim_direct(prod, 1, 0, payee), Why::NotProvider),
+        "the client cannot claim",
+    )
+    assert!(
+        because(claim_out(v, prod, 1, 0, payee), Why::NotProvider),
+        "the verifier cannot claim",
+    )
+    assert!(
+        because(claim_out(st, prod, 1, 0, payee), Why::NotProvider),
+        "a stranger cannot claim",
+    )
+    assert!(
+        because(claim_out(p, prod, 1, 0, payee), Why::NotApproved),
+        "Funded is not claimable",
+    )
+    // Submitted is not claimable either.
+    assert!(submit_out(p, prod, 1, 0, 0xe1).success())
+    assert!(
+        because(claim_out(p, prod, 1, 0, payee), Why::NotApproved),
+        "Submitted is not claimable",
+    )
+    assert!(state_of(prod, 1, 0) == 2, "still Submitted")
+    // A rejected milestone is back to Funded and still not claimable.
+    assert!(reject_out(v, prod, 1, 0, 0xe1, 1).success())
+    assert!(
+        because(claim_out(p, prod, 1, 0, payee), Why::NotApproved),
+        "rejected is not claimable",
+    )
+
+    // Approved: still only the provider, and never to the zero address.
+    approve_first(p, v, prod, 1, 1, 0xe2)
+    let approved = milestone(prod, 1, 1)
+    assert!(
+        because(claim_direct(prod, 1, 1, payee), Why::NotProvider),
+        "the client cannot claim",
+    )
+    assert!(
+        because(claim_direct(prod, 1, 1, evm.address()), Why::NotProvider),
+        "not even to itself",
+    )
+    assert!(
+        because(claim_out(v, prod, 1, 1, v), Why::NotProvider),
+        "the verifier cannot claim",
+    )
+    assert!(
+        because(claim_out(st, prod, 1, 1, st), Why::NotProvider),
+        "a stranger cannot claim",
+    )
+    assert!(
+        because(
+            claim_out(v, prod, 1, 1, Address::zero()),
+            Why::NotProvider,
+        ),
+        "role before payee",
+    )
+    assert!(
+        because(claim_out(p, prod, 1, 1, Address::zero()), Why::ZeroPayee),
+        "the payee is not zero",
+    )
+    // Unused slot and unknown agreements: the right reason, whoever asks.
+    assert!(
+        because(claim_out(p, prod, 1, 2, payee), Why::NoSuchMilestone),
+        "slot 2 is unused",
+    )
+    assert!(
+        because(claim_out(p, prod, 1, 3, payee), Why::NoSuchMilestone),
+        "slot 3 does not exist",
+    )
+    assert!(
+        because(claim_out(st, prod, 1, 2, payee), Why::NotProvider),
+        "role before milestone",
+    )
+    assert!(
+        because(claim_out(p, prod, 0, 1, payee), Why::UnknownAgreement),
+        "id 0",
+    )
+    assert!(
+        because(claim_out(p, prod, 2, 1, payee), Why::UnknownAgreement),
+        "id 2",
+    )
+    assert!(
+        because(claim_out(p, prod, MAX, 1, payee), Why::UnknownAgreement),
+        "id 2^256 - 1",
+    )
+
+    // Nothing above changed anything or moved any ETH.
+    assert!(
+        same_milestone(milestone(prod, 1, 1), approved),
+        "still Approved, unchanged",
+    )
+    assert!(
+        same_accounting(accounting(prod, 1), acc0),
+        "accounting unchanged",
+    )
+    assert_money(prod, ether(3))
+    assert!(
+        evm.balance(payee) == Wei::zero()
+            && evm.balance(p) == Wei::zero()
+            && evm.balance(v) == Wei::zero()
+            && evm.balance(st) == Wei::zero(),
+        "nobody was paid",
+    )
+    // Positive control: the provider's valid claim succeeds.
+    assert!(
+        claim_ok(p, prod, 1, 1, payee) == ether(2),
+        "positive control",
+    )
+    assert!(evm.balance(payee) == ether(2))
+    assert_money(prod, ether(1))
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn a_failed_transfer_reverts_the_whole_claim_and_a_retry_to_another_payee_succeeds()
+uses (evm: mut Evm)
+{
+    probe()
+    let prod = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let p = actor(11)
+    let v = actor(12)
+    // Contracts that cannot receive plain ETH: the Actor and Settlane have no fallback.
+    let refuses = actor(14)
+    let payee = Address::new(0x9b1)
+    let now = evm.timestamp().as_seconds()
+    assert!(
+        create(prod, parties(two(now + 100, now + 200), p, v), ether(3)) == 1,
+    )
+    approve_first(p, v, prod, 1, 1, 0xe2)
+    let approved = milestone(prod, 1, 1)
+    let acc = accounting(prod, 1)
+
+    assert!(
+        because(claim_out(p, prod, 1, 1, refuses), Why::TransferFailed),
+        "a refusing payee",
+    )
+    assert!(
+        because(claim_out(p, prod, 1, 1, prod), Why::TransferFailed),
+        "Settlane cannot pay itself",
+    )
+    assert!(
+        because(claim_out(p, prod, 1, 1, v), Why::TransferFailed),
+        "the verifier Actor refuses too",
+    )
+    // Every write before the transfer was reverted with it.
+    assert!(
+        same_milestone(milestone(prod, 1, 1), approved),
+        "still Approved, unchanged",
+    )
+    assert!(
+        same_accounting(accounting(prod, 1), acc),
+        "paid and outstanding unchanged",
+    )
+    assert_money(prod, ether(3))
+    assert!(
+        evm.balance(refuses) == Wei::zero(),
+        "the refusing payee holds nothing",
+    )
+
+    // A reverting payee blocks only its own claim: the provider retries with another `to`.
+    assert!(
+        claim_ok(p, prod, 1, 1, payee) == ether(2),
+        "the retry succeeds",
+    )
+    assert!(
+        evm.balance(payee) == ether(2) && state_of(prod, 1, 1) == 4,
+    )
+    assert_money(prod, ether(1))
+    assert!(
+        because(claim_out(p, prod, 1, 1, payee), Why::NotApproved),
+        "and only once",
+    )
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn a_reentrant_provider_is_paid_exactly_once() uses (evm: mut Evm) {
+    probe()
+    let prod = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let r = evm.create2<Reentrant>(value: Wei::zero(), args: (), salt: 21)
+    let v = actor(12)
+    let now = evm.timestamp().as_seconds()
+    // Extra ETH sits in the contract (agreement 1 milestone 1 and agreement 2), so a second
+    // payout of milestone 0 would be possible if the contract allowed it.
+    assert!(
+        create(prod, parties(two(now + 100, now + 200), r, v), ether(3)) == 1,
+    )
+    assert!(
+        create(
+                prod,
+                parties(three(now + 100, now + 200, now + 300), r, v),
+                ether(6),
+            ) == 2,
+    )
+    evm.call(
+        addr: r,
+        gas: 200000,
+        value: Wei::zero(),
+        message: AttackMsg::Setup { target: prod, id: 1, m: 0 },
+    )
+    evm.call(
+        addr: r,
+        gas: 2000000,
+        value: Wei::zero(),
+        message: AttackMsg::SubmitAs { evidence: 0xe1 },
+    )
+    assert!(approve_out(v, prod, 1, 0, 0xe1, 1).success())
+    assert!(state_of(prod, 1, 0) == 3, "Approved")
+
+    // The attacker claims to itself. Its fallback receives only the stipend, so it cannot even try.
+    let got: Wei = evm
+        .call(
+            addr: r,
+            gas: 2000000,
+            value: Wei::zero(),
+            message: AttackMsg::ClaimTo { to: r },
+        )
+    assert!(got == ether(1), "one payout of the stored amount")
+    assert!(
+        evm.balance(r) == ether(1),
+        "the attacker holds exactly one payout",
+    )
+    let st: (u256, u256) = evm
+        .call(
+            addr: r,
+            gas: 100000,
+            value: Wei::zero(),
+            message: AttackMsg::Stats {},
+        )
+    assert!(
+        st.0 == 0 && st.1 == 0,
+        "no nested claim was attempted under the stipend",
+    )
+    assert!(state_of(prod, 1, 0) == 4, "Paid")
+    assert_money(prod, ether(8))
+    let acc = accounting(prod, 1)
+    assert!(
+        acc.1 == ether(1) && acc.3 == ether(2),
+        "paid 1, outstanding 2",
+    )
+
+    // A second claim by the attacker is rejected with the state reason.
+    assert!(
+        because(
+            evm.try_call(
+                addr: r,
+                gas: 2000000,
+                value: Wei::zero(),
+                message: AttackMsg::ClaimTo { to: r },
+            ),
+            Why::NotApproved,
+        ),
+        "the attacker's second claim",
+    )
+    // Positive control that the attacker is live: given real gas, its fallback does try to claim
+    // again, and the nested claim fails because the milestone is already Paid.
+    assert!(
+        evm.send_value(addr: r, gas: 500000, value: wei(1)).success(),
+        "the fallback ran",
+    )
+    let st2: (u256, u256) = evm
+        .call(
+            addr: r,
+            gas: 100000,
+            value: Wei::zero(),
+            message: AttackMsg::Stats {},
+        )
+    assert!(
+        st2.0 == 1 && st2.1 == 0,
+        "one nested attempt, and it failed",
+    )
+    assert!(
+        evm.balance(r) == ether(1) + wei(1),
+        "still exactly one payout",
+    )
+    assert_money(prod, ether(8))
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn claim_is_not_payable() uses (evm: mut Evm) {
+    probe()
+    let prod = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let p = actor(11)
+    let v = actor(12)
+    let payee = Address::new(0x9b1)
+    let now = evm.timestamp().as_seconds()
+    assert!(
+        create(prod, parties(single(now + 100), p, v), ether(1)) == 1,
+    )
+    approve_first(p, v, prod, 1, 0, 0xe1)
+    // ClaimVia is payable and forwards the ETH it receives as the call value. Settlane rejects it and keeps nothing.
+    let out = evm
+        .try_call(
+            addr: p,
+            gas: 2000000,
+            value: ether(1),
+            message: ActorMsg::ClaimVia { target: prod, id: 1, m: 0, to: payee },
+        )
+    assert!(!out.success(), "a claim with value is rejected")
+    assert!(state_of(prod, 1, 0) == 3, "still Approved")
+    assert_money(prod, ether(1))
+    assert!(evm.balance(payee) == Wei::zero(), "nothing was paid")
+    // Positive control: the same claim with no value succeeds.
+    assert!(
+        claim_ok(p, prod, 1, 0, payee) == ether(1),
+        "positive control",
+    )
+    assert_money(prod, Wei::zero())
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn approval_never_expires_and_production_and_the_shell_agree_on_claims()
+uses (evm: mut Evm)
+{
+    probe()
+    let prod = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let shell = evm.create2<SettlaneTestClock>(value: Wei::zero(), args: (), salt: 1)
+    let p = actor(11)
+    let v = actor(12)
+    let payee = Address::new(0x9b1)
+    let now = evm.timestamp().as_seconds()
+    set_time(shell, now)
+    let a = parties(three(now + 100, now + 200, now + 300), p, v)
+    assert!(
+        create(prod, a, ether(6)) == 1 && create(shell, a, ether(6)) == 1,
+    )
+    approve_first(p, v, prod, 1, 0, 0xe1)
+    approve_first(p, v, shell, 1, 0, 0xe1)
+    approve_first(p, v, prod, 1, 2, 0xe3)
+    approve_first(p, v, shell, 1, 2, 0xe3)
+    same_state(prod, shell, 1)
+
+    // Same verdicts and the same reasons on both, step by step.
+    assert!(because(claim_out(v, prod, 1, 0, payee), Why::NotProvider))
+    assert!(
+        because(claim_out(v, shell, 1, 0, payee), Why::NotProvider),
+    )
+    assert!(because(claim_out(p, prod, 1, 1, payee), Why::NotApproved))
+    assert!(
+        because(claim_out(p, shell, 1, 1, payee), Why::NotApproved),
+    )
+    assert!(
+        because(claim_out(p, prod, 1, 0, Address::zero()), Why::ZeroPayee),
+    )
+    assert!(
+        because(
+            claim_out(p, shell, 1, 0, Address::zero()),
+            Why::ZeroPayee,
+        ),
+    )
+    assert!(because(claim_out(p, prod, 1, 0, v), Why::TransferFailed))
+    assert!(because(claim_out(p, shell, 1, 0, v), Why::TransferFailed))
+    assert!(claim_ok(p, prod, 1, 0, payee) == ether(1))
+    assert!(claim_ok(p, shell, 1, 0, payee) == ether(1))
+    same_state(prod, shell, 1)
+    assert_money(prod, ether(5))
+    assert_money(shell, ether(5))
+
+    // Approval never expires: long after deliver_by and decide_by of every milestone, the
+    // shell still pays the approved milestone 2 (Claim has no time guard).
+    set_time(shell, now + 100_000_000)
+    assert!(
+        because(submit_out(p, shell, 1, 1, 0xe2), Why::DeliveryClosed),
+        "the clock really moved",
+    )
+    assert!(
+        claim_ok(p, shell, 1, 2, payee) == ether(3),
+        "a late claim of an approved milestone",
+    )
+    assert!(state_of(shell, 1, 2) == 4)
+    assert!(
+        because(claim_out(p, shell, 1, 2, payee), Why::NotApproved),
+        "once",
+    )
+    assert_money(shell, ether(2))
+    assert!(
+        evm.balance(payee) == ether(5),
+        "1 + 1 + 3 ETH in total across both contracts",
+    )
 }

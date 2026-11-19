@@ -158,9 +158,19 @@ Evidence in `experiments/review/` (all re-run by `bash experiments/review/run.sh
 | `u8` is valid as an indexed event field (`uint8 indexed` in the ABI), and an event can have three indexed fields plus data. | built ABI |
 | `fe fmt` wraps a long expression into a multi-line form, so a text mutation must target the formatted text. The control runner reformats after mutating. | controls |
 
+### Phase 3A facts (2026-11-19, all [ran])
+| Fact | Evidence |
+| --- | --- |
+| An untyped `recv { .. }` block can end with a **payable fallback** `#[payable] _ uses (..) { .. }`, which runs for empty calldata, so a Fe contract can receive plain ETH from `send_value`. A typed `recv Msg { .. }` block without it rejects plain ETH. | `Reentrant` in `ingots/settlane-dev/src/lib.fe`; `a_failed_transfer_..` (the Actor rejects) |
+| `ctx.gas()` reports the remaining gas. Inside a fallback reached by `send_value(gas: 0)` it is at most the 2300-gas stipend, so the fallback (threshold 60000) can tell a stipend send from a call with real gas. | `a_reentrant_provider_is_paid_exactly_once` (`stats == (0, 0)` under the stipend, `(1, 0)` with 500k gas) |
+| A reverted call's events are discarded: `fe test --show-logs` does not print the `MilestoneClaimed` of a claim whose transfer failed. | the exact claim sequence of `a_failed_transfer_..` in `check_events.py` |
+| `send_value` returns a `#[must_use]` outcome: an unused result is `error[8-0082]`, so ignoring it needs an explicit `let _ =` (which lint `C-SEND` rejects in production). | `fe check` |
+| A test function cannot fund an `Actor` with `send_value` (it has no fallback), but a payable message arm forwards `ctx.value()`. | `claim_is_not_payable` |
+| `fe fmt` puts each item of a long arm `uses (..)` list on its own line. The lint's arm splitter now counts parentheses as well as braces, or it reads the wrapped list as extra arms. | fixtures `ok_multiline_uses_payout_arm.fe`, `bad_multiline_uses_nonpayout_arm.fe` |
+
 ## Still unverified (Phase 2–4 checks)
 - Is the production contract deployed by the dev-ingot tests byte-identical to the shipped `Prod` artifact? It is the same source and compiler, but `fe` offers no way to compare. Mitigation: all tests that do not need time travel live in the production ingot.
-- A reentrant recipient under the 2300 stipend. EIP-2200 forbids SSTORE when gas is at or below 2300, so reentrancy into a state change should fail. **Inferred, test in Phase 4.**
+- A reentrant recipient under the 2300 stipend: **tested in Phase 3A** for Claim (see Phase 3A facts). The test shows the attacker cannot even attempt a nested call; it does not separately probe EIP-2200's SSTORE rule. Refund needs the same test in Phase 3B.
 - `#[event]` with `Wei` and `u8` fields, and the event ABI.
 - Gas and code size of the full contract (`fe build --emit sizes`).
 

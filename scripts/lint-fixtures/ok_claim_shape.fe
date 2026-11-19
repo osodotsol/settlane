@@ -1,0 +1,15 @@
+// EXPECT: pass
+// The Phase 3A claim shape: checks, every write, then one stipend-only transfer whose result is
+// asserted, then only the return value.
+use std::evm::StorageMap
+
+pub fn claim_like(id: u256, to: Address) -> Wei
+uses (ctx: Ctx, call: mut Call, owed: mut StorageMap<u256, Wei>, paid: mut StorageMap<u256, Wei>)
+{
+    let amount = owed.get(key: id)
+    assert!(amount > Wei::zero(), "nothing owed")
+    owed.set(key: id, value: Wei::zero())
+    paid.set(key: id, value: paid.get(key: id) + amount)
+    assert!(call.send_value(addr: to, gas: 0, value: amount).success(), "transfer failed")
+    amount
+}

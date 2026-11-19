@@ -1,0 +1,33 @@
+// EXPECT: pass
+// `fe fmt` breaks a long `uses` list one item per line. The payout arm must still be one arm
+// (Phase 3A: the splitter used to count only braces and saw `mut call,` as a new arm).
+use std::evm::ether
+
+msg SettleMsg {
+    #[selector = sol("claim(address)")]
+    Claim { to: Address },
+    #[selector = sol("approve(uint256)")]
+    Approve { id: u256 },
+}
+
+pub contract Settlane uses (ctx: Ctx, call: mut Call, log: mut Log) {
+    mut paid: Wei,
+    mut other: Wei,
+
+    recv SettleMsg {
+        Claim { to } uses (
+            ctx,
+            mut call,
+            mut log,
+            mut paid,
+            mut other,
+        ) {
+            paid = paid + ether(1)
+            assert!(call.send_value(addr: to, gas: 0, value: ether(1)).success(), "transfer failed")
+        }
+
+        Approve { id } uses (ctx, mut paid) {
+            paid = paid
+        }
+    }
+}
