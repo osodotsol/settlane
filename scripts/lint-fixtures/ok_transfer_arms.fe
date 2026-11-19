@@ -1,0 +1,51 @@
+// EXPECT: pass
+// Review G-1 (D-024): both transfer arms are exactly the policy `arm_body`, so nothing runs after either transfer in the caller.
+use std::evm::StorageMap
+
+pub fn claim_handler(id: u256, m: u8, to: Address) -> Wei
+uses (ctx: Ctx, call: mut Call, log: mut Log, totals: mut Totals, agreements: mut StorageMap<u256, Agreement>, milestones: mut StorageMap<(u256, u8), Milestone>)
+{
+    let a = agreements.get(key: id)
+    let x = milestones.get(key: (id, m))
+    let amount = x.amount
+    milestones.set(key: (id, m), value: Milestone { state: MilestoneState::Paid, amount: x.amount })
+    agreements.set(key: id, value: Agreement { paid: a.paid + amount, refunded: a.refunded })
+    totals.outstanding = totals.outstanding - amount
+    log.emit(MilestoneClaimed { id, m, to, amount })
+    assert!(call.send_value(addr: to, gas: 0, value: amount).success(), "transfer failed")
+    amount
+}
+
+pub fn refund_handler(id: u256, m: u8, to: Address) -> Wei
+uses (clock: Clock, ctx: Ctx, call: mut Call, log: mut Log, totals: mut Totals, agreements: mut StorageMap<u256, Agreement>, milestones: mut StorageMap<(u256, u8), Milestone>)
+{
+    let a = agreements.get(key: id)
+    let x = milestones.get(key: (id, m))
+    let amount = x.amount
+    milestones.set(key: (id, m), value: Milestone { state: MilestoneState::Refunded, amount: x.amount })
+    agreements.set(key: id, value: Agreement { paid: a.paid, refunded: a.refunded + amount })
+    totals.outstanding = totals.outstanding - amount
+    log.emit(MilestoneRefunded { id, m, to, amount })
+    assert!(call.send_value(addr: to, gas: 0, value: amount).success(), "transfer failed")
+    amount
+}
+
+pub contract Settlane uses (ctx: Ctx, call: mut Call, log: mut Log) {
+    mut totals: Totals,
+    mut agreements: StorageMap<u256, Agreement>,
+    mut milestones: StorageMap<(u256, u8), Milestone>,
+
+    recv SettleMsg {
+        Claim { id, m, to } -> Wei uses (ctx, mut call, mut log, mut totals, mut agreements, mut milestones) {
+            handlers::claim_handler(id, m, to)
+        }
+
+        Refund { id, m, to } -> Wei uses (ctx, mut call, mut log, mut totals, mut agreements, mut milestones) {
+            var amount = Wei::zero()
+            with (Clock = Clock { now: ctx.timestamp() }) {
+                amount = handlers::refund_handler(id, m, to)
+            }
+            amount
+        }
+    }
+}

@@ -1,4 +1,5 @@
 // EXPECT: pass
+// IGNORE: C-XFER-ARM
 use std::evm::ether
 
 msg SettleMsg {

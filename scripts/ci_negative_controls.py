@@ -179,6 +179,60 @@ def move_claim_effects_after_transfer(root):
 CLAIM_STIPEND = "call.send_value(addr: to, gas: 0, value: amount)"
 
 
+def move_refund_effects_after_transfer(root):
+    """Phase 3B: the refund writes its effects AFTER the transfer. Uses the markers in refund_handler."""
+    path = root / HANDLERS
+    text = path.read_text()
+    f = text.index("pub fn refund_handler")
+    e = text.index("    // --- effects:", f)
+    i = text.index("    // --- interaction:", e)
+    end = text.index("    amount\n}", i)
+    effects, interaction = text[e:i], text[i:end]
+    path.write_text(text[:e] + interaction + effects + text[end:])
+
+
+def replace_after(rel, anchor, old, new):
+    """Mutation: replace the first `old` that follows `anchor` (so a line shared by several
+    functions is changed in the intended one only). Refuses to run if either is missing."""
+
+    def mutate(root):
+        p = root / rel
+        s = p.read_text()
+        a = s.index(anchor)
+        i = s.index(old, a)
+        p.write_text(s[:i] + new + s[i + len(old) :])
+
+    return mutate
+
+
+def drop_refund_from_transfer_policy(root):
+    """D-024: without its policy entry the refund handler's transfer is no longer approved."""
+    import json
+    p = root / "scripts/lint-policy.json"
+    pol = json.loads(p.read_text())
+    assert "refund_handler" in pol["transfers"]["handlers"]
+    del pol["transfers"]["handlers"]["refund_handler"]
+    p.write_text(json.dumps(pol, indent=2) + "\n")
+
+
+CLAIM_WRAPPER = """
+pub fn claim_and_settle(id: u256, m: u8, to: Address) -> Wei
+uses (
+    ctx: Ctx,
+    call: mut Call,
+    log: mut Log,
+    totals: mut Totals,
+    agreements: mut StorageMap<u256, Agreement>,
+    milestones: mut StorageMap<(u256, u8), Milestone>,
+)
+{
+    let paid = claim_handler(id, m, to)
+    totals.outstanding = totals.outstanding - Wei::zero()
+    paid
+}
+"""
+
+
 PATCHES = REPO / "experiments/review/r005/patches"
 
 
@@ -212,6 +266,8 @@ ONLY_FAILING = {
 # a forwarded-gas payout is seen by the reentrant providers, not by incidental assertions, and the
 # two attackers without a gas threshold must each fail on their own.
 ATTACKERS = {"a_reentrant_provider_is_paid_exactly_once", "a_provider_that_always_re_enters_is_never_paid_under_the_stipend_and_never_twice", "a_provider_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_paid"}
+# Phase 3B: the two client attackers without a gas threshold.
+REFUND_ATTACKERS = {"a_client_that_always_re_enters_is_never_refunded_under_the_stipend_and_never_twice", "a_client_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_refunded"}
 MUST_FAIL = {
     "mut-claim-forwards-gas": ATTACKERS,
     "mut-claim-effects-after-transfer-with-gas": ATTACKERS,
@@ -219,6 +275,8 @@ MUST_FAIL = {
     "r005-b2-try-call-raw-forwards-gas": ATTACKERS,
     "r005-b3b-nested-send-with-gas": ATTACKERS,
     "r005-b7-double-pay-under-60k": {"a_provider_that_always_re_enters_is_never_paid_under_the_stipend_and_never_twice", "a_provider_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_paid"},
+    "mut-refund-forwards-gas": REFUND_ATTACKERS,
+    "mut-refund-effects-after-transfer-with-gas": REFUND_ATTACKERS,
 }
 
 # After CI has run, the policy lint is also run on the mutated copy and must reject it with every
@@ -229,7 +287,6 @@ LINT_ALSO = {
     "r005-b2b-try-call-raw-stipend-write-after": ["C-XFER", "C-XFER-RAW"],
     "r005-b3-nested-send-write-after": ["C-XFER"],
     "r005-b3b-nested-send-with-gas": ["C-XFER"],
-    "r005-b4-helper-before-writes": ["C-XFER"],
     "r005-b5-result-or-true": ["C-XFER"],
     "r005-b6-test-attribute-helper": ["C-TEST", "C-XFER"],
     "r005-b7-double-pay-under-60k": ["C-XFER"],
@@ -240,6 +297,22 @@ LINT_ALSO = {
     "r005-evm-send-in-production-helper": ["C-XFER"],
     "r005-test-fn-in-production-file": ["C-TEST", "C-XFER"],
     "r005-tests-module-reference": ["C-TEST"],
+    "r005-b4-helper-before-writes": ["C-XFER", "C-XFER-RAW"],
+    "mut-refund-forwards-gas": ["C-XFER"],
+    "mut-refund-ignores-failed-transfer": ["C-XFER"],
+    "mut-refund-effects-after-transfer": ["C-XFER"],
+    "mut-refund-effects-after-transfer-with-gas": ["C-XFER"],
+    "mut-refund-skips-refunded": ["C-XFER-ORDER"],
+    "mut-refund-skips-outstanding": ["C-XFER-ORDER"],
+    "mut-refund-pays-the-wrong-amount": ["C-XFER-SOURCE"],
+    "g1-claim-arm-writes-after-the-transfer": ["C-XFER-ARM"],
+    "g1-refund-arm-writes-after-the-transfer": ["C-XFER-ARM"],
+    "g1-wrapper-writes-after-the-claim": ["C-XFER-ARM", "C-XFER-RAW"],
+    "g1-refund-arm-calls-the-claim-handler": ["C-XFER-ARM"],
+    "src-claim-amount-rebound": ["C-XFER-SOURCE"],
+    "src-claim-payee-rebound": ["C-XFER-SOURCE"],
+    "src-refund-amount-rebound": ["C-XFER-SOURCE"],
+    "mut-refund-not-in-transfer-policy": ["C-XFER"],
 }
 
 SETTLANE = "ingots/settlane/src/settlane.fe"
@@ -353,6 +426,41 @@ MUTATIONS = {
     "mut-claim-event-names-the-caller": ("T5: MilestoneClaimed names the caller instead of the payee", "Events of both ingots", replace_in(HANDLERS, "MilestoneClaimed { id, m, to, amount }", "MilestoneClaimed { id, m, to: ctx.caller(), amount }")),
     "mut-claimed-event-not-emitted": ("T5: MilestoneClaimed is never emitted", "Events of both ingots", replace_in(HANDLERS, "log.emit(MilestoneClaimed { id, m, to, amount })", "let _ = id")),
     "mut-claim-reason-has-extra-text": ("T5: the state error contains an unrelated diagnostic (exact reason match)", "Tests for both ingots", replace_in(HANDLERS, "\"milestone is not approved\"", "\"milestone is not approved: payee is zero\"")),
+    # Phase 3B (T6 Refund, D-024)
+    "mut-anyone-can-refund": ("T6: anyone may refund (the client check is gone)", "Tests for both ingots", replace_after(RULES, "pub fn check_refund", "    if caller != client {", "    if false {")),
+    "mut-refund-checks-the-provider": ("T6: Refund compares the caller with the provider (roles swapped)", "Tests for both ingots", replace_after(HANDLERS, "pub fn refund_handler", "            client: a.client,", "            client: a.provider,")),
+    "mut-refund-from-approved": ("T6: an Approved milestone is refundable (the client takes the provider's entitlement)", "Tests for both ingots", replace_after(RULES, "pub fn can_refund_from", "        MilestoneState::Approved => false,", "        MilestoneState::Approved => true,")),
+    "mut-refund-twice": ("T6: a Refunded milestone is refundable again (double refund)", "Tests for both ingots", replace_after(RULES, "pub fn can_refund_from", "        MilestoneState::Refunded => false,", "        MilestoneState::Refunded => true,")),
+    "mut-refund-after-claim": ("T6: a Paid milestone is refundable (paid twice, once to each party)", "Tests for both ingots", replace_after(RULES, "pub fn can_refund_from", "        MilestoneState::Paid => false,", "        MilestoneState::Paid => true,")),
+    "mut-refund-ignores-expiry": ("T6: the client may refund before the milestone has expired", "Tests for both ingots", replace_after(RULES, "pub fn check_refund", "    if !expired(state, now, deliver_by, decide_by) {", "    if false {")),
+    "mut-refund-funded-boundary-off-by-one": ("T6: a Funded milestone expires one second after deliver_by (strict > instead of >=)", "Tests for both ingots", replace_after(RULES, "pub fn expired", "        MilestoneState::Funded => !delivery_open(now, deliver_by),", "        MilestoneState::Funded => now > deliver_by,")),
+    "mut-refund-submitted-expires-at-deliver-by": ("T6: a Submitted milestone expires at deliver_by, cutting the review window short", "Tests for both ingots", replace_after(RULES, "pub fn expired", "        MilestoneState::Submitted => !review_open(now, decide_by),", "        MilestoneState::Submitted => !delivery_open(now, deliver_by),")),
+    "mut-refund-uses-slot-0-deadlines": ("T6: Refund judges every slot by slot 0's deadlines", "Tests for both ingots", replace_after(HANDLERS, "pub fn refund_handler", "            deliver_by: x.deliver_by,\n            decide_by: x.decide_by,", "            deliver_by: milestones.get(key: (id, 0)).deliver_by,\n            decide_by: milestones.get(key: (id, 0)).decide_by,")),
+    "mut-refund-to-zero-allowed": ("T6: the refund payee may be the zero address", "Tests for both ingots", replace_after(RULES, "pub fn check_refund", "    if to == Address::zero() {", "    if false {")),
+    "mut-refund-window-checked-before-state": ("T6: the window is checked before the state (an Approved milestone reports `not expired`)", "Tests for both ingots", replace_after(RULES, "pub fn check_refund", "    if !can_refund_from(state) {\n        return RefundCheck::NotRefundable\n    }\n    if !expired(state, now, deliver_by, decide_by) {\n        return RefundCheck::NotExpired\n    }\n", "    if !expired(state, now, deliver_by, decide_by) {\n        return RefundCheck::NotExpired\n    }\n    if !can_refund_from(state) {\n        return RefundCheck::NotRefundable\n    }\n")),
+    "mut-refund-does-not-mark-refunded": ("T6: the milestone stays Funded after a refund (double refund)", "Tests for both ingots", replace_in(HANDLERS, "state: MilestoneState::Refunded,", "state: MilestoneState::Funded,")),
+    "mut-refund-skips-refunded": ("T6: `refunded` is not increased", "Tests for both ingots", replace_in(HANDLERS, "refunded: a.refunded + amount,", "refunded: a.refunded,")),
+    "mut-refund-skips-outstanding": ("T6: total outstanding is not decreased by a refund", "Tests for both ingots", replace_after(HANDLERS, "pub fn refund_handler", "totals.outstanding = totals.outstanding - amount", "totals.outstanding = totals.outstanding")),
+    "mut-refund-pays-the-wrong-amount": ("T6: the refund pays the agreement deposit instead of the stored milestone amount", "Tests for both ingots", replace_after(HANDLERS, "pub fn refund_handler", "let amount = x.amount", "let amount = a.deposited")),
+    "mut-refund-ignores-failed-transfer": ("T6: a failed refund transfer is ignored and the milestone is marked Refunded anyway", "Tests for both ingots", replace_after(HANDLERS, "pub fn refund_handler", "    assert!(\n        " + CLAIM_STIPEND + ".success(),\n        \"transfer failed\",\n    )", "    let _ = " + CLAIM_STIPEND)),
+    "mut-refund-forwards-gas": ("T6: the refund transfer forwards 500k gas instead of the stipend", "Tests for both ingots", replace_after(HANDLERS, "pub fn refund_handler", CLAIM_STIPEND, "call.send_value(addr: to, gas: 500000, value: amount)")),
+    "mut-refund-effects-after-transfer": ("T6: refund effects written after the transfer, stipend kept (only the lint can see it)", "policy lint (fails", move_refund_effects_after_transfer),
+    "mut-refund-effects-after-transfer-with-gas": ("T6: refund effects after the transfer AND gas forwarded: a re-entering client is refunded twice", "Tests for both ingots", chain(move_refund_effects_after_transfer, replace_after(HANDLERS, "pub fn refund_handler", CLAIM_STIPEND, "call.send_value(addr: to, gas: 500000, value: amount)"))),
+    "mut-refund-becomes-payable": ("T6: Refund is payable", "Tests for both ingots", replace_in(SETTLANE, "        Refund { id, m, to } -> Wei uses (", "        #[payable]\n        Refund { id, m, to } -> Wei uses (")),
+    "mut-refund-event-wrong-amount": ("T6: MilestoneRefunded reports twice the amount", "Events of both ingots", replace_in(HANDLERS, "MilestoneRefunded { id, m, to, amount }", "MilestoneRefunded { id, m, to, amount: amount + amount }")),
+    "mut-refunded-event-not-emitted": ("T6: MilestoneRefunded is never emitted", "Events of both ingots", replace_in(HANDLERS, "log.emit(MilestoneRefunded { id, m, to, amount })", "let _ = id")),
+    "mut-refund-reason-has-extra-text": ("T6: the expiry error contains an unrelated diagnostic (exact reason match)", "Tests for both ingots", replace_in(HANDLERS, "\"milestone has not expired\"", "\"milestone has not expired: payee is zero\"")),
+    "mut-refund-selector-renamed": ("T6: the Refund selector changes (tests use the message type, so only the ABI lock can see it)", "policy lint (fails", replace_in(SETTLANE, 'sol("refund(uint256,uint8,address)")', 'sol("refundTo(uint256,uint8,address)")')),
+    "mut-refund-not-in-transfer-policy": ("D-024: refund_handler removed from the transfer policy, so its transfer is not approved (the lint self-test fails first: its Refund fixtures need the entry)", "policy lint self-test", drop_refund_from_transfer_policy),
+    # Review G-1: nothing may run after the transfer, in the arm or in a wrapper.
+    "g1-claim-arm-writes-after-the-transfer": ("G-1: the Claim arm writes storage after the handler returns (passed the whole Phase 3A gate)", "policy lint (fails", replace_in(SETTLANE, "            handlers::claim_handler(id, m, to)\n", "            let paid = handlers::claim_handler(id, m, to)\n            let x = milestones.get(key: (id, m))\n            milestones.set(key: (id, m), value: x)\n            totals.outstanding = totals.outstanding - Wei::zero()\n            paid\n")),
+    "g1-refund-arm-writes-after-the-transfer": ("G-1: the Refund arm writes storage after the handler returns", "policy lint (fails", replace_in(SETTLANE, "                amount = handlers::refund_handler(id, m, to)\n", "                amount = handlers::refund_handler(id, m, to)\n                totals.outstanding = totals.outstanding - Wei::zero()\n")),
+    "g1-wrapper-writes-after-the-claim": ("G-1: a wrapper calls claim_handler and writes after it; the arm calls the wrapper", "policy lint (fails", chain(replace_in(HANDLERS, "// Parties and review window.", CLAIM_WRAPPER.lstrip("\n") + "\n// Parties and review window."), replace_in(SETTLANE, "            handlers::claim_handler(id, m, to)\n", "            handlers::claim_and_settle(id, m, to)\n"))),
+    "g1-refund-arm-calls-the-claim-handler": ("G-1: the Refund arm calls the Claim handler", "Tests for both ingots", replace_in(SETTLANE, "                amount = handlers::refund_handler(id, m, to)\n", "                amount = handlers::claim_handler(id, m, to)\n")),
+    # Transfer provenance (review R-2): the amount is the stored amount and the payee the argument.
+    "src-claim-amount-rebound": ("provenance: claim_handler rebinds `amount` to twice the stored amount before the transfer", "Tests for both ingots", replace_in(HANDLERS, "    // --- interaction:", "    let amount = amount + amount\n    // --- interaction:")),
+    "src-claim-payee-rebound": ("provenance: claim_handler rebinds `to` to the client before the transfer", "Tests for both ingots", replace_in(HANDLERS, "    // --- interaction:", "    let to = a.client\n    // --- interaction:")),
+    "src-refund-amount-rebound": ("provenance: refund_handler rebinds `amount` to twice the stored amount before the transfer", "Tests for both ingots", replace_after(HANDLERS, "pub fn refund_handler", "    // --- interaction:", "    let amount = amount + amount\n    // --- interaction:")),
     # R-005 F-1: the nine saved reproductions of a transfer the old lint accepted. Each must fail CI
     # for its own reason AND be rejected by the policy lint (LINT_ALSO), so a shape the tests happen
     # to see is not one the lint lets through. b7 passed the whole gate before R-005.

@@ -1,4 +1,5 @@
-// EXPECT: fail C-XFER
+// EXPECT: fail C-XFER,C-XFER-RAW
+// Since D-024 the helper itself is also C-XFER-RAW: only transfer handlers may require Call.
 // PATH: tests.fe
 // Even in tests.fe, a plain helper (no #[test]) that sends through the `call` binding is rejected:
 // a contract could call it. Only `evm.send_value` inside a #[test] function is allowed there.

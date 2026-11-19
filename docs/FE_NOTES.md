@@ -177,6 +177,16 @@ Evidence in `experiments/review/` (all re-run by `bash experiments/review/run.sh
 | `fe fmt` reflows a long call, so a text mutation must target the formatted text; the controls run `fe fmt` after mutating, and the saved patches are applied with `-F3`. | `scripts/ci_negative_controls.py` |
 | A stipend send to the `Once` attacker succeeds when the callee only reads a storage slot that the same transaction already wrote (warm, about 100 gas), and fails when the fallback must write it (an SSTORE needs more than 2300 gas). | `a_provider_that_re_enters_once_..` (control and attack) |
 
+### Review of the R-005 fixes and Phase 3B facts (2026-11-19, all [ran] on fe 26.6.0)
+| Fact | Evidence |
+| --- | --- |
+| In std, `Call` is a **sealed trait** (`pub trait Call: EvmCapabilitySeal`), implemented by `Evm`. An effect written `call: mut Call` is trait-typed. | `strings ~/.fe/bin/fe` (embedded std) |
+| A generic helper `fn pay<C: Pay>(..) uses (c: mut C)` (`Pay` an alias of `Call`) compiles while unused, but cannot be called from a handler holding `call: mut Call`: `pay(..)` fails with `8-0031` (type annotation needed) and `8-0036` (missing effect `C`), `pay<Pay>(..)` with `2-0006` (a trait is not a type), `pay<Evm>(..)` with `8-0036`, and `with (C = call) { pay(..) }` with `8-0076` (keyed effect binding needs a compatible provider). So the lint's blind spot for a generic Call binding cannot reach a transfer. | review probes (scratch), not saved |
+| A recv arm may write storage **after** a shared handler that sends ETH returns (`let paid = handlers::claim_handler(..); totals.outstanding = ..; paid`): it compiles and passed the whole Phase 3A gate (review G-1). The lint now fixes each transfer arm's body (`C-XFER-ARM`). | negative control `g1-claim-arm-writes-after-the-transfer` |
+| `let amount = amount + amount` (shadowing a handler binding) and `let to = a.client` compile inside a handler; the transfer form alone cannot see where `amount` and `to` came from. Now `C-XFER-SOURCE`. | controls `src-*` |
+| A function with **unlabeled** parameters (`_ state: MilestoneState`) is called positionally; with labeled parameters every argument needs its label unless the variable has the same name (`8-0024`). A function name cannot be bound as a value (`let t = Timestamp::from_seconds` does not work; use a helper `fn`). | `rules::expired`, Phase 3B tests |
+| A contract that receives ETH under the stipend can still create agreements as the client through its own payable `CreateAs` arm, so an attacker can be the client of the agreement it refunds. | `Greedy`, `Once` client mode |
+
 ### b6: Fe 26.6.0 backend panic on a `#[test]` helper that a contract calls (R-005, recorded separately)
 **Not a Settlane bug, and not caused by the lint.** A function carrying `#[test]` in the production ingot's `handlers.fe`, called from the handler `claim_handler` (`uses (call: mut Call)`, body `let _ = call.send_value(..)`), is accepted by `fe check` and by `fe build` (the build emits `Settlane.runtime.bin`), but `fe test ingots/settlane` panics while emitting the test module:
 ```
@@ -192,7 +202,7 @@ fe 26.6.0 (5b3f96a). Reproduction: `experiments/review/r005/patches/b6_test_attr
 
 ## Still unverified (Phase 2–4 checks)
 - Is the production contract deployed by the dev-ingot tests byte-identical to the shipped `Prod` artifact? It is the same source and compiler, but `fe` offers no way to compare. Mitigation: all tests that do not need time travel live in the production ingot.
-- A reentrant recipient under the 2300 stipend: **tested for Claim** (Phase 3A, strengthened by R-005). Measured: an attacker that always re-enters cannot finish its fallback under the stipend (the send fails and the claim reverts with `transfer failed`), and the same attacker given 500k gas re-enters and claims. EIP-2200's SSTORE rule is not probed separately. Refund needs the same tests in Phase 3B.
+- A reentrant recipient under the 2300 stipend: **tested for Claim** (Phase 3A, strengthened by R-005) **and for Refund** (Phase 3B, the same attackers as clients). Measured: an attacker that always re-enters cannot finish its fallback under the stipend (the send fails and the claim reverts with `transfer failed`), and the same attacker given 500k gas re-enters and claims. EIP-2200's SSTORE rule is not probed separately. Refund needs the same tests in Phase 3B.
 - `#[event]` with `Wei` and `u8` fields, and the event ABI.
 - Gas and code size of the full contract (`fe build --emit sizes`).
 

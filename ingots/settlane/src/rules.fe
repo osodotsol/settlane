@@ -279,6 +279,100 @@ pub fn check_claim(
     ClaimCheck::Valid
 }
 
+// `expired` (docs/LIFECYCLE.md "Derived time predicates"): a Funded milestone once its delivery
+// window has closed, a Submitted one once its review window has closed. No other state ever
+// expires: `Approved` never does, and `Paid` and `Refunded` are terminal. Each test is the exact
+// negation of the window that the transition guards use, so Submit and Approve/Reject are
+// disjoint from Refund at every `now` (I10).
+pub fn expired(
+    _ state: MilestoneState,
+    _ now: Timestamp,
+    _ deliver_by: Timestamp,
+    _ decide_by: Timestamp,
+) -> bool {
+    match state {
+        MilestoneState::None => false,
+        MilestoneState::Funded => !delivery_open(now, deliver_by),
+        MilestoneState::Submitted => !review_open(now, decide_by),
+        MilestoneState::Approved => false,
+        MilestoneState::Paid => false,
+        MilestoneState::Refunded => false,
+    }
+}
+
+// A milestone the client may refund once it has expired (T6): only `Funded` or `Submitted`.
+pub fn can_refund_from(_ s: MilestoneState) -> bool {
+    match s {
+        MilestoneState::None => false,
+        MilestoneState::Funded => true,
+        MilestoneState::Submitted => true,
+        MilestoneState::Approved => false,
+        MilestoneState::Paid => false,
+        MilestoneState::Refunded => false,
+    }
+}
+
+// First failed rule of `Refund` (T6), in the order of the other transitions (agreement, role,
+// milestone, state, window, then the argument): the agreement exists, the caller is the client,
+// the milestone exists, it is `Funded` or `Submitted`, it has expired, and the payee is not the
+// zero address. `Refunded` and `Paid` are not refundable states, so a second refund and a refund
+// after a claim fail here (I3, I4); `Refunded` is not `Approved`, so a claim after a refund fails
+// in `check_claim`.
+pub enum RefundCheck {
+    Valid,
+    UnknownAgreement,
+    NotClient,
+    NoSuchMilestone,
+    NotRefundable,
+    NotExpired,
+    ZeroPayee,
+}
+
+impl Copy for RefundCheck {}
+
+pub fn refund_code(_ c: RefundCheck) -> u8 {
+    match c {
+        RefundCheck::Valid => 0,
+        RefundCheck::UnknownAgreement => 1,
+        RefundCheck::NotClient => 2,
+        RefundCheck::NoSuchMilestone => 3,
+        RefundCheck::NotRefundable => 4,
+        RefundCheck::NotExpired => 5,
+        RefundCheck::ZeroPayee => 6,
+    }
+}
+
+pub fn check_refund(
+    agreement_exists: bool,
+    caller: Address,
+    client: Address,
+    state: MilestoneState,
+    deliver_by: Timestamp,
+    decide_by: Timestamp,
+    now: Timestamp,
+    to: Address,
+) -> RefundCheck {
+    if !agreement_exists {
+        return RefundCheck::UnknownAgreement
+    }
+    if caller != client {
+        return RefundCheck::NotClient
+    }
+    if state_code(state) == 0 {
+        return RefundCheck::NoSuchMilestone
+    }
+    if !can_refund_from(state) {
+        return RefundCheck::NotRefundable
+    }
+    if !expired(state, now, deliver_by, decide_by) {
+        return RefundCheck::NotExpired
+    }
+    if to == Address::zero() {
+        return RefundCheck::ZeroPayee
+    }
+    RefundCheck::Valid
+}
+
 pub const U256_MAX: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 
 // All creation rules (docs/LIFECYCLE.md "Creation validation"), stage by stage in the table's

@@ -6,7 +6,7 @@ use std::evm::returndata::decode_error_string
 // would also pass on a revert in the setup (lint T-REVERT, review M2). Tests that need a
 // different caller or a movable clock are in the dev ingot (ingots/settlane-dev).
 use ingot::rules
-use ingot::rules::{ClaimCheck, CreateCheck, ReviewCheck, SubmitCheck}
+use ingot::rules::{ClaimCheck, CreateCheck, RefundCheck, ReviewCheck, SubmitCheck}
 use ingot::settlane::{SettleMsg, Settlane}
 use ingot::types::MilestoneState
 use std::evm::{ether, predict_create2, seconds, wei}
@@ -243,6 +243,9 @@ enum Why {
     NotApproved,
     ZeroPayee,
     TransferFailed,
+    NotClient,
+    NotRefundable,
+    NotExpired,
 }
 
 impl Copy for Why {}
@@ -261,6 +264,9 @@ fn because(_ out: CallOutcome, _ why: Why) -> bool {
         Why::NotApproved => reason == "milestone is not approved",
         Why::ZeroPayee => reason == "payee is zero",
         Why::TransferFailed => reason == "transfer failed",
+        Why::NotClient => reason == "caller is not the client",
+        Why::NotRefundable => reason == "milestone cannot be refunded in this state",
+        Why::NotExpired => reason == "milestone has not expired",
         Why::UnknownAgreement => reason == "unknown agreement",
         Why::NotProvider => reason == "caller is not the provider",
         Why::NotVerifier => reason == "caller is not the verifier",
@@ -938,6 +944,75 @@ uses (evm: mut Evm)
     )
     assert!(milestone(s, 1, 0).0 == 1, "nothing changed")
     assert_untouched(s, 1, ether(1), Wei::zero())
+    check_invariants(s, 1, Wei::zero())
+}
+
+// ------------------------------- Phase 3B: refunds on the production clock (a frozen block)
+
+fn refund_as_client(_ s: Address, _ id: u256, _ m: u8, _ to: Address) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: s,
+        gas: 500000,
+        value: Wei::zero(),
+        message: SettleMsg::Refund { id, m, to },
+    )
+}
+
+// The test block never advances, and creation needs every deadline in the future, so on the
+// production contract a refund can never be expired. Every attempt reports the right reason,
+// in order, and nothing moves. The expired path runs on the dev shell with the same handler.
+#[test(balance = 100_000_000_000_000_000_000)]
+fn production_refunds_are_never_expired_in_a_frozen_block_and_report_each_reason_in_order()
+uses (evm: mut Evm)
+{
+    let s = deploy()
+    let payee = Address::new(0x9a1)
+    assert!(
+        because(refund_as_client(s, 0, 0, payee), Why::UnknownAgreement),
+        "id 0",
+    )
+    assert!(
+        because(refund_as_client(s, 1, 0, payee), Why::UnknownAgreement),
+        "before any agreement",
+    )
+    let now = evm.timestamp()
+    assert!(
+        create(s, valid(now), ether(6)) == 1,
+        "positive control: agreement 1 exists",
+    )
+    let before = milestone(s, 1, 0)
+    var m: u8 = 0
+    while m < 3 {
+        // The client, a live Funded milestone, before its deadline: not expired, in every slot.
+        assert!(
+            because(refund_as_client(s, 1, m, payee), Why::NotExpired),
+            "Funded before deliver_by",
+        )
+        m += 1
+    }
+    assert!(
+        because(
+            refund_as_client(s, 1, 0, Address::zero()),
+            Why::NotExpired,
+        ),
+        "the window is checked before the payee",
+    )
+    assert!(
+        because(refund_as_client(s, 2, 0, payee), Why::UnknownAgreement),
+        "id 2",
+    )
+    assert!(
+        because(refund_as_client(s, MAX, 0, payee), Why::UnknownAgreement),
+        "id 2^256 - 1",
+    )
+    assert!(
+        same_milestone(milestone(s, 1, 0), before),
+        "nothing changed",
+    )
+    assert!(evm.balance(payee) == Wei::zero(), "nothing was refunded")
+    assert_untouched(s, 1, ether(6), Wei::zero())
     check_invariants(s, 1, Wei::zero())
 }
 
@@ -1920,6 +1995,254 @@ fn rules_claim_checks_run_in_the_documented_order() {
         claim_code_of(true, p, MilestoneState::Approved, zero) == 5,
         "payee last",
     )
+}
+
+// ------------------------------------------------------------------ Phase 3B: Refund (T6)
+
+fn refund_code_of(
+    _ exists: bool,
+    _ caller: Address,
+    _ state: MilestoneState,
+    _ now: u256,
+    _ to: Address,
+) -> u8 {
+    // deliver_by 1000, decide_by 1600 (a review period of 600 s).
+    rules::refund_code(
+        rules::check_refund(
+            agreement_exists: exists,
+            caller,
+            client: Address::new(0xc0),
+            state,
+            deliver_by: Timestamp::from_seconds(1000),
+            decide_by: Timestamp::from_seconds(1600),
+            now: Timestamp::from_seconds(now),
+            to,
+        ),
+    )
+}
+
+#[test]
+fn rules_refund_reports_each_failure_and_accepts_an_expired_refund() {
+    let c = Address::new(0xc0)
+    let payee = Address::new(0x9a1)
+    assert!(
+        refund_code_of(true, c, MilestoneState::Funded, 1000, payee) == 0,
+        "valid: Funded at deliver_by",
+    )
+    assert!(
+        refund_code_of(true, c, MilestoneState::Submitted, 1600, payee) == 0,
+        "valid: Submitted at decide_by",
+    )
+    assert!(
+        refund_code_of(true, c, MilestoneState::Funded, 1000, c) == 0,
+        "the client may refund to itself",
+    )
+    assert!(
+        refund_code_of(false, c, MilestoneState::Funded, 1000, payee) == 1,
+        "UnknownAgreement",
+    )
+    assert!(
+        refund_code_of(
+                true,
+                Address::new(0xa1),
+                MilestoneState::Funded,
+                1000,
+                payee,
+            ) == 2,
+        "the provider is not the client",
+    )
+    assert!(
+        refund_code_of(
+                true,
+                Address::new(0xa2),
+                MilestoneState::Funded,
+                1000,
+                payee,
+            ) == 2,
+        "the verifier is not the client",
+    )
+    assert!(
+        refund_code_of(true, c, MilestoneState::None, 1000, payee) == 3,
+        "NoSuchMilestone",
+    )
+    assert!(
+        refund_code_of(true, c, MilestoneState::Approved, 5000, payee) == 4,
+        "NotRefundable: Approved, even after both deadlines",
+    )
+    assert!(
+        refund_code_of(true, c, MilestoneState::Paid, 5000, payee) == 4,
+        "NotRefundable: Paid (refund after claim)",
+    )
+    assert!(
+        refund_code_of(true, c, MilestoneState::Refunded, 5000, payee) == 4,
+        "NotRefundable: Refunded (a second refund)",
+    )
+    assert!(
+        refund_code_of(true, c, MilestoneState::Funded, 999, payee) == 5,
+        "NotExpired: Funded at deliver_by - 1",
+    )
+    assert!(
+        refund_code_of(true, c, MilestoneState::Submitted, 1599, payee) == 5,
+        "NotExpired: Submitted at decide_by - 1",
+    )
+    assert!(
+        refund_code_of(true, c, MilestoneState::Funded, 1000, Address::zero()) == 6,
+        "ZeroPayee",
+    )
+}
+
+#[test]
+fn rules_refund_checks_run_in_the_documented_order() {
+    let c = Address::new(0xc0)
+    let other = Address::new(0xd1)
+    let zero = Address::zero()
+    assert!(
+        refund_code_of(false, other, MilestoneState::None, 0, zero) == 1,
+        "agreement before role",
+    )
+    assert!(
+        refund_code_of(true, other, MilestoneState::None, 0, zero) == 2,
+        "role before milestone",
+    )
+    assert!(
+        refund_code_of(true, c, MilestoneState::None, 0, zero) == 3,
+        "milestone before state",
+    )
+    assert!(
+        refund_code_of(true, c, MilestoneState::Approved, 0, zero) == 4,
+        "state before window",
+    )
+    assert!(
+        refund_code_of(true, c, MilestoneState::Funded, 0, zero) == 5,
+        "window before payee",
+    )
+    assert!(
+        refund_code_of(true, c, MilestoneState::Funded, 1000, zero) == 6,
+        "payee last",
+    )
+}
+
+#[test]
+fn rules_expired_is_the_exact_negation_of_the_open_windows_at_d_minus_1_d_d_plus_1() {
+    let d = Timestamp::from_seconds(1000)
+    let e = Timestamp::from_seconds(1600)
+    // Funded: expires at deliver_by, and is the negation of delivery_open at every boundary.
+    assert!(
+        !rules::expired(
+            MilestoneState::Funded,
+            Timestamp::from_seconds(999),
+            d,
+            e,
+        ),
+        "Funded d - 1",
+    )
+    assert!(
+        rules::expired(
+            MilestoneState::Funded,
+            Timestamp::from_seconds(1000),
+            d,
+            e,
+        ),
+        "Funded d",
+    )
+    assert!(
+        rules::expired(
+            MilestoneState::Funded,
+            Timestamp::from_seconds(1001),
+            d,
+            e,
+        ),
+        "Funded d + 1",
+    )
+    // Submitted: expires at decide_by, NOT at deliver_by (a submission keeps the review window).
+    assert!(
+        !rules::expired(
+            MilestoneState::Submitted,
+            Timestamp::from_seconds(1000),
+            d,
+            e,
+        ),
+        "Submitted at deliver_by",
+    )
+    assert!(
+        !rules::expired(
+            MilestoneState::Submitted,
+            Timestamp::from_seconds(1599),
+            d,
+            e,
+        ),
+        "Submitted e - 1",
+    )
+    assert!(
+        rules::expired(
+            MilestoneState::Submitted,
+            Timestamp::from_seconds(1600),
+            d,
+            e,
+        ),
+        "Submitted e",
+    )
+    assert!(
+        rules::expired(
+            MilestoneState::Submitted,
+            Timestamp::from_seconds(1601),
+            d,
+            e,
+        ),
+        "Submitted e + 1",
+    )
+    var now: u256 = 997
+    while now < 1604 {
+        // I10: Submit and Refund of a Funded milestone are disjoint; so are review and refund
+        // of a Submitted one. Exactly one side holds at every second around both boundaries.
+        assert!(
+            rules::expired(MilestoneState::Funded, Timestamp::from_seconds(now), d, e)
+                != rules::delivery_open(now: Timestamp::from_seconds(now), deliver_by: d),
+            "Funded: exactly one of submit and refund",
+        )
+        assert!(
+            rules::expired(
+                    MilestoneState::Submitted,
+                    Timestamp::from_seconds(now),
+                    d,
+                    e,
+                )
+                != rules::review_open(now: Timestamp::from_seconds(now), decide_by: e),
+            "Submitted: exactly one of review and refund",
+        )
+        if now == 1003 { now = 1596 }
+        now += 1
+    }
+    // No other state ever expires, at any time.
+    assert!(
+        !rules::expired(MilestoneState::None, Timestamp::from_seconds(MAX), d, e),
+    )
+    assert!(
+        !rules::expired(
+            MilestoneState::Approved,
+            Timestamp::from_seconds(MAX),
+            d,
+            e,
+        ),
+    )
+    assert!(
+        !rules::expired(MilestoneState::Paid, Timestamp::from_seconds(MAX), d, e),
+    )
+    assert!(
+        !rules::expired(
+            MilestoneState::Refunded,
+            Timestamp::from_seconds(MAX),
+            d,
+            e,
+        ),
+    )
+    assert!(!rules::can_refund_from(MilestoneState::None))
+    assert!(rules::can_refund_from(MilestoneState::Funded))
+    assert!(rules::can_refund_from(MilestoneState::Submitted))
+    assert!(!rules::can_refund_from(MilestoneState::Approved))
+    assert!(!rules::can_refund_from(MilestoneState::Paid))
+    assert!(!rules::can_refund_from(MilestoneState::Refunded))
+    assert!(rules::refund_code(RefundCheck::Valid) == 0)
 }
 
 #[test]

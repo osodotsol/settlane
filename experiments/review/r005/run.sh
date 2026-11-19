@@ -50,9 +50,9 @@ expect_lint b2_try_call_raw_forwards_gas "C-XFER C-XFER-RAW"
 expect_lint b2b_try_call_raw_stipend_write_after "C-XFER C-XFER-RAW"
 expect_lint b3_cei_nested_block "C-XFER"
 expect_lint b3b_cei_nested_block_with_gas "C-XFER"
-expect_lint b4_cei_helper_before_writes "C-XFER"
+expect_lint b4_cei_helper_before_writes "C-XFER C-XFER-RAW"  # D-024: a helper that requires Call is also C-XFER-RAW
 expect_lint b5_send_result_ignored_or_true "C-XFER"
-expect_lint b6_test_attribute_on_helper "C-TEST C-XFER"
+expect_lint b6_test_attribute_on_helper "C-TEST C-XFER C-XFER-RAW"  # D-024: as b4
 expect_lint b7_double_pay_under_60k "C-XFER"
 ws="$(copy control)"; got="$(lint_rules "$ws")"
 if [ -z "$got" ]; then echo "ACCEPTED    the unmodified code passes the lint (control)"; else echo "UNEXPECTED  control: the lint rejects the real code: $got"; fail=1; fi

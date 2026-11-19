@@ -70,6 +70,22 @@ pub contract SettlaneTestClock uses (ctx: Ctx, call: mut Call, log: mut Log) {
             handlers::claim_handler(id, m, to)
         }
 
+        Refund { id, m, to } -> Wei uses (
+            ctx,
+            mut call,
+            mut log,
+            mut totals,
+            mut agreements,
+            mut milestones,
+            now,
+        ) {
+            var amount = Wei::zero()
+            with (Clock = Clock { now }) {
+                amount = handlers::refund_handler(id, m, to)
+            }
+            amount
+        }
+
         GetAgreement { id } -> (Address, Address, Address, Duration, u8)
         uses (agreements)
         {
@@ -125,6 +141,8 @@ pub msg ActorMsg {
     RejectVia { target: Address, id: u256, m: u8, evidence: u256, revision: u256 },
     #[selector = sol("claimVia(address,uint256,uint8,address)")]
     ClaimVia { target: Address, id: u256, m: u8, to: Address } -> Wei,
+    #[selector = sol("refundVia(address,uint256,uint8,address)")]
+    RefundVia { target: Address, id: u256, m: u8, to: Address } -> Wei,
 }
 
 // Emitted by the Actor with its own address before it forwards a call. scripts/check_events.py
@@ -211,6 +229,16 @@ pub contract Actor uses (ctx: Ctx, call: mut Call, log: mut Log) {
                 message: SettleMsg::Claim { id, m, to },
             )
         }
+
+        #[payable]
+        RefundVia { target, id, m, to } -> Wei uses (ctx, mut call) {
+            call.call(
+                addr: target,
+                gas: 1000000,
+                value: ctx.value(),
+                message: SettleMsg::Refund { id, m, to },
+            )
+        }
     }
 }
 
@@ -230,6 +258,25 @@ pub msg AttackMsg {
     ClaimTo { to: Address } -> Wei,
     #[selector = sol("stats()")]
     Stats -> (u256, u256),
+    // Phase 3B: the attacker as the CLIENT. It creates and funds an agreement as itself, and its
+    // fallback re-enters `Refund` instead of `Claim` once aimed with `AimRefund`.
+    #[selector = sol(
+        "createAs(address,address,address,uint256,uint8,uint256[3],uint256[3],uint256[3])",
+    )]
+    CreateAs {
+        target: Address,
+        provider: Address,
+        verifier: Address,
+        review_period: Duration,
+        n: u8,
+        amounts: [Wei; 3],
+        deliver_by: [Timestamp; 3],
+        specs: [u256; 3],
+    } -> u256,
+    #[selector = sol("aimRefund(address,uint256,uint8)")]
+    AimRefund { target: Address, id: u256, m: u8 },
+    #[selector = sol("refundTo(address)")]
+    RefundTo { to: Address } -> Wei,
 }
 
 pub contract Reentrant uses (ctx: Ctx, call: mut Call) {
@@ -313,18 +360,69 @@ pub contract GasCap uses (ctx: Ctx) {
 // as the proof that this attacker is live.
 pub const LOOT: u256 = 0x9c1
 
-pub contract Greedy uses (ctx: Ctx, call: mut Call) {
+pub contract Greedy uses (ctx: Ctx, call: mut Call, log: mut Log) {
     mut target: Address,
     mut id: u256,
     mut m: u8,
+    // false: the fallback re-enters Claim (the attacker is the provider); true: Refund (client).
+    mut refund: bool,
 
     recv {
         AttackMsg::Setup { target: t, id: i, m: k }
-        uses (mut target, mut id, mut m)
+        uses (mut target, mut id, mut m, mut refund)
         {
             target = t
             id = i
             m = k
+            refund = false
+        }
+
+        AttackMsg::AimRefund { target: t, id: i, m: k }
+        uses (mut target, mut id, mut m, mut refund)
+        {
+            target = t
+            id = i
+            m = k
+            refund = true
+        }
+
+        #[payable]
+        AttackMsg::CreateAs {
+            target: t,
+            provider,
+            verifier,
+            review_period,
+            n,
+            amounts,
+            deliver_by,
+            specs,
+        } -> u256
+        uses (ctx, mut call, mut log)
+        {
+            log.emit(Acted { actor: ctx.address() })
+            call.call(
+                addr: t,
+                gas: 1000000,
+                value: ctx.value(),
+                message: SettleMsg::Create {
+                    provider,
+                    verifier,
+                    review_period,
+                    n,
+                    amounts,
+                    deliver_by,
+                    specs,
+                },
+            )
+        }
+
+        AttackMsg::RefundTo { to } -> Wei uses (mut call, target, id, m) {
+            call.call(
+                addr: target,
+                gas: 2000000,
+                value: Wei::zero(),
+                message: SettleMsg::Refund { id, m, to },
+            )
         }
 
         AttackMsg::SubmitAs { evidence } uses (mut call, target, id, m) {
@@ -346,14 +444,24 @@ pub contract Greedy uses (ctx: Ctx, call: mut Call) {
         }
 
         #[payable]
-        _ uses (ctx, mut call, target, id, m) {
-            let _ = call
-                .try_call(
-                    addr: target,
-                    gas: ctx.gas(),
-                    value: Wei::zero(),
-                    message: SettleMsg::Claim { id, m, to: Address::new(LOOT) },
-                )
+        _ uses (ctx, mut call, target, id, m, refund) {
+            if refund {
+                let _ = call
+                    .try_call(
+                        addr: target,
+                        gas: ctx.gas(),
+                        value: Wei::zero(),
+                        message: SettleMsg::Refund { id, m, to: Address::new(LOOT) },
+                    )
+            } else {
+                let _ = call
+                    .try_call(
+                        addr: target,
+                        gas: ctx.gas(),
+                        value: Wei::zero(),
+                        message: SettleMsg::Claim { id, m, to: Address::new(LOOT) },
+                    )
+            }
         }
     }
 }
@@ -361,20 +469,71 @@ pub contract Greedy uses (ctx: Ctx, call: mut Call) {
 // Re-enters exactly once, with whatever gas it is given (the shape of the R-005 b7 attack: it
 // needs a nonzero-to-nonzero storage write, which the stipend cannot pay for). `entered` is 1
 // after Setup and 2 once the fallback has run far enough to record its re-entry.
-pub contract Once uses (ctx: Ctx, call: mut Call) {
+pub contract Once uses (ctx: Ctx, call: mut Call, log: mut Log) {
     mut target: Address,
     mut id: u256,
     mut m: u8,
     mut entered: u256,
+    mut refund: bool,
 
     recv {
         AttackMsg::Setup { target: t, id: i, m: k }
-        uses (mut target, mut id, mut m, mut entered)
+        uses (mut target, mut id, mut m, mut entered, mut refund)
         {
             target = t
             id = i
             m = k
             entered = 1
+            refund = false
+        }
+
+        AttackMsg::AimRefund { target: t, id: i, m: k }
+        uses (mut target, mut id, mut m, mut entered, mut refund)
+        {
+            target = t
+            id = i
+            m = k
+            entered = 1
+            refund = true
+        }
+
+        #[payable]
+        AttackMsg::CreateAs {
+            target: t,
+            provider,
+            verifier,
+            review_period,
+            n,
+            amounts,
+            deliver_by,
+            specs,
+        } -> u256
+        uses (ctx, mut call, mut log)
+        {
+            log.emit(Acted { actor: ctx.address() })
+            call.call(
+                addr: t,
+                gas: 1000000,
+                value: ctx.value(),
+                message: SettleMsg::Create {
+                    provider,
+                    verifier,
+                    review_period,
+                    n,
+                    amounts,
+                    deliver_by,
+                    specs,
+                },
+            )
+        }
+
+        AttackMsg::RefundTo { to } -> Wei uses (mut call, target, id, m) {
+            call.call(
+                addr: target,
+                gas: 2000000,
+                value: Wei::zero(),
+                message: SettleMsg::Refund { id, m, to },
+            )
         }
 
         AttackMsg::SubmitAs { evidence } uses (mut call, target, id, m) {
@@ -400,16 +559,26 @@ pub contract Once uses (ctx: Ctx, call: mut Call) {
         }
 
         #[payable]
-        _ uses (ctx, mut call, target, id, m, mut entered) {
+        _ uses (ctx, mut call, target, id, m, mut entered, refund) {
             if entered != 1 { return }
             entered = 2
-            let _ = call
-                .try_call(
-                    addr: target,
-                    gas: ctx.gas(),
-                    value: Wei::zero(),
-                    message: SettleMsg::Claim { id, m, to: ctx.address() },
-                )
+            if refund {
+                let _ = call
+                    .try_call(
+                        addr: target,
+                        gas: ctx.gas(),
+                        value: Wei::zero(),
+                        message: SettleMsg::Refund { id, m, to: ctx.address() },
+                    )
+            } else {
+                let _ = call
+                    .try_call(
+                        addr: target,
+                        gas: ctx.gas(),
+                        value: Wei::zero(),
+                        message: SettleMsg::Claim { id, m, to: ctx.address() },
+                    )
+            }
         }
     }
 }

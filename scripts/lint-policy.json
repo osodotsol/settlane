@@ -30,14 +30,16 @@
           "getMilestone(uint256,uint8)->(uint8,uint256,uint256,uint256,uint256,uint256,uint256,uint256)": "view",
           "getAccounting(uint256)->(uint256,uint256,uint256,uint256)": "view",
           "totalOutstanding()->(uint256)": "view",
-          "claim(uint256,uint8,address)->(uint256)": "nonpayable"
+          "claim(uint256,uint8,address)->(uint256)": "nonpayable",
+          "refund(uint256,uint8,address)->(uint256)": "nonpayable"
         },
         "events": [
           "AgreementCreated(uint256 indexed,address indexed,address indexed,address,uint256,uint8)",
           "MilestoneSubmitted(uint256 indexed,uint8 indexed,uint256 indexed,uint256)",
           "MilestoneApproved(uint256 indexed,uint8 indexed,uint256 indexed,uint256)",
           "MilestoneRejected(uint256 indexed,uint8 indexed,uint256 indexed,uint256,uint256)",
-          "MilestoneClaimed(uint256 indexed,uint8 indexed,address indexed,uint256)"
+          "MilestoneClaimed(uint256 indexed,uint8 indexed,address indexed,uint256)",
+          "MilestoneRefunded(uint256 indexed,uint8 indexed,address indexed,uint256)"
         ]
       },
       "effects": [
@@ -65,14 +67,42 @@
     "Log"
   ],
   "transfers": {
-    "_note": "R-005 F-1: the only way ETH may leave a production contract. Each handler listed here must end with the one approved transfer (see C-XFER in scripts/settlane_lint.py) and must match every `required_before_send` pattern before it. Adding a payout (Refund) means adding its handler here in the same change.",
+    "_note": "R-005 F-1, review G-1, D-024: the only ways ETH may leave a production contract. Each handler listed here must end with the one approved transfer (C-XFER), match every `required_before_send` pattern before it (C-XFER-ORDER), take exactly `params` and bind each name in `bindings` exactly once, by exactly that statement, and never rebind or assign a parameter or binding (C-XFER-SOURCE: the amount comes from storage and the payee is the caller's argument). Its `arm` must exist in the deployable production contract with exactly `arm_body` as its body, and nothing else in production may name the handler (C-XFER-ARM), so nothing runs after the transfer in the caller either. Only these handlers may require the Call effect (C-XFER-RAW).",
     "handlers": {
       "claim_handler": {
+        "arm": "SettleMsg::Claim",
+        "arm_body": "handlers::claim_handler(id, m, to)",
+        "params": "id: u256, m: u8, to: Address",
+        "bindings": {
+          "a": "let a = agreements.get(key: id)",
+          "x": "let x = milestones.get(key: (id, m))",
+          "amount": "let amount = x.amount"
+        },
         "required_before_send": [
           "milestones\\s*\\.\\s*set\\s*\\(",
           "agreements\\s*\\.\\s*set\\s*\\(",
           "totals\\s*\\.\\s*outstanding\\s*=\\s*totals\\s*\\.\\s*outstanding\\s*-\\s*amount\\b",
-          "log\\s*\\.\\s*emit\\s*\\(\\s*MilestoneClaimed\\b"
+          "log\\s*\\.\\s*emit\\s*\\(\\s*MilestoneClaimed\\b",
+          "state\\s*:\\s*MilestoneState\\s*::\\s*Paid\\b",
+          "paid\\s*:\\s*a\\s*\\.\\s*paid\\s*\\+\\s*amount\\b"
+        ]
+      },
+      "refund_handler": {
+        "arm": "SettleMsg::Refund",
+        "arm_body": "var amount = Wei::zero() with (Clock = Clock { now: ctx.timestamp() }) { amount = handlers::refund_handler(id, m, to) } amount",
+        "params": "id: u256, m: u8, to: Address",
+        "bindings": {
+          "a": "let a = agreements.get(key: id)",
+          "x": "let x = milestones.get(key: (id, m))",
+          "amount": "let amount = x.amount"
+        },
+        "required_before_send": [
+          "milestones\\s*\\.\\s*set\\s*\\(",
+          "agreements\\s*\\.\\s*set\\s*\\(",
+          "state\\s*:\\s*MilestoneState\\s*::\\s*Refunded\\b",
+          "refunded\\s*:\\s*a\\s*\\.\\s*refunded\\s*\\+\\s*amount\\b",
+          "totals\\s*\\.\\s*outstanding\\s*=\\s*totals\\s*\\.\\s*outstanding\\s*-\\s*amount\\b",
+          "log\\s*\\.\\s*emit\\s*\\(\\s*MilestoneRefunded\\b"
         ]
       }
     }

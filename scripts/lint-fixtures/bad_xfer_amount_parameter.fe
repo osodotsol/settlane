@@ -1,0 +1,16 @@
+// EXPECT: fail C-XFER-SOURCE
+// Provenance: the amount arrives as a parameter (from calldata) instead of storage.
+use std::evm::StorageMap
+
+pub fn claim_handler(id: u256, m: u8, to: Address, amount: Wei) -> Wei
+uses (ctx: Ctx, call: mut Call, log: mut Log, totals: mut Totals, agreements: mut StorageMap<u256, Agreement>, milestones: mut StorageMap<(u256, u8), Milestone>)
+{
+    let a = agreements.get(key: id)
+    let x = milestones.get(key: (id, m))
+    milestones.set(key: (id, m), value: Milestone { state: MilestoneState::Paid, amount: x.amount })
+    agreements.set(key: id, value: Agreement { paid: a.paid + amount, refunded: a.refunded })
+    totals.outstanding = totals.outstanding - amount
+    log.emit(MilestoneClaimed { id, m, to, amount })
+    assert!(call.send_value(addr: to, gas: 0, value: amount).success(), "transfer failed")
+    amount
+}

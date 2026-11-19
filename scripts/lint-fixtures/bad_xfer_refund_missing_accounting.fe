@@ -1,0 +1,17 @@
+// EXPECT: fail C-XFER-ORDER
+// Refund: the agreement is written back, but `refunded += amount` is missing.
+use std::evm::StorageMap
+
+pub fn refund_handler(id: u256, m: u8, to: Address) -> Wei
+uses (clock: Clock, ctx: Ctx, call: mut Call, log: mut Log, totals: mut Totals, agreements: mut StorageMap<u256, Agreement>, milestones: mut StorageMap<(u256, u8), Milestone>)
+{
+    let a = agreements.get(key: id)
+    let x = milestones.get(key: (id, m))
+    let amount = x.amount
+    milestones.set(key: (id, m), value: Milestone { state: MilestoneState::Refunded, amount: x.amount })
+    agreements.set(key: id, value: a)
+    totals.outstanding = totals.outstanding - amount
+    log.emit(MilestoneRefunded { id, m, to, amount })
+    assert!(call.send_value(addr: to, gas: 0, value: amount).success(), "transfer failed")
+    amount
+}

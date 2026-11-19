@@ -8,9 +8,10 @@
 //             tests exercise the shipped code.
 //   settlane  the message type and the production contract.
 //
-// Phase 3A implements creation, funding, evidence, review, `Claim` and the queries. Refund is
-// not implemented yet. `Settlane` DECLARES the `Call` effect, so it can send ETH, but only the
-// `Claim` arm lists it (the compiler rejects any arm that omits it, `8-0012`/`8-0036`; one that
-// lists it read-only still compiles, FE_NOTES E7, so the lint rules E-CALL and E-BODY are the
-// guard). Even `Claim` has exactly one way to send: the approved transfer in `claim_handler`
-// (lint C-XFER, R-005 F-1).
+// Phase 3B implements creation, funding, evidence, review, `Claim`, `Refund` and the queries.
+// `Settlane` DECLARES the `Call` effect, so it can send ETH, but only the `Claim` and `Refund`
+// arms list it (the compiler rejects any arm that omits it, `8-0012`/`8-0036`; one that lists it
+// read-only still compiles, FE_NOTES E7, so the lint rules E-CALL and E-BODY are the guard). Each
+// of the two has exactly one way to send: the approved transfer at the end of its handler, with
+// the stored amount to the caller's `to`, and each arm is exactly the call of its handler (lint
+// C-XFER family, R-005 F-1, review G-1, D-024).

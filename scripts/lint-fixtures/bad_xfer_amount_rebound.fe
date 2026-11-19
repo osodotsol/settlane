@@ -1,0 +1,18 @@
+// EXPECT: fail C-XFER-SOURCE
+// Provenance: `amount` is rebound after the writes, so the transfer sends twice what the accounting moved (the review's probe A; the tests caught it, the lint did not).
+use std::evm::StorageMap
+
+pub fn claim_handler(id: u256, m: u8, to: Address) -> Wei
+uses (ctx: Ctx, call: mut Call, log: mut Log, totals: mut Totals, agreements: mut StorageMap<u256, Agreement>, milestones: mut StorageMap<(u256, u8), Milestone>)
+{
+    let a = agreements.get(key: id)
+    let x = milestones.get(key: (id, m))
+    let amount = x.amount
+    milestones.set(key: (id, m), value: Milestone { state: MilestoneState::Paid, amount: x.amount })
+    agreements.set(key: id, value: Agreement { paid: a.paid + amount, refunded: a.refunded })
+    totals.outstanding = totals.outstanding - amount
+    log.emit(MilestoneClaimed { id, m, to, amount })
+    let amount = amount + amount
+    assert!(call.send_value(addr: to, gas: 0, value: amount).success(), "transfer failed")
+    amount
+}

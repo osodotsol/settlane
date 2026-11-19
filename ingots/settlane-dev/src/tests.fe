@@ -746,6 +746,9 @@ enum Why {
     NotApproved,
     ZeroPayee,
     TransferFailed,
+    NotClient,
+    NotRefundable,
+    NotExpired,
 }
 
 impl Copy for Why {}
@@ -764,6 +767,9 @@ fn because(_ out: CallOutcome, _ why: Why) -> bool {
         Why::NotApproved => reason == "milestone is not approved",
         Why::ZeroPayee => reason == "payee is zero",
         Why::TransferFailed => reason == "transfer failed",
+        Why::NotClient => reason == "caller is not the client",
+        Why::NotRefundable => reason == "milestone cannot be refunded in this state",
+        Why::NotExpired => reason == "milestone has not expired",
         Why::UnknownAgreement => reason == "unknown agreement",
         Why::NotProvider => reason == "caller is not the provider",
         Why::NotVerifier => reason == "caller is not the verifier",
@@ -2933,4 +2939,940 @@ uses (evm: mut Evm)
         "0x02 accepts",
     )
     check_invariants(prod, 2, Wei::zero())
+}
+
+// ------------------------------------------------------------------------- Phase 3B: Refund
+// T6: from Funded or Submitted, once expired, Refund(to) by the client, to != 0, goes to Refunded,
+// refunded += amount, outstanding -= amount, and sends exactly the stored amount to `to` with the
+// 2300-gas stipend. Every write happens before the transfer, and a failed transfer reverts all of
+// them. Expiry needs a clock that moves, so the positive path runs on the shell (same handler).
+
+// The test contract is the client of every agreement it creates directly.
+fn refund_direct(_ s: Address, _ id: u256, _ m: u8, _ to: Address) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: s,
+        gas: 500000,
+        value: Wei::zero(),
+        message: SettleMsg::Refund { id, m, to },
+    )
+}
+
+// A refund by the client that must succeed. Returns what Settlane reports it sent.
+fn refund_ok(_ s: Address, _ id: u256, _ m: u8, _ to: Address) -> Wei
+uses (evm: mut Evm)
+{
+    evm.call(
+        addr: s,
+        gas: 500000,
+        value: Wei::zero(),
+        message: SettleMsg::Refund { id, m, to },
+    )
+}
+
+// `by` forwards Refund to `s`, so Settlane sees `by` as the caller.
+fn refund_out(_ by: Address, _ s: Address, _ id: u256, _ m: u8, _ to: Address) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: by,
+        gas: 2000000,
+        value: Wei::zero(),
+        message: ActorMsg::RefundVia { target: s, id, m, to },
+    )
+}
+
+fn refund_via_ok(_ by: Address, _ s: Address, _ id: u256, _ m: u8, _ to: Address) -> Wei
+uses (evm: mut Evm)
+{
+    evm.call(
+        addr: by,
+        gas: 2000000,
+        value: Wei::zero(),
+        message: ActorMsg::RefundVia { target: s, id, m, to },
+    )
+}
+
+// An agreement created through the Actor `by`, which becomes its client.
+fn create_via(_ by: Address, _ s: Address, _ a: Args, _ value: Wei) -> u256
+uses (evm: mut Evm)
+{
+    evm.call(
+        addr: by,
+        gas: 2000000,
+        value,
+        message: ActorMsg::CreateVia {
+            target: s,
+            provider: a.provider,
+            verifier: a.verifier,
+            review_period: a.review_period,
+            n: a.n,
+            amounts: a.amounts,
+            deliver_by: a.deliver_by,
+            specs: a.specs,
+        },
+    )
+}
+
+fn acc_is(
+    _ a: (Wei, Wei, Wei, Wei),
+    _ deposited: Wei,
+    _ paid: Wei,
+    _ refunded: Wei,
+    _ owed: Wei,
+) -> bool {
+    a.0 == deposited && a.1 == paid && a.2 == refunded && a.3 == owed
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn the_client_refunds_expired_milestones_once_and_claim_and_refund_exclude_each_other()
+uses (evm: mut Evm)
+{
+    probe()
+    let shell = shell_at_1000()
+    let p = actor(11)
+    let v = actor(12)
+    let payee = Address::new(0x9b1)
+    let payee2 = Address::new(0x9b2)
+    // Agreement 1: 1 + 2 + 3 ETH due at 2000, 3000, 4000 (review 3600 s). Agreement 2 (1 + 2 ETH)
+    // is another agreement's escrow and must not move at all.
+    assert!(
+        create(shell, parties(three(2000, 3000, 4000), p, v), ether(6)) == 1,
+    )
+    assert!(
+        create(shell, parties(two(2000, 3000), p, v), ether(3)) == 2,
+    )
+    check_invariants(shell, 2, Wei::zero())
+    // Milestone 1 is submitted, milestone 2 approved, milestone 0 left Funded.
+    set_time(shell, 1500)
+    assert!(
+        submit_out(p, shell, 1, 1, 0xe2).success(),
+        "setup: submit m1",
+    )
+    approve_first(p, v, shell, 1, 2, 0xe3)
+    check_invariants(shell, 2, Wei::zero())
+
+    // Funded milestone 0 at its deliver_by: expired, refunded the stored amount to the client's `to`.
+    set_time(shell, 2000)
+    let m0 = milestone(shell, 1, 0)
+    assert!(
+        refund_ok(shell, 1, 0, payee) == ether(1),
+        "the refund returns the stored amount",
+    )
+    assert!(evm.balance(payee) == ether(1), "and sends exactly it")
+    assert!(state_of(shell, 1, 0) == 5, "Refunded")
+    assert!(
+        fixed_fields(milestone(shell, 1, 0), m0),
+        "amount, deadlines and spec kept",
+    )
+    assert!(
+        acc_is(
+            accounting(shell, 1),
+            ether(6),
+            Wei::zero(),
+            ether(1),
+            ether(5),
+        ),
+        "refunded += 1, outstanding -= 1",
+    )
+    assert!(outstanding(shell) == ether(8), "total outstanding -= 1")
+    check_invariants(shell, 2, Wei::zero())
+
+    // Refunded is final: no second refund, no claim, no evidence, no review.
+    let refunded = milestone(shell, 1, 0)
+    assert!(
+        because(refund_direct(shell, 1, 0, payee), Why::NotRefundable),
+        "a second refund",
+    )
+    assert!(
+        because(refund_direct(shell, 1, 0, payee2), Why::NotRefundable),
+        "not to another payee either",
+    )
+    assert!(
+        because(claim_out(p, shell, 1, 0, payee), Why::NotApproved),
+        "no claim after a refund",
+    )
+    assert!(
+        because(submit_out(p, shell, 1, 0, 0xe9), Why::WrongState),
+        "no evidence after a refund",
+    )
+    assert!(
+        because(approve_out(v, shell, 1, 0, 0xe9, 1), Why::NotSubmitted),
+        "no review after a refund",
+    )
+    assert!(
+        same_milestone(milestone(shell, 1, 0), refunded),
+        "unchanged",
+    )
+    check_invariants(shell, 2, Wei::zero())
+
+    // Submitted milestone 1 is not expired at its deliver_by: the review window is still open.
+    set_time(shell, 3000)
+    assert!(
+        because(refund_direct(shell, 1, 1, payee), Why::NotExpired),
+        "Submitted, at deliver_by",
+    )
+    set_time(shell, 6599)
+    assert!(
+        because(refund_direct(shell, 1, 1, payee), Why::NotExpired),
+        "Submitted, at decide_by - 1",
+    )
+    set_time(shell, 6600)
+    assert!(
+        refund_ok(shell, 1, 1, payee2) == ether(2),
+        "Submitted, at decide_by",
+    )
+    assert!(evm.balance(payee2) == ether(2))
+    assert!(
+        acc_is(
+            accounting(shell, 1),
+            ether(6),
+            Wei::zero(),
+            ether(3),
+            ether(3),
+        ),
+    )
+    check_invariants(shell, 2, Wei::zero())
+
+    // Approved milestone 2 never expires: no refund long after both deadlines. It is claimed,
+    // and a refund after the claim fails too.
+    set_time(shell, 100000)
+    assert!(
+        because(refund_direct(shell, 1, 2, payee), Why::NotRefundable),
+        "Approved is never refundable",
+    )
+    assert!(state_of(shell, 1, 2) == 3, "still Approved")
+    assert!(claim_ok(p, shell, 1, 2, payee) == ether(3), "claimed")
+    assert!(
+        because(refund_direct(shell, 1, 2, payee), Why::NotRefundable),
+        "no refund after a claim",
+    )
+    assert!(state_of(shell, 1, 2) == 4, "still Paid")
+    assert!(
+        acc_is(
+            accounting(shell, 1),
+            ether(6),
+            ether(3),
+            ether(3),
+            Wei::zero(),
+        ),
+        "deposited == paid + refunded, nothing owed",
+    )
+    check_invariants(shell, 2, Wei::zero())
+
+    // Agreement 2 never moved: the contract holds exactly its escrow.
+    assert!(
+        acc_is(
+            accounting(shell, 2),
+            ether(3),
+            Wei::zero(),
+            Wei::zero(),
+            ether(3),
+        ),
+        "agreement 2 untouched",
+    )
+    assert!(state_of(shell, 2, 0) == 1 && state_of(shell, 2, 1) == 1)
+    assert!(evm.balance(payee) == ether(4), "1 refunded + 3 claimed")
+    assert_money(shell, ether(3))
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn only_the_client_may_refund_and_only_an_expired_unpaid_milestone_to_a_nonzero_payee()
+uses (evm: mut Evm)
+{
+    probe()
+    let shell = shell_at_1000()
+    let p = actor(11)
+    let v = actor(12)
+    let st = actor(13)
+    let payee = Address::new(0x9b1)
+    // Agreement 1: two milestones (slot 2 unused). Agreement 2: due far in the future.
+    assert!(
+        create(shell, parties(two(2000, 3000), p, v), ether(3)) == 1,
+    )
+    assert!(create(shell, parties(single(50000), p, v), ether(1)) == 2)
+    set_time(shell, 1500)
+    approve_first(p, v, shell, 1, 1, 0xe2)
+    // Every deadline of agreement 1 has passed; agreement 2 is still open.
+    set_time(shell, 10000)
+    let m0 = milestone(shell, 1, 0)
+    let m1 = milestone(shell, 1, 1)
+    check_invariants(shell, 2, Wei::zero())
+
+    // Roles: only the client. The provider, the verifier and a stranger are refused first.
+    assert!(
+        because(refund_out(p, shell, 1, 0, payee), Why::NotClient),
+        "the provider",
+    )
+    assert!(
+        because(refund_out(v, shell, 1, 0, payee), Why::NotClient),
+        "the verifier",
+    )
+    assert!(
+        because(refund_out(st, shell, 1, 0, payee), Why::NotClient),
+        "a stranger",
+    )
+    assert!(
+        because(refund_out(p, shell, 1, 0, p), Why::NotClient),
+        "the provider, to itself",
+    )
+    assert!(
+        because(
+            refund_out(st, shell, 1, 2, Address::zero()),
+            Why::NotClient,
+        ),
+        "role before milestone and payee",
+    )
+    // Unknown agreements, whoever calls.
+    assert!(
+        because(refund_direct(shell, 0, 0, payee), Why::UnknownAgreement),
+        "id 0",
+    )
+    assert!(
+        because(refund_direct(shell, 3, 0, payee), Why::UnknownAgreement),
+        "id 3",
+    )
+    assert!(
+        because(
+            refund_direct(shell, MAX, 0, payee),
+            Why::UnknownAgreement,
+        ),
+        "id 2^256 - 1",
+    )
+    assert!(
+        because(refund_out(st, shell, 3, 0, payee), Why::UnknownAgreement),
+        "unknown before role",
+    )
+    // Unused slots of a known agreement.
+    assert!(
+        because(refund_direct(shell, 1, 2, payee), Why::NoSuchMilestone),
+        "slot 2 unused",
+    )
+    assert!(
+        because(refund_direct(shell, 1, 3, payee), Why::NoSuchMilestone),
+        "slot 3",
+    )
+    // States: Approved is never refundable, and the state is checked before the payee.
+    assert!(
+        because(refund_direct(shell, 1, 1, payee), Why::NotRefundable),
+        "Approved",
+    )
+    assert!(
+        because(
+            refund_direct(shell, 1, 1, Address::zero()),
+            Why::NotRefundable,
+        ),
+        "state before payee",
+    )
+    // Window: a Funded milestone before its deadline, checked before the payee.
+    assert!(
+        because(refund_direct(shell, 2, 0, payee), Why::NotExpired),
+        "not expired",
+    )
+    assert!(
+        because(
+            refund_direct(shell, 2, 0, Address::zero()),
+            Why::NotExpired,
+        ),
+        "window before payee",
+    )
+    // Payee: never the zero address.
+    assert!(
+        because(
+            refund_direct(shell, 1, 0, Address::zero()),
+            Why::ZeroPayee,
+        ),
+        "payee zero",
+    )
+    // Nothing above changed anything.
+    assert!(same_milestone(milestone(shell, 1, 0), m0))
+    assert!(same_milestone(milestone(shell, 1, 1), m1))
+    assert!(evm.balance(payee) == Wei::zero(), "nothing was refunded")
+    assert_money(shell, ether(4))
+    check_invariants(shell, 2, Wei::zero())
+    // Positive control: the client, an expired Funded milestone, a nonzero payee.
+    assert!(
+        refund_ok(shell, 1, 0, payee) == ether(1),
+        "positive control",
+    )
+    assert_money(shell, ether(3))
+    check_invariants(shell, 2, Wei::zero())
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn refund_boundaries_hold_at_d_minus_1_d_and_d_plus_1_in_every_slot_and_state()
+uses (evm: mut Evm)
+{
+    probe()
+    let shell = shell_at_1000()
+    let p = actor(11)
+    let v = actor(12)
+    // Agreements 1 and 2 stay Funded; 3 and 4 are submitted in every slot at 1500. Deadlines differ
+    // per slot (2000, 3000, 4000), so a handler that read another slot's deadline would fail here.
+    var i: u256 = 0
+    while i < 4 {
+        assert!(
+            create(shell, parties(three(2000, 3000, 4000), p, v), ether(6)) == i + 1,
+        )
+        i += 1
+    }
+    // Agreement 5: rejected after its delivery deadline (F3), refundable at once.
+    assert!(create(shell, parties(single(2000), p, v), ether(1)) == 5)
+    set_time(shell, 1500)
+    var k: u8 = 0
+    while k < 3 {
+        assert!(submit_out(p, shell, 3, k, 0xd0 + (k as u256)).success())
+        assert!(submit_out(p, shell, 4, k, 0xd0 + (k as u256)).success())
+        k += 1
+    }
+    assert!(submit_out(p, shell, 5, 0, 0xe5).success())
+    check_invariants(shell, 5, Wei::zero())
+
+    // Funded: expires exactly at deliver_by, slot by slot.
+    k = 0
+    while k < 3 {
+        let d: u256 = 2000 + 1000 * (k as u256)
+        let amount = ether((k as u256) + 1)
+        set_time(shell, d - 1)
+        assert!(
+            because(
+                refund_direct(shell, 1, k, Address::new(0x9b1)),
+                Why::NotExpired,
+            ),
+            "Funded at d - 1",
+        )
+        assert!(
+            because(
+                refund_direct(shell, 2, k, Address::new(0x9b1)),
+                Why::NotExpired,
+            ),
+            "Funded at d - 1 (agreement 2)",
+        )
+        set_time(shell, d)
+        assert!(
+            refund_ok(shell, 1, k, Address::new(0x9b1)) == amount,
+            "Funded at d",
+        )
+        set_time(shell, d + 1)
+        assert!(
+            refund_ok(shell, 2, k, Address::new(0x9b2)) == amount,
+            "Funded at d + 1",
+        )
+        assert!(state_of(shell, 1, k) == 5 && state_of(shell, 2, k) == 5)
+        check_invariants(shell, 5, Wei::zero())
+        k += 1
+    }
+    assert!(evm.balance(Address::new(0x9b1)) == ether(6))
+    assert!(evm.balance(Address::new(0x9b2)) == ether(6))
+
+    // Submitted: not expired at deliver_by, expires exactly at decide_by. Review and refund are
+    // disjoint: at decide_by - 1 the verifier can still act and the client cannot.
+    k = 0
+    while k < 3 {
+        let d: u256 = 2000 + 1000 * (k as u256)
+        let e: u256 = d + 3600
+        let amount = ether((k as u256) + 1)
+        set_time(shell, d)
+        assert!(
+            because(
+                refund_direct(shell, 3, k, Address::new(0x9b3)),
+                Why::NotExpired,
+            ),
+            "Submitted at deliver_by",
+        )
+        set_time(shell, e - 1)
+        assert!(
+            because(
+                refund_direct(shell, 3, k, Address::new(0x9b3)),
+                Why::NotExpired,
+            ),
+            "Submitted at decide_by - 1",
+        )
+        set_time(shell, e)
+        assert!(
+            because(
+                approve_out(v, shell, 4, k, 0xd0 + (k as u256), 1),
+                Why::ReviewClosed,
+            ),
+            "the verifier is out at decide_by",
+        )
+        assert!(
+            refund_ok(shell, 3, k, Address::new(0x9b3)) == amount,
+            "Submitted at decide_by",
+        )
+        set_time(shell, e + 1)
+        assert!(
+            refund_ok(shell, 4, k, Address::new(0x9b4)) == amount,
+            "Submitted at decide_by + 1",
+        )
+        assert!(state_of(shell, 3, k) == 5 && state_of(shell, 4, k) == 5)
+        check_invariants(shell, 5, Wei::zero())
+        k += 1
+    }
+
+    // F3: a rejection after deliver_by leaves a Funded milestone whose delivery has closed, so it
+    // is refundable at once, inside what was the review window.
+    set_time(shell, 2500)
+    assert!(
+        reject_out(v, shell, 5, 0, 0xe5, 1).success(),
+        "rejected after d",
+    )
+    assert!(state_of(shell, 5, 0) == 1, "Funded again")
+    assert!(
+        because(submit_out(p, shell, 5, 0, 0xe6), Why::DeliveryClosed),
+        "the provider cannot resubmit",
+    )
+    assert!(
+        refund_ok(shell, 5, 0, Address::new(0x9b5)) == ether(1),
+        "and the client is refunded at once",
+    )
+    check_invariants(shell, 5, Wei::zero())
+    assert_money(shell, Wei::zero())
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn a_failed_refund_transfer_reverts_the_whole_refund_and_a_retry_to_another_payee_succeeds()
+uses (evm: mut Evm)
+{
+    probe()
+    let shell = shell_at_1000()
+    let p = actor(11)
+    let v = actor(12)
+    let refuses = actor(14)
+    let payee = Address::new(0x9b1)
+    assert!(
+        create(shell, parties(two(2000, 3000), p, v), ether(3)) == 1,
+    )
+    set_time(shell, 3000)
+    let before = milestone(shell, 1, 1)
+    let acc = accounting(shell, 1)
+    assert!(
+        because(refund_direct(shell, 1, 1, refuses), Why::TransferFailed),
+        "a refusing payee",
+    )
+    assert!(
+        because(refund_direct(shell, 1, 1, shell), Why::TransferFailed),
+        "Settlane cannot refund to itself",
+    )
+    assert!(
+        because(refund_direct(shell, 1, 1, v), Why::TransferFailed),
+        "the verifier Actor refuses too",
+    )
+    // Every write before the transfer was reverted with it.
+    assert!(
+        same_milestone(milestone(shell, 1, 1), before),
+        "still Funded, unchanged",
+    )
+    assert!(
+        same_accounting(accounting(shell, 1), acc),
+        "refunded and outstanding unchanged",
+    )
+    assert_money(shell, ether(3))
+    check_invariants(shell, 1, Wei::zero())
+    assert!(evm.balance(refuses) == Wei::zero())
+
+    // A refusing payee blocks only its own refund: the client retries with another `to`.
+    assert!(
+        refund_ok(shell, 1, 1, payee) == ether(2),
+        "the retry succeeds",
+    )
+    assert!(
+        evm.balance(payee) == ether(2) && state_of(shell, 1, 1) == 5,
+    )
+    assert_money(shell, ether(1))
+    check_invariants(shell, 1, Wei::zero())
+    assert!(
+        because(refund_direct(shell, 1, 1, payee), Why::NotRefundable),
+        "and only once",
+    )
+
+    // The payee gets the stipend and no more: a payee that rejects more than 2300 gas is paid.
+    let cap = evm.create2<GasCap>(value: Wei::zero(), args: (), salt: 31)
+    assert!(
+        !evm.send_value(addr: cap, gas: 10000, value: wei(1)).success(),
+        "control: the payee rejects 10000 gas",
+    )
+    assert!(
+        refund_ok(shell, 1, 0, cap) == ether(1),
+        "the fallback saw at most the stipend",
+    )
+    assert!(evm.balance(cap) == ether(1))
+    assert_money(shell, Wei::zero())
+    check_invariants(shell, 1, Wei::zero())
+}
+
+// The attacker as the client: it creates and funds agreement 1 as itself.
+fn create_as(_ attacker: Address, _ s: Address, _ a: Args, _ value: Wei) -> u256
+uses (evm: mut Evm)
+{
+    evm.call(
+        addr: attacker,
+        gas: 2000000,
+        value,
+        message: AttackMsg::CreateAs {
+            target: s,
+            provider: a.provider,
+            verifier: a.verifier,
+            review_period: a.review_period,
+            n: a.n,
+            amounts: a.amounts,
+            deliver_by: a.deliver_by,
+            specs: a.specs,
+        },
+    )
+}
+
+fn aim_refund(_ attacker: Address, _ s: Address, _ id: u256, _ m: u8)
+uses (evm: mut Evm)
+{
+    evm.call(
+        addr: attacker,
+        gas: 200000,
+        value: Wei::zero(),
+        message: AttackMsg::AimRefund { target: s, id, m },
+    )
+}
+
+fn attacker_refunds(_ attacker: Address, _ to: Address) -> CallOutcome
+uses (evm: mut Evm)
+{
+    evm.try_call(
+        addr: attacker,
+        gas: 5000000,
+        value: Wei::zero(),
+        message: AttackMsg::RefundTo { to },
+    )
+}
+
+// Agreement 1 (1 + 2 + 3 ETH) belongs to the attacker as client; agreement 2 (1 + 2 ETH) belongs
+// to the test contract, so a double refund would be paid out of someone else's escrow. At 5000
+// every milestone of both is expired and Funded.
+fn attacker_shell(_ attacker: Address, _ p: Address, _ v: Address) -> Address
+uses (evm: mut Evm)
+{
+    let shell = shell_at_1000()
+    assert!(
+        create_as(
+                attacker,
+                shell,
+                parties(three(2000, 3000, 4000), p, v),
+                ether(6),
+            ) == 1,
+    )
+    assert!(
+        create(shell, parties(two(2000, 3000), p, v), ether(3)) == 2,
+    )
+    set_time(shell, 5000)
+    shell
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn a_client_that_always_re_enters_is_never_refunded_under_the_stipend_and_never_twice()
+uses (evm: mut Evm)
+{
+    probe()
+    let p = actor(11)
+    let v = actor(12)
+    let g = evm.create2<Greedy>(value: Wei::zero(), args: (), salt: 24)
+    let shell = attacker_shell(g, p, v)
+    let loot = Address::new(LOOT)
+    let honest = Address::new(0x9b1)
+    check_invariants(shell, 2, Wei::zero())
+
+    // Positive control: the attacker IS live. Given real gas, its fallback re-enters and refunds
+    // milestone 0 to the third address, and nothing in the attacker stops it.
+    aim_refund(g, shell, 1, 0)
+    assert!(
+        evm.send_value(addr: g, gas: 500000, value: wei(1)).success(),
+        "control: the fallback ran with real gas",
+    )
+    assert!(
+        evm.balance(loot) == ether(1),
+        "control: the re-entrant refund paid the third address",
+    )
+    assert!(
+        state_of(shell, 1, 0) == 5,
+        "control: milestone 0 is Refunded",
+    )
+    assert!(
+        evm.balance(g) == wei(1),
+        "control: the attacker kept only its wei",
+    )
+    check_invariants(shell, 2, Wei::zero())
+
+    // The attack: refund milestone 1 to the attacker itself. The send carries only the stipend,
+    // the fallback cannot finish, the send fails and the whole refund reverts.
+    aim_refund(g, shell, 1, 1)
+    let before = milestone(shell, 1, 1)
+    let acc = accounting(shell, 1)
+    let owed = outstanding(shell)
+    assert!(
+        because(attacker_refunds(g, g), Why::TransferFailed),
+        "an always-re-entering client cannot be refunded with the stipend",
+    )
+    assert!(
+        same_milestone(milestone(shell, 1, 1), before),
+        "still Funded, unchanged",
+    )
+    assert!(
+        same_accounting(accounting(shell, 1), acc),
+        "refunded and outstanding unchanged",
+    )
+    assert!(outstanding(shell) == owed, "total outstanding unchanged")
+    assert!(
+        evm.balance(loot) == ether(1),
+        "the third address got nothing more",
+    )
+    assert!(evm.balance(g) == wei(1), "the attacker got nothing")
+    check_invariants(shell, 2, Wei::zero())
+
+    // The client is not locked out: the same milestone refunds once to an ordinary address.
+    let got: Wei = evm
+        .call(
+            addr: g,
+            gas: 5000000,
+            value: Wei::zero(),
+            message: AttackMsg::RefundTo { to: honest },
+        )
+    assert!(
+        got == ether(2) && evm.balance(honest) == ether(2),
+        "refunded once to an address that can receive it",
+    )
+    assert!(state_of(shell, 1, 1) == 5)
+    assert!(
+        because(attacker_refunds(g, honest), Why::NotRefundable),
+        "and only once",
+    )
+    assert!(
+        because(attacker_refunds(g, g), Why::NotRefundable),
+        "not to itself either",
+    )
+    check_invariants(shell, 2, Wei::zero())
+    assert!(
+        acc_is(
+            accounting(shell, 2),
+            ether(3),
+            Wei::zero(),
+            Wei::zero(),
+            ether(3),
+        ),
+        "agreement 2 untouched",
+    )
+    assert!(
+        evm.balance(shell) == ether(9) - ether(1) - ether(2),
+        "exactly 1 + 2 ETH left the contract",
+    )
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn a_client_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_refunded()
+uses (evm: mut Evm)
+{
+    probe()
+    let p = actor(11)
+    let v = actor(12)
+    let o = evm.create2<Once>(value: Wei::zero(), args: (), salt: 25)
+    let shell = attacker_shell(o, p, v)
+    check_invariants(shell, 2, Wei::zero())
+
+    // Positive control: with real gas the fallback records its re-entry (`entered` becomes 2) and
+    // its nested refund of milestone 0 to itself goes through.
+    aim_refund(o, shell, 1, 0)
+    assert!(
+        evm.send_value(addr: o, gas: 500000, value: wei(1)).success(),
+        "control: the fallback ran",
+    )
+    let seen: (u256, u256) = evm
+        .call(
+            addr: o,
+            gas: 100000,
+            value: Wei::zero(),
+            message: AttackMsg::Stats {},
+        )
+    assert!(
+        seen.0 == 2,
+        "control: the attacker re-entered once with real gas",
+    )
+    assert!(
+        state_of(shell, 1, 0) == 5,
+        "control: milestone 0 refunded once",
+    )
+    check_invariants(shell, 2, Wei::zero())
+
+    // The attack on milestone 1: with the stipend the fallback cannot even record its re-entry.
+    aim_refund(o, shell, 1, 1)
+    let held = evm.balance(o)
+    let before = milestone(shell, 1, 1)
+    let acc = accounting(shell, 1)
+    let owed = outstanding(shell)
+    assert!(
+        because(attacker_refunds(o, o), Why::TransferFailed),
+        "the refund reverts",
+    )
+    let after: (u256, u256) = evm
+        .call(
+            addr: o,
+            gas: 100000,
+            value: Wei::zero(),
+            message: AttackMsg::Stats {},
+        )
+    assert!(
+        after.0 == 1,
+        "the fallback never got far enough to record a re-entry",
+    )
+    assert!(evm.balance(o) == held, "the attacker was paid nothing")
+    assert!(
+        same_milestone(milestone(shell, 1, 1), before),
+        "still Funded, unchanged",
+    )
+    assert!(
+        same_accounting(accounting(shell, 1), acc),
+        "accounting unchanged",
+    )
+    assert!(outstanding(shell) == owed, "total outstanding unchanged")
+    check_invariants(shell, 2, Wei::zero())
+    assert!(
+        evm.balance(shell) >= acc.3 + accounting(shell, 2).3,
+        "the contract still holds everything it owes (I9)",
+    )
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn refund_is_not_payable_on_production_or_the_shell() uses (evm: mut Evm) {
+    probe()
+    let prod = evm.create2<Settlane>(value: Wei::zero(), args: (), salt: 1)
+    let shell = shell_at_1000()
+    let p = actor(11)
+    let v = actor(12)
+    let c = actor(15)
+    let payee = Address::new(0x9b1)
+    let now = evm.timestamp().as_seconds()
+    assert!(
+        create(prod, parties(single(now + 100), p, v), ether(1)) == 1,
+    )
+    assert!(
+        create_via(c, shell, parties(single(2000), p, v), ether(1)) == 1,
+    )
+    set_time(shell, 2000)
+    // RefundVia is payable and forwards what it receives. Settlane rejects attached value before
+    // anything else, with EMPTY revert data, even for the real client of an expired milestone.
+    let out = evm
+        .try_call(
+            addr: c,
+            gas: 2000000,
+            value: ether(1),
+            message: ActorMsg::RefundVia { target: shell, id: 1, m: 0, to: payee },
+        )
+    assert!(
+        empty_revert(out),
+        "shell: a refund with value is rejected, empty data",
+    )
+    let direct = evm
+        .try_call(
+            addr: prod,
+            gas: 500000,
+            value: wei(1),
+            message: SettleMsg::Refund { id: 1, m: 0, to: payee },
+        )
+    assert!(
+        empty_revert(direct),
+        "production: rejected before the expiry check",
+    )
+    assert!(state_of(shell, 1, 0) == 1 && state_of(prod, 1, 0) == 1)
+    assert_money(shell, ether(1))
+    assert_money(prod, ether(1))
+    check_invariants(shell, 1, Wei::zero())
+    check_invariants(prod, 1, Wei::zero())
+    // Positive controls: without value, production reports a reason and the shell refunds.
+    assert!(
+        because(refund_direct(prod, 1, 0, payee), Why::NotExpired),
+        "production: a reasoned revert",
+    )
+    assert!(
+        refund_via_ok(c, shell, 1, 0, payee) == ether(1),
+        "shell: the same refund with no value succeeds",
+    )
+    assert_money(shell, Wei::zero())
+    check_invariants(shell, 1, Wei::zero())
+}
+
+#[test(balance = 400_000_000_000_000_000_000)]
+fn refunds_belong_to_each_agreements_client_and_accounting_holds_across_claims_and_refunds()
+uses (evm: mut Evm)
+{
+    probe()
+    let shell = shell_at_1000()
+    let p = actor(11)
+    let v = actor(12)
+    let c = actor(15)
+    let payee = Address::new(0x9b1)
+    let payee2 = Address::new(0x9b2)
+    // Agreement 1: client = test contract. Agreement 2: client = Actor c. Same provider and verifier.
+    assert!(
+        create(shell, parties(three(2000, 3000, 4000), p, v), ether(6)) == 1,
+    )
+    assert!(
+        create_via(c, shell, parties(three(2000, 3000, 4000), p, v), ether(6)) == 2,
+    )
+    set_time(shell, 1500)
+    approve_first(p, v, shell, 1, 0, 0xa0)
+    approve_first(p, v, shell, 2, 2, 0xb2)
+    check_invariants(shell, 2, Wei::zero())
+    set_time(shell, 10000)
+
+    // Each client refunds only its own agreement.
+    assert!(
+        because(refund_direct(shell, 2, 0, payee), Why::NotClient),
+        "the client of 1 is not the client of 2",
+    )
+    assert!(
+        because(refund_out(c, shell, 1, 1, payee), Why::NotClient),
+        "the client of 2 is not the client of 1",
+    )
+    check_invariants(shell, 2, Wei::zero())
+
+    // Interleave claims and refunds across both agreements, checking every step.
+    assert!(refund_ok(shell, 1, 1, payee) == ether(2))
+    check_invariants(shell, 2, Wei::zero())
+    assert!(refund_via_ok(c, shell, 2, 0, payee2) == ether(1))
+    check_invariants(shell, 2, Wei::zero())
+    assert!(claim_ok(p, shell, 2, 2, payee) == ether(3))
+    check_invariants(shell, 2, Wei::zero())
+    assert!(claim_ok(p, shell, 1, 0, payee2) == ether(1))
+    check_invariants(shell, 2, Wei::zero())
+    assert!(refund_via_ok(c, shell, 2, 1, payee2) == ether(2))
+    check_invariants(shell, 2, Wei::zero())
+    assert!(
+        acc_is(
+            accounting(shell, 1),
+            ether(6),
+            ether(1),
+            ether(2),
+            ether(3),
+        ),
+        "agreement 1: 1 paid, 2 refunded, 3 owed",
+    )
+    assert!(
+        acc_is(
+            accounting(shell, 2),
+            ether(6),
+            ether(3),
+            ether(3),
+            Wei::zero(),
+        ),
+        "agreement 2: settled",
+    )
+    assert!(
+        outstanding(shell) == ether(3),
+        "only agreement 1's slot 2 is owed",
+    )
+    assert!(
+        evm.balance(payee) == ether(5) && evm.balance(payee2) == ether(4),
+    )
+    assert_money(shell, ether(3))
+    // The last milestone: refunded by its client, and then nothing is owed anywhere.
+    assert!(refund_ok(shell, 1, 2, payee) == ether(3))
+    check_invariants(shell, 2, Wei::zero())
+    assert_money(shell, Wei::zero())
 }

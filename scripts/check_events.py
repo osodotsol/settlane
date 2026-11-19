@@ -30,6 +30,11 @@ with what the tests did. It checks:
     amounts claimed from one agreement never exceed its total, and 6 tests have their exact claim
     sequence checked, including which contract paid (production or the shell). A claim whose
     transfer failed reverted with its event, so it must not appear.
+  * (Phase 3B) every MilestoneRefunded (topics: id, m, to; data: amount) is decoded the same way;
+    the replay allows a Refund only of a Funded or Submitted milestone and nothing after it
+    (Refunded is final), what one agreement has paid and refunded together never exceeds its
+    total, every test that emits a refund must have its exact refund sequence listed, and the
+    listed tests are checked exactly (a refund whose transfer failed must not appear).
 
 Usage:
   python3 scripts/check_events.py             run fe test --show-logs and check the logs
@@ -50,6 +55,7 @@ SUBMITTED_SIG = "MilestoneSubmitted(uint256,uint8,uint256,uint256)"
 APPROVED_SIG = "MilestoneApproved(uint256,uint8,uint256,uint256)"
 REJECTED_SIG = "MilestoneRejected(uint256,uint8,uint256,uint256,uint256)"
 CLAIMED_SIG = "MilestoneClaimed(uint256,uint8,address,uint256)"
+REFUNDED_SIG = "MilestoneRefunded(uint256,uint8,address,uint256)"
 TOPIC_CREATED = "0x" + keccak256(CREATED_SIG.encode()).hex()
 TOPIC_ACTED = "0x" + keccak256(ACTED_SIG.encode()).hex()
 TOPIC_PROBE = "0x" + keccak256(PROBE_SIG.encode()).hex()
@@ -57,6 +63,8 @@ TOPIC_SUBMITTED = "0x" + keccak256(SUBMITTED_SIG.encode()).hex()
 TOPIC_APPROVED = "0x" + keccak256(APPROVED_SIG.encode()).hex()
 TOPIC_REJECTED = "0x" + keccak256(REJECTED_SIG.encode()).hex()
 TOPIC_CLAIMED = "0x" + keccak256(CLAIMED_SIG.encode()).hex()
+TOPIC_REFUNDED = "0x" + keccak256(REFUNDED_SIG.encode()).hex()
+PAYOUT_KINDS = {TOPIC_CLAIMED: "Claimed", TOPIC_REFUNDED: "Refunded"}
 TRANSITION_KINDS = ("Submitted", "Approved", "Rejected")
 ETHER = 10**18
 A1, A2, B1, B2 = 0xA1, 0xA2, 0xB1, 0xB2
@@ -135,12 +143,13 @@ def decode(log):
             if w[1] == 0:
                 problems.append("rejections is zero")
         return ev, problems
-    if t[0] == TOPIC_CLAIMED:
+    if t[0] in PAYOUT_KINDS:
+        kind = PAYOUT_KINDS[t[0]]
         if len(t) != 4:
-            return None, [f"MilestoneClaimed must have 4 topics (hash, id, m, to), got {len(t)}"]
+            return None, [f"Milestone{kind} must have 4 topics (hash, id, m, to), got {len(t)}"]
         w = words(log["data"])
         if w is None or len(w) != 1:
-            return None, [f"MilestoneClaimed data must be 1 word (amount), got {log['data']}"]
+            return None, [f"Milestone{kind} data must be 1 word (amount), got {log['data']}"]
         tid, m, to = (int(x, 16) for x in t[1:])
         problems = []
         if tid == 0:
@@ -150,8 +159,8 @@ def decode(log):
         if not is_address(to):
             problems.append("payee is not a nonzero address")
         if w[0] == 0:
-            problems.append("claimed amount is zero")
-        return {"kind": "Claimed", "id": tid, "m": m, "to": to, "amount": w[0], "address": log["address"]}, problems
+            problems.append(f"{kind.lower()} amount is zero")
+        return {"kind": kind, "id": tid, "m": m, "to": to, "amount": w[0], "address": log["address"]}, problems
     if t[0] != TOPIC_CREATED:
         return None, [f"unknown event topic0 {t[0]}"]
     if len(t) != 4:
@@ -265,6 +274,16 @@ EXPECTED_TRANSITIONS = {
     ("settlane_dev", "a_provider_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_paid"): [S(1, 0, 0xE1), A(1, 0, 0xE1), S(1, 1, 0xE2), A(1, 1, 0xE2)],
     ("settlane_dev", "a_payee_is_given_no_more_than_the_2300_gas_stipend"): [S(1, 0, 0xE1), A(1, 0, 0xE1)],
     ("settlane_dev", "precompile_payees_are_the_providers_own_choice_and_some_strand_the_eth"): [S(1, 0, 0xE1), A(1, 0, 0xE1), S(1, 1, 0xE2), A(1, 1, 0xE2)],
+    ("settlane_dev", "the_client_refunds_expired_milestones_once_and_claim_and_refund_exclude_each_other"): [S(1, 1, 0xE2), S(1, 2, 0xE3), A(1, 2, 0xE3)],
+    ("settlane_dev", "only_the_client_may_refund_and_only_an_expired_unpaid_milestone_to_a_nonzero_payee"): [S(1, 1, 0xE2), A(1, 1, 0xE2)],
+    ("settlane_dev", "refund_boundaries_hold_at_d_minus_1_d_and_d_plus_1_in_every_slot_and_state"): [
+        x for k in range(3) for x in (S(3, k, 0xD0 + k), S(4, k, 0xD0 + k))] + [S(5, 0, 0xE5), R(5, 0, 0xE5, 1)],
+    ("settlane_dev", "a_failed_refund_transfer_reverts_the_whole_refund_and_a_retry_to_another_payee_succeeds"): [],
+    ("settlane_dev", "a_client_that_always_re_enters_is_never_refunded_under_the_stipend_and_never_twice"): [],
+    ("settlane_dev", "a_client_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_refunded"): [],
+    ("settlane_dev", "refund_is_not_payable_on_production_or_the_shell"): [],
+    ("settlane_dev", "refunds_belong_to_each_agreements_client_and_accounting_holds_across_claims_and_refunds"): [
+        S(1, 0, 0xA0), A(1, 0, 0xA0), S(2, 2, 0xB2), A(2, 2, 0xB2)],
     ("settlane_dev", "third_slot_revision_lifecycle_at_both_deadlines"): [
         S(1, 2, 0xD1), R(1, 2, 0xD1, 1), S(1, 2, 0xD2, 2), S(2, 2, 0xD3), S(3, 2, 0xD5), A(1, 2, 0xD2, 2), R(3, 2, 0xD5, 1),
     ],
@@ -298,22 +317,54 @@ EXPECTED_CLAIMS = {
     ("settlane_dev", "precompile_payees_are_the_providers_own_choice_and_some_strand_the_eth"): [C(1, 0, 4, ETHER), C(1, 1, 2, 2 * ETHER)],
     ("settlane_dev", "approval_never_expires_and_production_and_the_shell_agree_on_claims"): [
         C(1, 0, PAYEE, ETHER, 0), C(1, 0, PAYEE, ETHER, 1), C(1, 2, PAYEE, 3 * ETHER, 1)],
+    ("settlane_dev", "the_client_refunds_expired_milestones_once_and_claim_and_refund_exclude_each_other"): [C(1, 2, PAYEE, 3 * ETHER)],
+    ("settlane_dev", "refunds_belong_to_each_agreements_client_and_accounting_holds_across_claims_and_refunds"): [
+        C(2, 2, PAYEE, 3 * ETHER), C(1, 0, PAYEE2, ETHER)],
+}
+
+# Exact expected MilestoneRefunded events in order, per test (same tuple as C). Every test that
+# emits a refund must be listed here, so a refund cannot appear where none was intended.
+EXPECTED_REFUNDS = {
+    ("settlane", "production_refunds_are_never_expired_in_a_frozen_block_and_report_each_reason_in_order"): [],
+    ("settlane_dev", "the_client_refunds_expired_milestones_once_and_claim_and_refund_exclude_each_other"): [
+        C(1, 0, PAYEE, ETHER), C(1, 1, PAYEE2, 2 * ETHER)],
+    ("settlane_dev", "only_the_client_may_refund_and_only_an_expired_unpaid_milestone_to_a_nonzero_payee"): [C(1, 0, PAYEE, ETHER)],
+    ("settlane_dev", "refund_boundaries_hold_at_d_minus_1_d_and_d_plus_1_in_every_slot_and_state"): [
+        x for k in range(3) for x in (C(1, k, 0x9B1, (k + 1) * ETHER), C(2, k, 0x9B2, (k + 1) * ETHER))]
+        + [x for k in range(3) for x in (C(3, k, 0x9B3, (k + 1) * ETHER), C(4, k, 0x9B4, (k + 1) * ETHER))]
+        + [C(5, 0, 0x9B5, ETHER)],
+    ("settlane_dev", "a_failed_refund_transfer_reverts_the_whole_refund_and_a_retry_to_another_payee_succeeds"): [
+        C(1, 1, PAYEE, 2 * ETHER), C(1, 0, "any", ETHER)],  # the second payee is a contract created at run time
+    # the control's nested refund went to the third address; the attack itself emitted nothing
+    ("settlane_dev", "a_client_that_always_re_enters_is_never_refunded_under_the_stipend_and_never_twice"): [
+        C(1, 0, LOOT, ETHER), C(1, 1, PAYEE, 2 * ETHER)],
+    # the control's nested refund went to the attacker, which is agreement 1's client
+    ("settlane_dev", "a_client_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_refunded"): [C(1, 0, "client", ETHER)],
+    ("settlane_dev", "refund_is_not_payable_on_production_or_the_shell"): [C(1, 0, PAYEE, ETHER, 1)],
+    ("settlane_dev", "refunds_belong_to_each_agreements_client_and_accounting_holds_across_claims_and_refunds"): [
+        C(1, 1, PAYEE, 2 * ETHER), C(2, 0, PAYEE2, ETHER), C(2, 1, PAYEE2, 2 * ETHER), C(1, 2, PAYEE, 3 * ETHER)],
 }
 
 
-def claims_of(evs):
-    """The claims of one test as C(..) tuples, resolving the emitter index and "provider"."""
-    emitters, providers, out = [], {}, []
+def payouts_of(evs, kind):
+    """The claims ("Claimed") or refunds ("Refunded") of one test as C(..) tuples, resolving the
+    emitter index and "provider" or "client" (a party whose address is derived at run time)."""
+    emitters, parties, out = [], {}, []
     for e in evs:
         if e["kind"] == "Created":
             if e["address"] not in emitters:
                 emitters.append(e["address"])
-            providers[(e["address"], e["id"])] = e["provider"]
-        elif e["kind"] == "Claimed":
+            parties[(e["address"], e["id"])] = (e.get("provider"), e.get("client"))
+        elif e["kind"] == kind:
             idx = emitters.index(e["address"]) if e["address"] in emitters else -1
-            to = "provider" if providers.get((e["address"], e["id"])) == e["to"] else e["to"]
+            provider, client = parties.get((e["address"], e["id"]), (None, None))
+            to = "provider" if provider == e["to"] else "client" if client == e["to"] else e["to"]
             out.append((idx, e["id"], e["m"], to, e["amount"]))
     return out
+
+
+def claims_of(evs):
+    return payouts_of(evs, "Claimed")
 
 
 def as_tuple(e):
@@ -329,7 +380,7 @@ def check_machine(key, evs):
     problems = []
     state = {}  # (contract, id, m) -> [state, evidence, rejections, revision]
     sizes = {}  # (contract, id) -> milestones
-    totals = {}  # (contract, id) -> [total, claimed so far]
+    totals = {}  # (contract, id) -> [total, claimed and refunded so far]
     for e in evs:
         if e["kind"] == "Created":
             sizes[(e["address"], e["id"])] = e["n"]
@@ -337,7 +388,7 @@ def check_machine(key, evs):
             for m in range(e["n"]):
                 state[(e["address"], e["id"], m)] = ["Funded", 0, 0, 0]
             continue
-        if e["kind"] not in TRANSITION_KINDS + ("Claimed",):
+        if e["kind"] not in TRANSITION_KINDS + ("Claimed", "Refunded"):
             continue
         k = (e["address"], e["id"], e["m"])
         label = f"{key[1]}: {e['kind']}(id {e['id']}, m {e['m']})"
@@ -354,8 +405,17 @@ def check_machine(key, evs):
             tot = totals[(e["address"], e["id"])]
             tot[1] += e["amount"]
             if tot[0] is not None and tot[1] > tot[0]:
-                problems.append(f"{label}: claims total {tot[1]}, which exceeds the agreement total {tot[0]}")
+                problems.append(f"{label}: claims and refunds total {tot[1]}, which exceeds the agreement total {tot[0]}")
             st[0] = "Paid"
+            continue
+        if e["kind"] == "Refunded":
+            if st[0] not in ("Funded", "Submitted"):
+                problems.append(f"{label} from {st[0]}, only a Funded or Submitted milestone can be refunded")
+            tot = totals[(e["address"], e["id"])]
+            tot[1] += e["amount"]
+            if tot[0] is not None and tot[1] > tot[0]:
+                problems.append(f"{label}: claims and refunds total {tot[1]}, which exceeds the agreement total {tot[0]}")
+            st[0] = "Refunded"
             continue
         if e["kind"] == "Submitted":
             if st[0] not in ("Funded", "Submitted"):
@@ -446,6 +506,17 @@ def check(logs):
         got = [g[:3] + ("any",) + g[4:] if w[3] == "any" else g for g, w in zip(got, want)] + got[len(want):]
         if got != want:
             problems.append(f"{key[1]}: claim events {got}, expected {want}")
+    for key, want in EXPECTED_REFUNDS.items():
+        if key not in decoded:
+            problems.append(f"expected test {key[1]} did not run")
+            continue
+        got = payouts_of(decoded[key], "Refunded")
+        got = [g[:3] + ("any",) + g[4:] if w[3] == "any" else g for g, w in zip(got, want)] + got[len(want):]
+        if got != want:
+            problems.append(f"{key[1]}: refund events {got}, expected {want}")
+    for key, evs in decoded.items():
+        if key not in EXPECTED_REFUNDS and any(e["kind"] == "Refunded" for e in evs):
+            problems.append(f"{key[1]}: emits MilestoneRefunded but has no exact refund sequence in EXPECTED_REFUNDS")
     for key, want in TRANSITION_DIFFERENTIAL.items():
         if key not in decoded:
             problems.append(f"expected test {key[1]} did not run")
@@ -642,6 +713,41 @@ def selftest():
     cases.append(("an expected claim sequence that differs (wrong amount) is reported", any("claim events" in p for p in check({ck: base + [clog(amount=2 * ETHER)]})[0])))
     cases.append(("a missing expected claim is reported", any("claim events" in p for p in check({ck: base})[0])))
     cases.append(("claims_of resolves the provider and the emitting contract", claims_of([{"kind": "Created", "id": 1, "provider": 0xAB, "address": "p"}, {"kind": "Created", "id": 1, "provider": 0xAB, "address": "s"}, cl(to=0xAB, a="s")]) == [C(1, 0, "provider", ETHER, 1)]))
+    # Phase 3B: MilestoneRefunded, decoded strictly, and Refund in the replay
+    def rlog(i=1, m=0, to=PAYEE, amount=ETHER):
+        return {"address": "0x" + "d2" * 20, "topics": [TOPIC_REFUNDED, "0x" + word(i), "0x" + word(m), "0x" + word(to)], "data": "0x" + word(amount)}
+
+    ev, probs = decode(rlog())
+    cases.append(("the well-formed MilestoneRefunded control decodes", not probs and ev["kind"] == "Refunded" and ev["id"] == 1 and ev["m"] == 0 and ev["to"] == PAYEE and ev["amount"] == ETHER))
+    cases.append(("the Refunded topic is keccak256 of its signature and distinct", TOPIC_REFUNDED == "0x" + keccak256(REFUNDED_SIG.encode()).hex() and TOPIC_REFUNDED not in (TOPIC_CLAIMED, TOPIC_SUBMITTED, TOPIC_APPROVED, TOPIC_REJECTED, TOPIC_CREATED)))
+    rejects("Refunded: zero amount", rlog(amount=0), "refunded amount is zero")
+    rejects("Refunded: zero payee", rlog(to=0), "payee is not a nonzero address")
+    rejects("Refunded: a payee wider than an address", rlog(to=1 << 160), "payee is not a nonzero address")
+    rejects("Refunded: m = 3", rlog(m=3), "m 3 is not 0..2")
+    rejects("Refunded: id zero", rlog(i=0), "id is zero")
+    rejects("Refunded: a missing topic", dict(rlog(), topics=rlog()["topics"][:3]), "must have 4 topics")
+    rejects("Refunded: an extra data word", dict(rlog(), data=rlog()["data"] + word(1)), "must be 1 word")
+    def rf(i=1, m=0, amount=ETHER, a="c1", to=PAYEE):
+        return {"kind": "Refunded", "id": i, "m": m, "to": to, "amount": amount, "address": a}
+    cases.append(("a Refund of a Funded milestone replays cleanly", not check_machine(mk, [dict(cr(), total=3 * ETHER), rf()])))
+    cases.append(("a Refund of a Submitted milestone replays cleanly", not check_machine(mk, [dict(cr(), total=3 * ETHER), tr("Submitted"), rf()])))
+    cases.append(("a Refund after a Reject (Funded again) replays cleanly", not check_machine(mk, [dict(cr(), total=3 * ETHER), tr("Submitted"), tr("Rejected"), rf()])))
+    machine_rejects("a Refund of an Approved milestone", [cr(), tr("Submitted"), tr("Approved"), rf()], "from Approved")
+    machine_rejects("a replayed Refund", [cr(), rf(), rf()], "from Refunded")
+    machine_rejects("a Refund after a Claim", paid_run + [rf()], "from Paid")
+    machine_rejects("a Claim after a Refund", [cr(), rf(), cl()], "from Refunded")
+    machine_rejects("a Submit after a Refund", [cr(), rf(), tr("Submitted")], "from Refunded")
+    machine_rejects("a Refund on an unused milestone", [cr(n=1), rf(m=1)], "unused milestone")
+    machine_rejects("a Refund on another contract's agreement", [cr(a="c1"), rf(a="c2")], "never created")
+    machine_rejects("a claim and a refund above the agreement total", [dict(cr(), total=2 * ETHER), tr("Submitted"), tr("Approved"), cl(), rf(m=1, amount=2 * ETHER)], "exceeds the agreement total")
+    rk = ("settlane_dev", "only_the_client_may_refund_and_only_an_expired_unpaid_milestone_to_a_nonzero_payee")
+    rbase = [make_log(n=2, total=3 * ETHER)]
+    cases.append(("the expected refund sequence control is accepted", not any("refund events" in p for p in check({rk: rbase + [rlog()]})[0])))
+    cases.append(("an expected refund sequence that differs (wrong amount) is reported", any("refund events" in p for p in check({rk: rbase + [rlog(amount=2 * ETHER)]})[0])))
+    cases.append(("an expected refund sequence that differs (wrong payee) is reported", any("refund events" in p for p in check({rk: rbase + [rlog(to=PAYEE2)]})[0])))
+    cases.append(("a missing expected refund is reported", any("refund events" in p for p in check({rk: rbase})[0])))
+    cases.append(("a refund in a test with no refund sequence is reported", any("no exact refund sequence" in p for p in check({ck: base + [rlog()]})[0])))
+    cases.append(("payouts_of resolves the client", payouts_of([{"kind": "Created", "id": 1, "provider": 0xAB, "client": 0xCD, "address": "s"}, rf(to=0xCD, a="s")], "Refunded") == [C(1, 0, "client", ETHER, 0)]))
     cases.append(("an expected transition sequence that differs is reported", any("transition events" in p for p in check({("settlane_dev", "transitions_are_not_payable_and_never_move_money"): [tlog("Submitted"), tlog("Rejected")]})[0])))
     # sequences
     cases.append(("a mismatch with the expected sequence is reported", any("provider is" in p for p in check({("settlane", "creates_a_single_milestone_agreement"): [make_log(provider=B1)]})[0])))
@@ -669,7 +775,7 @@ def main(argv):
     if problems:
         print("check_events: FAILED")
         return 1
-    print(f"check_events: ok ({checked} events decoded in {sum(1 for v in logs.values() if v)} tests, {len(EXPECTED)} creation sequences and {len(EXPECTED_TRANSITIONS)} transition sequences and {len(EXPECTED_CLAIMS)} claim sequences checked exactly, every test replayed as the milestone state machine, every client verified against the real caller)")
+    print(f"check_events: ok ({checked} events decoded in {sum(1 for v in logs.values() if v)} tests, {len(EXPECTED)} creation sequences and {len(EXPECTED_TRANSITIONS)} transition sequences and {len(EXPECTED_CLAIMS)} claim sequences and {len(EXPECTED_REFUNDS)} refund sequences checked exactly, every test replayed as the milestone state machine, every client verified against the real caller)")
     return 0
 
 

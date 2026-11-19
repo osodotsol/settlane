@@ -1,5 +1,5 @@
 // EXPECT: fail E-PARSE
-// IGNORE: C-XFER,C-XFER-RAW
+// IGNORE: C-XFER,C-XFER-RAW,C-XFER-ARM
 // Review H2: an arm that starts on the closing line of the payout arm is merged into it.
 // `fe fmt` would split it, but the lint must not depend on formatting.
 use std::evm::ether

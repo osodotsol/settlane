@@ -2,13 +2,14 @@
 // `SettlaneTestClock`, only supplies the Clock and calls one of these. Handlers see
 // contract state through `uses` parameters, and time only through the `clock` effect.
 //
-// Only `claim_handler` lists `call`, and it sends ETH exactly once, in the one approved form
-// (the asserted stipend-only `send_value` as its last statement, after every write; the
-// exact text is in scripts/settlane_lint.py and the policy, lint C-XFER, R-005 F-1). The other handlers omit `call`
+// Only `claim_handler` and `refund_handler` list `call`, and each sends ETH exactly once, in the
+// one approved form (the asserted stipend-only `send_value` as its last statement, after every
+// write; the exact text is in scripts/settlane_lint.py and the policy, lint C-XFER, R-005 F-1).
+// The other handlers omit `call`
 // and `create` entirely, which the compiler enforces (`8-0012`, `8-0036`), so they cannot move
 // ETH even though the contract declares `Call`.
 use ingot::rules
-use ingot::rules::{ClaimCheck, CreateCheck, ReviewCheck, SubmitCheck}
+use ingot::rules::{ClaimCheck, CreateCheck, RefundCheck, ReviewCheck, SubmitCheck}
 use ingot::types::{
     Agreement,
     AgreementCreated,
@@ -16,6 +17,7 @@ use ingot::types::{
     Milestone,
     MilestoneApproved,
     MilestoneClaimed,
+    MilestoneRefunded,
     MilestoneRejected,
     MilestoneState,
     MilestoneSubmitted,
@@ -377,8 +379,9 @@ pub fn require_claim(_ c: ClaimCheck) {
 //   3. the transfer is the last state-changing step. It forwards no gas beyond the 2300 stipend
 //      (`gas: 0`), so the recipient cannot re-enter, and its success is asserted, so a failed
 //      send reverts every write above and the milestone stays `Approved` (I7).
-// A second claim finds `Paid`, which is not `Approved`, and reverts (I4). The arm is the only
-// one besides `Refund` that may list `call` (lint E-CALL), and the lint also requires `gas: 0`,
+// A second claim finds `Paid`, which is not `Approved`, and reverts (I4). Its arm and the `Refund`
+// arm are the only ones that may list `call` (lint E-CALL), each arm must be exactly the call of
+// its handler (lint C-XFER-ARM, review G-1), and the lint also requires `gas: 0`,
 // an asserted result and no write after the transfer (lint C-XFER, C-XFER-ORDER).
 pub fn claim_handler(id: u256, m: u8, to: Address) -> Wei
 uses (
@@ -433,6 +436,106 @@ uses (
         )
     totals.outstanding = totals.outstanding - amount
     log.emit(MilestoneClaimed { id, m, to, amount })
+    // --- interaction: the last step, stipend only, result asserted ---
+    assert!(
+        call.send_value(addr: to, gas: 0, value: amount).success(),
+        "transfer failed",
+    )
+    amount
+}
+
+// Reverts with the reason for the first failed `Refund` rule.
+pub fn require_refund(_ c: RefundCheck) {
+    match c {
+        RefundCheck::Valid => {},
+        RefundCheck::UnknownAgreement => {
+            assert!(false, "unknown agreement")
+        },
+        RefundCheck::NotClient => {
+            assert!(false, "caller is not the client")
+        },
+        RefundCheck::NoSuchMilestone => {
+            assert!(false, "no such milestone")
+        },
+        RefundCheck::NotRefundable => {
+            assert!(false, "milestone cannot be refunded in this state")
+        },
+        RefundCheck::NotExpired => {
+            assert!(false, "milestone has not expired")
+        },
+        RefundCheck::ZeroPayee => {
+            assert!(false, "payee is zero")
+        },
+    }
+}
+
+// T6: the client refunds an expired `Funded` or `Submitted` milestone and the stored amount is
+// sent to `to`, which the client chooses (D-005a). The mirror of `claim_handler`:
+//   1. every rule is checked first (rules::check_refund), including `expired` on the clock;
+//   2. every write happens before the transfer: the milestone becomes `Refunded`, the agreement's
+//      `refunded` and the global outstanding move by exactly the stored amount (I1, I9);
+//   3. the transfer is the last step: stipend only (`gas: 0`), result asserted, so a failed send
+//      reverts every write above and the event, and the client can retry with another `to`.
+// A second refund finds `Refunded` and reverts, and so does a refund after a claim (`Paid`); a
+// claim after a refund finds `Refunded`, which is not `Approved` (I3, I4). The lint holds this
+// handler to the same approved transfer form as `claim_handler` (C-XFER family, D-024).
+pub fn refund_handler(id: u256, m: u8, to: Address) -> Wei
+uses (
+    clock: Clock,
+    ctx: Ctx,
+    call: mut Call,
+    log: mut Log,
+    totals: mut Totals,
+    agreements: mut StorageMap<u256, Agreement>,
+    milestones: mut StorageMap<(u256, u8), Milestone>,
+)
+{
+    let a = agreements.get(key: id)
+    let x = milestones.get(key: (id, m))
+    require_refund(
+        rules::check_refund(
+            agreement_exists: a.n != 0,
+            caller: ctx.caller(),
+            client: a.client,
+            state: x.state,
+            deliver_by: x.deliver_by,
+            decide_by: x.decide_by,
+            now: clock.now,
+            to,
+        ),
+    )
+    let amount = x.amount
+    // --- effects: every write happens before the transfer ---
+    milestones
+        .set(
+            key: (id, m),
+            value: Milestone {
+                state: MilestoneState::Refunded,
+                amount: x.amount,
+                deliver_by: x.deliver_by,
+                decide_by: x.decide_by,
+                spec: x.spec,
+                evidence: x.evidence,
+                rejections: x.rejections,
+                revision: x.revision,
+            },
+        )
+    agreements
+        .set(
+            key: id,
+            value: Agreement {
+                client: a.client,
+                provider: a.provider,
+                verifier: a.verifier,
+                review_period: a.review_period,
+                n: a.n,
+                deposited: a.deposited,
+                paid: a.paid,
+                refunded: a.refunded + amount,
+            },
+        )
+    totals.outstanding = totals.outstanding - amount
+    log.emit(MilestoneRefunded { id, m, to, amount })
     // --- interaction: the last step, stipend only, result asserted ---
     assert!(
         call.send_value(addr: to, gas: 0, value: amount).success(),

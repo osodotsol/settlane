@@ -17,6 +17,21 @@ Do not modify src/ unless the assignment allows it. Do not commit or push.
 ```
 
 ## Active assignment
+- **ID:** R-006 Phase 3B review (Refund, the second transition that moves ETH, plus the G-1 and provenance lint rules)
+- **Commit:** the Phase 3B commit on `settlane/dev` (see `git log -1`).
+- **Status: NOT RUN.** Codex is not installed in this environment. R-005 (the Phase 3A assignment below) was never run by Codex either, so a Codex run should cover both.
+- **Scope:** `ingots/settlane/src/rules.fe` (`expired`, `can_refund_from`, `check_refund`), `handlers.fe` (`refund_handler`, `require_refund`), the `Refund` arm in `settlane.fe`, `MilestoneRefunded` in `types.fe`; `ingots/settlane-dev/src/lib.fe` (the shell's `Refund` arm, `Actor::RefundVia`, the client mode of `Greedy` and `Once`) and the Phase 3B tests in both ingots; `scripts/settlane_lint.py` (`C-XFER-ARM`, `C-XFER-SOURCE`, the `C-XFER-RAW` extension), `scripts/lint-policy.json` (`transfers.handlers`, the ABI lock), `scripts/check_events.py` (refunds), `scripts/ci_negative_controls.py` (the 32 Phase 3B controls); `docs/LIFECYCLE.md` "Phase 3B" notes, `docs/SECURITY.md` "Phase 3B coverage", `docs/DECISIONS.md` D-024.
+- **Edit permission:** you may add new files under `experiments/review/` to reproduce a doubt. Do not edit any other file.
+- **Questions:**
+  1. Does T6 hold exactly: only the client, only `Funded` or `Submitted`, only when `expired` (strict boundaries, the milestone's own deadlines), `to != 0`, the stored amount, `Refunded` after, `refunded += amount`, `outstanding -= amount`? Find any accepted (state, caller, time, `to`) that should be refused, or the reverse.
+  2. Can any sequence settle a milestone twice (claim and refund, two refunds), pay more than its amount, or pay from another agreement's funds? Try both attackers as clients, a client that is also a provider elsewhere, and a payee that re-enters the other payout.
+  3. Is `Approved` ever refundable, or `Submitted` refundable before `decide_by`? Are Submit/Refund and review/Refund disjoint at every `now`?
+  4. Lint: write a compiling production shape that moves ETH, writes after a transfer (in a handler, an arm or a wrapper), or sends an amount or to a payee that is not `x.amount` and `to`, and passes the whole `C-XFER` family (now including `C-XFER-ARM` and `C-XFER-SOURCE`).
+  5. Events: can `check_events.py` pass on logs where a milestone is refunded twice, refunded after a claim, claimed after a refund, or where claims plus refunds exceed the deposit?
+  6. Tests: is any assertion vacuous? Are the client attackers' liveness controls strong enough? Propose mutations the 136 controls miss.
+- **Acceptance and output:** as for R-005 below, in `docs/reviews/<date>-phase3b.md`.
+
+## Previous assignment (R-005, Claude review run, Codex not run)
 - **ID:** R-005 Phase 3A review (Claim, the first transition that moves ETH; Refund is not implemented)
 - **Commit:** the Phase 3A commit on `settlane/dev` (see `git log -1`).
 - **Status: NOT RUN by Codex.** Codex is not installed in this environment. A Claude-side review of the same commit was run at the owner's request (`docs/reviews/2026-11-19-phase3a.md`, F-1 to F-5), and **its findings are fixed** (D-023). The fixes are not independently re-reviewed: when Codex runs this assignment it should treat the commit as `b3a12f1` plus the R-005 fix commit (see `git log`), and question 5 below is now about the one-approved-form lint.

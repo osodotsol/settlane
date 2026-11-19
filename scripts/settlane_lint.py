@@ -71,6 +71,18 @@ Rules (a violation exits 1):
   C-XFER-ORDER (production) the approved handler does not write its state, its accounting and
               its event before the transfer: each pattern listed in `required_before_send` must
               appear before the send. A missing or duplicated handler is `C-XFER-MISSING`.
+  C-XFER-SOURCE (production) a transfer handler whose signature is not exactly its policy
+              `params`, or that does not bind each name of its policy `bindings` exactly once by
+              exactly the listed statement (`let x = milestones.get(key: (id, m))`,
+              `let amount = x.amount`, ..), or that rebinds or assigns any parameter or binding
+              (`let amount = amount + amount`, `to = ..`, `x.amount = ..`). So the value sent is the
+              stored amount and the payee is the caller's own argument (review 2026-11-19, R-2).
+  C-XFER-ARM  (production) review G-1: the arm named by a transfer handler's policy `arm` is not
+              exactly its `arm_body` (whitespace aside), so code could run after the transfer in
+              the caller; or any other production code names a transfer handler (a wrapper could
+              write after it returns). A deployable contract without the arm is `C-XFER-MISSING`.
+              Also C-XFER-RAW: any production function other than a transfer handler requires the
+              Call effect.
   C-TEST      (production) a `#[test]` attribute outside `tests.fe`, or a reference to the
               `tests` module from another production file, so a test-attributed helper cannot
               be reached by a contract (the b6 shape: it also crashes the Fe 26.6.0 backend).
@@ -406,6 +418,97 @@ def lint_text(text, policy, path="<src>", kind="production"):
     return found
 
 
+def compact(s):
+    return re.sub(r"\s+", "", s)
+
+
+def body_group(arm_text):
+    """The arm's body: the last top-level `{..}` group (the first may be the field pattern)."""
+    k, last = 0, None
+    while k < len(arm_text):
+        if arm_text[k] in "({[":
+            close = match_close(arm_text, k)
+            if arm_text[k] == "{":
+                last = (k, close)
+            k = close + 1
+        else:
+            k += 1
+    return arm_text[last[0] + 1 : last[1]] if last else None
+
+
+def assigns(name, text):
+    """Offsets where `name` (or a field of it) is assigned: `name =`, `name +=`, `name.f = ..`."""
+    pat = rf"(?<![\w.]){re.escape(name)}(?:\s*\.\s*\w+)*\s*[-+*/%]?=(?!=)"
+    return [m.start() for m in re.finditer(pat, text) if not re.search(r"\b(?:let|var)\s+(?:mut\s+)?$", text[: m.start()])]
+
+
+def source_rules(name, spec, text, start, end, path):
+    """C-XFER-SOURCE for one transfer handler body text[start:end]."""
+    found = []
+    line = text.count("\n", 0, start) + 1
+    body = text[start:end]
+    head_m = list(re.finditer(rf"\bfn\s+{re.escape(name)}\s*\(", text[:start]))
+    if head_m:
+        open_idx = head_m[-1].end() - 1
+        params = text[open_idx + 1 : match_close(text, open_idx)]
+        if "params" in spec and compact(params).rstrip(",") != compact(spec["params"]):
+            found.append(("C-XFER-SOURCE", f"{path}:{line}: {name} takes ({params.strip()}); the policy requires exactly ({spec['params']})"))
+    names = [n.split(":")[0].strip() for n in split_top(spec.get("params", ""))]
+    for n in names:
+        for m in re.finditer(rf"\b(?:let|var)\s+(?:mut\s+)?{re.escape(n)}\b", body):
+            found.append(("C-XFER-SOURCE", f"{path}:{line}: {name} rebinds its parameter `{n}`"))
+        if assigns(n, body):
+            found.append(("C-XFER-SOURCE", f"{path}:{line}: {name} assigns its parameter `{n}`"))
+    for n, stmt in spec.get("bindings", {}).items():
+        decls = list(re.finditer(rf"\b(?:let|var)\s+(?:mut\s+)?{re.escape(n)}\b", body))
+        if len(decls) != 1:
+            found.append(("C-XFER-SOURCE", f"{path}:{line}: {name} must bind `{n}` exactly once, as `{stmt}` ({len(decls)} bindings found)"))
+        else:
+            eol = body.find("\n", decls[0].start())
+            got = body[decls[0].start() : eol if eol >= 0 else len(body)]
+            if compact(got) != compact(stmt):
+                found.append(("C-XFER-SOURCE", f"{path}:{line}: {name} binds `{got.strip()}`; the policy requires `{stmt}`"))
+        if assigns(n, body):
+            found.append(("C-XFER-SOURCE", f"{path}:{line}: {name} assigns `{n}` after binding it"))
+        if re.search(rf"\b(?:let|var)\s*\([^)]*\b{re.escape(n)}\b|\bfor\s+{re.escape(n)}\b", body):
+            found.append(("C-XFER-SOURCE", f"{path}:{line}: {name} binds `{n}` in a pattern"))
+    return found
+
+
+def arm_rules(text, path, policy):
+    """C-XFER-ARM (review G-1) for one production source: each transfer arm of a production
+    contract is exactly its policy `arm_body`, and no other code names a transfer handler.
+    Returns (violations, set of transfer arms seen as (contract, Msg::Arm))."""
+    found, seen = [], set()
+    handlers = (policy.get("transfers") or {}).get("handlers", {})
+    by_arm = {spec["arm"]: (h, spec) for h, spec in handlers.items() if "arm" in spec}
+    allowed_refs = {h: 0 for h in handlers}
+    for cname, _header, body in contracts_in(text):
+        entry = policy["contracts"].get(cname, {})
+        if not entry.get("production"):
+            continue
+        for m in re.finditer(r"\brecv\b[^{]*\{", body):
+            open_idx = m.end() - 1
+            mm = re.match(r"\brecv\s+([\w:]+)", m.group(0))
+            msg = mm.group(1) if mm else "?"
+            for aname, atext in arms_in(body[open_idx + 1 : match_close(body, open_idx)]):
+                qualified = f"{msg}::{aname}"
+                inner = body_group(atext)
+                if qualified in by_arm:
+                    h, spec = by_arm[qualified]
+                    seen.add((cname, qualified))
+                    if inner is None or compact(inner) != compact(spec["arm_body"]):
+                        found.append(("C-XFER-ARM", f"{path}: {cname}.{qualified} must be exactly `{spec['arm_body']}` (review G-1: nothing may run after the transfer), found `{' '.join((inner or '').split())}`"))
+                    else:
+                        allowed_refs[h] += 1
+    for h in handlers:
+        refs = len(re.findall(rf"(?<![\w]){re.escape(h)}\b", text))
+        defs = len(re.findall(rf"\bfn\s+{re.escape(h)}\b", text))
+        if refs > defs + allowed_refs[h]:
+            found.append(("C-XFER-ARM", f"{path}: `{h}` is named {refs - defs - allowed_refs[h]} time(s) outside its definition and its approved arm; a caller could act after the transfer"))
+    return found, seen
+
+
 APPROVED_TAIL = re.compile(r'assert!\(call\.send_value\(addr:to,gas:0,value:amount\)\.success\(\),"",?\)amount$')
 SEND = re.compile(r"\bsend_value\b")
 
@@ -452,6 +555,7 @@ def transfer_rules(text, path, policy, aliases):
                 found.append(("C-XFER", f"{path}:{line}: {name} must end with the approved transfer `assert!(call.send_value(addr: to, gas: 0, value: amount).success(), ..)` followed only by `amount`, with exactly one send_value in its body"))
                 continue  # every send in it is also reported below as not approved
             approved.append(sends[0])
+            found += source_rules(name, handlers[name], text, start, end, path)
             before = body[: sends[0] - start]
             for pat in handlers[name].get("required_before_send", []):
                 if not re.search(pat, before):
@@ -475,6 +579,14 @@ def transfer_rules(text, path, policy, aliases):
             found.append(("C-XFER-RAW", f"{path}:{line}: `call.{mm.group(1)}(..)` is not allowed in the production ingot: only `call.send_value(..)` in the approved transfer"))
     for m in re.finditer(r"\bCall\b", scrub):
         found.append(("C-XFER-RAW", f"{path}:{scrub.count(chr(10), 0, m.start()) + 1}: the `Call` type is named outside a `uses` list or an import"))
+    for fm in re.finditer(r"\bfn\s+(\w+)", text):
+        brace = text.find("{", fm.end())
+        head = text[fm.start() : brace if brace >= 0 else len(text)]
+        if fm.group(1) not in handlers and any(t == "Call" for _, t in uses_items(head, aliases)):
+            line = text.count("\n", 0, fm.start()) + 1
+            found.append(("C-XFER-RAW", f"{path}:{line}: `{fm.group(1)}` requires the Call effect, but only the transfer handlers {sorted(handlers)} may"))
+    xa, _ = arm_rules(text, path, policy)
+    found += xa
     for n, t in all_uses_items(text, aliases):
         if t == "Call" and n != "call":
             found.append(("C-XFER-RAW", f"{path}: the Call effect is bound as `{n}`; it must be named `call` so the transfer rules can see every use"))
@@ -655,6 +767,7 @@ def lint_tree(src_dir, policy, abi_dir=None):
     newest_source = None
     handler_names = list((policy.get("transfers") or {}).get("handlers", {}))
     handler_count = {n: 0 for n in handler_names}
+    arms_seen = set()
     for f in files:
         kind = classify(f, policy)
         if kind is None:
@@ -665,6 +778,7 @@ def lint_tree(src_dir, policy, abi_dir=None):
         if kind == "production":
             for n, spans in handler_bodies(strip_noise(text), handler_names).items():
                 handler_count[n] += len(spans)
+            arms_seen |= arm_rules(strip_noise(text), str(f), policy)[1]
             newest_source = max(newest_source or 0, f.stat().st_mtime)
             for cname, _, _ in contracts_in(strip_noise(text)):
                 entry = policy["contracts"].get(cname, {})
@@ -677,6 +791,10 @@ def lint_tree(src_dir, policy, abi_dir=None):
         for n, count in handler_count.items():
             if count != 1:
                 found.append(("C-XFER-MISSING", f"production handler `{n}` is defined {count} times; the transfer policy needs exactly one, or the approved transfer is not where the policy says"))
+        for n, spec in (policy.get("transfers") or {}).get("handlers", {}).items():
+            for cname in sorted(seen_deployable):
+                if "arm" in spec and (cname, spec["arm"]) not in arms_seen:
+                    found.append(("C-XFER-MISSING", f"deployable contract {cname} has no `{spec['arm']}` arm calling `{n}`, which the transfer policy requires"))
     if abi_dir is not None:
         found += check_artifacts(abi_dir, policy)
         for cname in sorted(seen_deployable):
@@ -818,7 +936,25 @@ def selftest(policy):
         ("selector rule: `sol(..)`, with or without spaces, is accepted", not [1 for t in ('#[selector = sol("a()")]', '#[selector=sol( "a()" )]', "#[selector =  sol(\"a()\")]") if re.search(r"#\[\s*selector\s*=\s*(?=\S)(?!sol\s*\()", strip_noise(t))]),
         ("selector rule: a numeric selector is rejected (R-002)", all(re.search(r"#\[\s*selector\s*=\s*(?=\S)(?!sol\s*\()", t) for t in ("#[selector = 0x1badc0de]", "#[selector=7]", "#[selector =  0xdeadbeef]"))),
     )
-    for label, good in lock_checks + arm_checks:
+    # D-024 / review G-1: a deployable contract must contain every transfer arm the policy names,
+    # and the tree check must see the arms in another file than the handlers.
+    ok_arms = (FIXTURES / "ok_transfer_arms.fe").read_text()
+    head, _, contract_text = ok_arms.partition("pub contract Settlane")
+    no_refund = re.sub(r"\n        Refund \{.*?\n        \}\n", "\n", contract_text, flags=re.S)
+    with tempfile.TemporaryDirectory() as tmp:
+        t = pathlib.Path(tmp)
+        src = t / "ingots/settlane/src"
+        src.mkdir(parents=True)
+        (src / "handlers.fe").write_text(head)
+        (src / "settlane.fe").write_text("pub contract Settlane" + contract_text)
+        split_ok = lint_tree(t / "ingots", policy)
+        (src / "settlane.fe").write_text("pub contract Settlane" + no_refund)
+        split_missing = lint_tree(t / "ingots", policy)
+    xfer_tree_checks = (
+        ("transfer arms: handlers and exact arms in separate files pass the tree check (D-024)", not split_ok),
+        ("transfer arms: a deployable contract without the Refund arm is C-XFER-MISSING (D-024)", no_refund != contract_text and any(r == "C-XFER-MISSING" and "SettleMsg::Refund" in m for r, m in split_missing)),
+    )
+    for label, good in lock_checks + arm_checks + xfer_tree_checks:
         print(("ok    " if good else "WRONG ") + label)
         ok &= good
     for label, good in (

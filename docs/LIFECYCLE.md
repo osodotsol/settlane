@@ -1,6 +1,6 @@
 # Lifecycle specification
 
-**Status:** Phase 3A implements T1 to T5 and the queries. T6 (Refund) is not implemented yet (Phase 3B), so `Claim` is the only transition that moves ETH. Provisionally approved by the owner on 2026-11-18 (D-005a refund, D-006b revision-request rejection, D-009 Clock effect, D-011 distinct verifier). Final approval is at the Phase 2 review. This document is authoritative for settlement behavior, and any transition not listed here **must revert**.
+**Status:** Phase 3B implements T1 to T6 and the queries. `Claim` (T5) and `Refund` (T6) are the only transitions that move ETH. Provisionally approved by the owner on 2026-11-18 (D-005a refund, D-006b revision-request rejection, D-009 Clock effect, D-011 distinct verifier). Final approval is at the Phase 2 review. This document is authoritative for settlement behavior, and any transition not listed here **must revert**.
 
 ## Agreement
 - Creation and funding are one payable call (D-003), so an unfunded or partially funded agreement cannot exist on-chain.
@@ -39,7 +39,7 @@
 - **Immutability.** Transitions can change `state`, `evidence`, `rejections` and `revision`. Amount, both deadlines and the spec are never rewritten (tested after every transition). `Approved` accepts no transition at all, at any time, and approval never expires (tested at every deadline).
 - **`Reject`** returns the milestone to `Funded`, clears the evidence and adds one to the checked `u256` rejection counter. It preserves the submission revision. `Approve` keeps the evidence and both counters.
 - **Windows.** `Submit` needs `now < deliver_by`. `Approve` and `Reject` need `now < decide_by`. A submission made at `deliver_by - 1` still gets the whole review window (tested). After the delivery window closes a rejected milestone stays `Funded` and can take no new evidence, so only a refund (Phase 3) can settle it.
-- **Money.** None of the three moves ETH, takes ETH (all are non-payable, tested with a zero-value control) or changes any total. None of these handlers lists `call`, and the compiler rejects a handler that omits an effect it needs, so they cannot send ETH. Since Phase 3A `Settlane` does declare `Call`, but only the `Claim` arm lists it (lint `E-CALL`, `E-BODY`; an arm listing it read-only would still compile, FE_NOTES E7).
+- **Money.** None of the three moves ETH, takes ETH (all are non-payable, tested with a zero-value control) or changes any total. None of these handlers lists `call`, and the compiler rejects a handler that omits an effect it needs, so they cannot send ETH. Since Phase 3A `Settlane` does declare `Call`, but only the `Claim` arm lists it, and since Phase 3B also the `Refund` arm (lint `E-CALL`, `E-BODY`; an arm listing it read-only would still compile, FE_NOTES E7).
 - **Views.** `getMilestone` returns `rejections` as output 7 and the submission `revision` as output 8. Unknown ids and unused slots still read as state `None`, all zero.
 - **Events.** `MilestoneSubmitted(id, m, evidence, revision)`, `MilestoneApproved(id, m, evidence, revision)` and `MilestoneRejected(id, m, evidence, revision, rejections)`. All three index `id`, `m` and `evidence`. The data contains the submission revision and, for rejection, the new rejection count.
 
@@ -55,6 +55,20 @@
 - **Paid is final.** After `Paid`, `Claim` reports `milestone is not approved`, `Submit` reports `milestone cannot take evidence in this state` and `Approve` and `Reject` report `milestone is not submitted`. All other milestone fields are kept.
 - **Non-payable.** `Claim` rejects attached value (tested with a zero-value control).
 - **Event.** `MilestoneClaimed(id, m, to, amount)` with `id`, `m` and `to` indexed and the amount as data.
+
+### Implementation notes (Phase 3B, T6 Refund)
+| Action | Order of the rules, with the revert reason |
+| --- | --- |
+| `Refund(id, m, to)` | the agreement exists (`unknown agreement`), the caller is the client (`caller is not the client`), the milestone exists (`no such milestone`), its state is `Funded` or `Submitted` (`milestone cannot be refunded in this state`), it has expired (`milestone has not expired`), `to != 0` (`payee is zero`); then the transfer must succeed (`transfer failed`) |
+
+- **Same order as every transition (D-024).** Agreement, role, milestone, state, window, then the argument. Role precedes state, so a caller with no role learns nothing about the milestone. State precedes the window, so an `Approved`, `Paid` or `Refunded` milestone always reports its state, at any time. The window precedes `to`, as the window precedes the evidence in T2 to T4.
+- **`expired` exactly as defined above.** `rules::expired(state, now, deliver_by, decide_by)` is `¬delivery_open` for `Funded`, `¬review_open` for `Submitted` and false for every other state. It reads the deadlines of the milestone being refunded, from storage. A `Submitted` milestone is not expired at `deliver_by`, only at `decide_by` (tested in every slot).
+- **Production clock.** The `Refund` arm provides `Clock { now: ctx.timestamp() }` like T1 to T4. The test block never advances and creation requires future deadlines, so on the production contract a refund is never expired (tested: every attempt reports `milestone has not expired`). The expired path is tested on the dev shell, which runs the same `refund_handler`.
+- **Amount from storage, payee from the client.** The amount sent is the stored milestone amount, and `Refund` returns it. The client chooses `to` (D-005a), and only `to != 0` is required. A client whose own address cannot take a 2300-gas send refunds to another address.
+- **Order: checks, effects, interaction.** The handler writes `Refunded`, `refunded += amount`, `outstanding -= amount` and emits `MilestoneRefunded`, and only then calls `send_value(to, gas: 0, amount)` and asserts success. A failed transfer reverts the whole call, including the event, and the client can retry with another `to`.
+- **Exclusive settlement (I3, I4).** After `Refunded`, `Refund` reports `milestone cannot be refunded in this state`, `Claim` reports `milestone is not approved`, `Submit` reports `milestone cannot take evidence in this state`, and `Approve` and `Reject` report `milestone is not submitted`. After `Paid`, `Refund` reports `milestone cannot be refunded in this state`. `Approved` is never refundable.
+- **Non-payable.** `Refund` rejects attached value before any rule, with empty revert data (tested on production and the shell).
+- **Event.** `MilestoneRefunded(id, m, to, amount)` with `id`, `m` and `to` indexed and the amount as data.
 
 ## Milestone stored states
 `Funded`, `Submitted`, `Approved`, `Paid`, `Refunded`. Unused slots are `None`. There is no stored `Rejected` state (D-006b): a rejection returns the milestone to `Funded`.

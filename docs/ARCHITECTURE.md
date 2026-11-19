@@ -64,6 +64,7 @@ Implemented in Phase 2A, 2B and 3A (the production ABI contains exactly these ni
 | `Approve { id, m: u8, evidence, revision }` (T3: the verifier, `Submitted`, review window open, evidence and revision match the stored values) | no | none |
 | `Reject { id, m: u8, evidence, revision }` (T4, D-015: the same guards, back to `Funded`, evidence cleared, `rejections + 1`) | no | none |
 | `Claim { id, m: u8, to }` (T5: the provider, `Approved`, `to != 0`, no time guard; pays the stored amount with the 2300-gas stipend after every write, and reverts entirely if the transfer fails) | no | amount sent |
+| `Refund { id, m: u8, to }` (T6: the client, `Funded` or `Submitted` and expired, `to != 0`, production clock; refunds the stored amount with the 2300-gas stipend after every write, and reverts entirely if the transfer fails) | no | amount sent |
 | `GetAgreement { id }` (reverts for an unknown id) | no | `(client, provider, verifier, review_period, n)` |
 | `GetMilestone { id, m: u8 }` (unknown id or unused slot reads as state 0, all zero) | no | `(state, amount, deliver_by, decide_by, spec, evidence, rejections, revision)` |
 | `GetAccounting { id }` (reverts for an unknown id) | no | `(deposited, paid, refunded, outstanding)` |
@@ -71,20 +72,15 @@ Implemented in Phase 2A, 2B and 3A (the production ABI contains exactly these ni
 
 State codes: `None` 0, `Funded` 1, `Submitted` 2, `Approved` 3, `Paid` 4, `Refunded` 5. `n` is a `u8`, and the ABI decoder rejects a wider value rather than truncating it (tested, `experiments/review/u1_u8_abi.fe`).
 
-Planned for Phase 3B, **not implemented**:
-| Message | Payable | Returns |
-| --- | --- | --- |
-| `Refund { id, m, to }` | no | amount sent |
-
-Events (implemented): `AgreementCreated` (`id`, `client` and `provider` indexed, plus `verifier`, `total`, `milestones`), `MilestoneSubmitted` and `MilestoneApproved` (indexed `id`, `m`, `evidence` and a revision data word) and `MilestoneRejected` (same topics and revision, followed by the new `rejections` total) and `MilestoneClaimed` (indexed `id`, `m`, `to`, with the amount as data). Phase 3B adds `MilestoneRefunded`. Fe test code cannot read events, but `fe test --show-logs` prints them, and `scripts/check_events.py` decodes every event (topic hash, topics, payload) with an independent encoder, checks exact sequences, **replays each test's events as the milestone state machine of the lifecycle spec** (so the logs alone must obey it), that a rejected creation emits nothing, that the client is the real caller (the test contract emits `CallerProbe` with its own address for direct calls, and the dev Actor emits `Acted` for calls through it), and that production and the test-clock shell emit identical events. The ABI lock fixes the event's signature and indexed flags.
+Events (implemented): `AgreementCreated` (`id`, `client` and `provider` indexed, plus `verifier`, `total`, `milestones`), `MilestoneSubmitted` and `MilestoneApproved` (indexed `id`, `m`, `evidence` and a revision data word) and `MilestoneRejected` (same topics and revision, followed by the new `rejections` total) and `MilestoneClaimed` and `MilestoneRefunded` (indexed `id`, `m`, `to`, with the amount as data). Fe test code cannot read events, but `fe test --show-logs` prints them, and `scripts/check_events.py` decodes every event (topic hash, topics, payload) with an independent encoder, checks exact sequences, **replays each test's events as the milestone state machine of the lifecycle spec** (so the logs alone must obey it), that a rejected creation emits nothing, that the client is the real caller (the test contract emits `CallerProbe` with its own address for direct calls, and the dev Actor emits `Acted` for calls through it), and that production and the test-clock shell emit identical events. The ABI lock fixes the event's signature and indexed flags.
 
 ## Payments
-`Claim` is implemented (Phase 3A) and is the only arm that lists `call` (lint `E-CALL`). `Refund` follows in Phase 3B with the same shape.
+`Claim` (Phase 3A) and `Refund` (Phase 3B) are the only arms that list `call` (lint `E-CALL`), and each arm is exactly the call of its handler (`C-XFER-ARM`, review G-1).
 
 - Pull only. Verification creates an entitlement, and `Claim` or `Refund` moves the ETH.
 - Checks, then effects (state and counters), then the interaction (`call.send_value`), then `assert!(success)`. A failed send reverts the whole call, so no counter or state change can record a transfer that did not happen.
 - Payouts go to a caller-chosen `to`, as in the starter's `Withdraw { to }`. A reverting recipient can only block its own claim, and the caller can retry with another `to`.
-- `send_value(gas: 0)` forwards only the 2300-gas stipend (E6, and Phase 3A's reentrancy test). Since R-005 the lint allows exactly one transfer form (`C-XFER`): `assert!(call.send_value(addr: to, gas: 0, value: amount).success(), "..")` as the last statement of a handler listed in `scripts/lint-policy.json` (`transfers.handlers`, today `claim_handler`), directly before the return value, after every required write (`C-XFER-ORDER`), with no other method on the Call binding (`C-XFER-RAW`) and no `#[test]` outside `tests.fe` (`C-TEST`). Refund (Phase 3B) is added to that policy in the same change that adds it.
+- `send_value(gas: 0)` forwards only the 2300-gas stipend (E6, and Phase 3A's reentrancy test). Since R-005 the lint allows exactly one transfer form (`C-XFER`): `assert!(call.send_value(addr: to, gas: 0, value: amount).success(), "..")` as the last statement of a handler listed in `scripts/lint-policy.json` (`transfers.handlers`: `claim_handler` and `refund_handler`), directly before the return value, after every required write (`C-XFER-ORDER`), with no other method on the Call binding (`C-XFER-RAW`) and no `#[test]` outside `tests.fe` (`C-TEST`). Since Phase 3B (D-024) the amount must be `x.amount` from the milestone record and the payee the `to` parameter (`C-XFER-SOURCE`), each payout arm must be exactly the call of its handler and only the transfer handlers may require `Call` (`C-XFER-ARM`, `C-XFER-RAW`), so nothing can run after a transfer in the caller.
 
 ## Time
 `ctx.timestamp()` with seconds granularity. Validators can skew it by a few seconds, which matters only at exact deadline boundaries. This is documented, not mitigated.

@@ -117,3 +117,15 @@ pub struct MilestoneClaimed {
     pub to: Address,
     pub amount: Wei,
 }
+
+// T6: the client refunded an expired milestone, and `amount` was sent to `to`.
+#[event]
+pub struct MilestoneRefunded {
+    #[indexed]
+    pub id: u256,
+    #[indexed]
+    pub m: u8,
+    #[indexed]
+    pub to: Address,
+    pub amount: Wei,
+}
