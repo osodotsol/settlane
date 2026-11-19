@@ -1,0 +1,46 @@
+
+// R-006 PROBE (temporary copy only): the CLIENT of one agreement and the PROVIDER of another.
+// Its fallback always re-enters Claim on its own approved milestone (to LOOT), whatever gas it
+// has: a refund payee that re-enters the OTHER payout.
+pub contract Cross uses (ctx: Ctx, call: mut Call, log: mut Log) {
+    mut target: Address,
+    mut cid: u256,
+    mut cm: u8,
+    mut rid: u256,
+    mut rm: u8,
+
+    recv {
+        AttackMsg::Setup { target: t, id: i, m: k } uses (mut target, mut cid, mut cm) {
+            target = t
+            cid = i
+            cm = k
+        }
+
+        AttackMsg::AimRefund { target: t, id: i, m: k } uses (mut target, mut rid, mut rm) {
+            target = t
+            rid = i
+            rm = k
+        }
+
+        #[payable]
+        AttackMsg::CreateAs { target: t, provider, verifier, review_period, n, amounts, deliver_by, specs } -> u256
+        uses (ctx, mut call, mut log)
+        {
+            log.emit(Acted { actor: ctx.address() })
+            call.call(addr: t, gas: 1000000, value: ctx.value(), message: SettleMsg::Create { provider, verifier, review_period, n, amounts, deliver_by, specs })
+        }
+
+        AttackMsg::SubmitAs { evidence } uses (mut call, target, cid, cm) {
+            call.call(addr: target, gas: 1000000, value: Wei::zero(), message: SettleMsg::Submit { id: cid, m: cm, evidence })
+        }
+
+        AttackMsg::RefundTo { to } -> Wei uses (mut call, target, rid, rm) {
+            call.call(addr: target, gas: 2000000, value: Wei::zero(), message: SettleMsg::Refund { id: rid, m: rm, to })
+        }
+
+        #[payable]
+        _ uses (ctx, mut call, target, cid, cm) {
+            let _ = call.try_call(addr: target, gas: ctx.gas(), value: Wei::zero(), message: SettleMsg::Claim { id: cid, m: cm, to: Address::new(LOOT) })
+        }
+    }
+}

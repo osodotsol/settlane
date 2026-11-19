@@ -277,6 +277,12 @@ pub msg AttackMsg {
     AimRefund { target: Address, id: u256, m: u8 },
     #[selector = sol("refundTo(address)")]
     RefundTo { to: Address } -> Wei,
+    // R-006 L-2: the attacker that is the CLIENT of one agreement and the PROVIDER of another
+    // (`Cross`). These choose which payout of the OTHER agreement its fallback re-enters.
+    #[selector = sol("reenterClaim()")]
+    ReenterClaim,
+    #[selector = sol("reenterRefund()")]
+    ReenterRefund,
 }
 
 pub contract Reentrant uses (ctx: Ctx, call: mut Call) {
@@ -577,6 +583,126 @@ pub contract Once uses (ctx: Ctx, call: mut Call, log: mut Log) {
                         gas: ctx.gas(),
                         value: Wei::zero(),
                         message: SettleMsg::Claim { id, m, to: ctx.address() },
+                    )
+            }
+        }
+    }
+}
+
+// R-006 L-2 (docs/reviews/2026-11-19-phase3b.md): a payee that re-enters the OTHER payout.
+// It is the client of one agreement (`AimRefund` names the milestone it can refund) and the
+// provider of another (`Setup` names the milestone it can claim). Its fallback ALWAYS re-enters,
+// whatever gas it has, and asks for the ETH to go to a third address (`LOOT`) so any payout it
+// manages to trigger shows in a balance: `ReenterClaim` makes it claim, `ReenterRefund` refund.
+// Under the 2300-gas stipend the fallback cannot finish and the send fails; with real gas the
+// nested payout lands, which the tests use as the proof that the attacker is live.
+pub contract Cross uses (ctx: Ctx, call: mut Call, log: mut Log) {
+    mut target: Address,
+    mut cid: u256,
+    mut cm: u8,
+    mut rid: u256,
+    mut rm: u8,
+    mut refund_mode: bool,
+
+    recv {
+        AttackMsg::Setup { target: t, id: i, m: k }
+        uses (mut target, mut cid, mut cm)
+        {
+            target = t
+            cid = i
+            cm = k
+        }
+
+        AttackMsg::AimRefund { target: t, id: i, m: k }
+        uses (mut target, mut rid, mut rm)
+        {
+            target = t
+            rid = i
+            rm = k
+        }
+
+        AttackMsg::ReenterClaim {} uses (mut refund_mode) {
+            refund_mode = false
+        }
+
+        AttackMsg::ReenterRefund {} uses (mut refund_mode) {
+            refund_mode = true
+        }
+
+        #[payable]
+        AttackMsg::CreateAs {
+            target: t,
+            provider,
+            verifier,
+            review_period,
+            n,
+            amounts,
+            deliver_by,
+            specs,
+        } -> u256
+        uses (ctx, mut call, mut log)
+        {
+            log.emit(Acted { actor: ctx.address() })
+            call.call(
+                addr: t,
+                gas: 1000000,
+                value: ctx.value(),
+                message: SettleMsg::Create {
+                    provider,
+                    verifier,
+                    review_period,
+                    n,
+                    amounts,
+                    deliver_by,
+                    specs,
+                },
+            )
+        }
+
+        AttackMsg::SubmitAs { evidence } uses (mut call, target, cid, cm) {
+            call.call(
+                addr: target,
+                gas: 1000000,
+                value: Wei::zero(),
+                message: SettleMsg::Submit { id: cid, m: cm, evidence },
+            )
+        }
+
+        AttackMsg::ClaimTo { to } -> Wei uses (mut call, target, cid, cm) {
+            call.call(
+                addr: target,
+                gas: 2000000,
+                value: Wei::zero(),
+                message: SettleMsg::Claim { id: cid, m: cm, to },
+            )
+        }
+
+        AttackMsg::RefundTo { to } -> Wei uses (mut call, target, rid, rm) {
+            call.call(
+                addr: target,
+                gas: 2000000,
+                value: Wei::zero(),
+                message: SettleMsg::Refund { id: rid, m: rm, to },
+            )
+        }
+
+        #[payable]
+        _ uses (ctx, mut call, target, cid, cm, rid, rm, refund_mode) {
+            if refund_mode {
+                let _ = call
+                    .try_call(
+                        addr: target,
+                        gas: ctx.gas(),
+                        value: Wei::zero(),
+                        message: SettleMsg::Refund { id: rid, m: rm, to: Address::new(LOOT) },
+                    )
+            } else {
+                let _ = call
+                    .try_call(
+                        addr: target,
+                        gas: ctx.gas(),
+                        value: Wei::zero(),
+                        message: SettleMsg::Claim { id: cid, m: cm, to: Address::new(LOOT) },
                     )
             }
         }

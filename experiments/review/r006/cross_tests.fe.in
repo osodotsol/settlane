@@ -1,0 +1,58 @@
+
+// R-006 PROBE (temporary copy only).
+#[test(balance = 300_000_000_000_000_000_000)]
+fn r006_probe_refund_payee_reenters_claim_elsewhere() uses (evm: mut Evm) {
+    probe()
+    let shell = shell_at_1000()
+    let p = actor(11)
+    let v = actor(12)
+    let x = evm.create2<Cross>(value: Wei::zero(), args: (), salt: 41)
+    let loot = Address::new(LOOT)
+    assert!(create_as(x, shell, parties(single(2000), p, v), ether(1)) == 1, "x is the client of 1")
+    assert!(create(shell, parties(single(5000), x, v), ether(1)) == 2, "x is the provider of 2")
+    set_time(shell, 1500)
+    aim(x, shell, 2, 0)
+    evm.call(addr: x, gas: 2000000, value: Wei::zero(), message: AttackMsg::SubmitAs { evidence: 0xe1 })
+    assert!(approve_out(v, shell, 2, 0, 0xe1, 1).success(), "setup: 2/0 Approved")
+    evm.call(addr: x, gas: 200000, value: Wei::zero(), message: AttackMsg::AimRefund { target: shell, id: 1, m: 0 })
+    set_time(shell, 2000)
+    check_invariants(shell, 2, Wei::zero())
+    let out = evm.try_call(addr: x, gas: 5000000, value: Wei::zero(), message: AttackMsg::RefundTo { to: x })
+    assert!(because(out, Why::TransferFailed), "PROBE-1: a refund to a payee that re-enters Claim fails under the stipend")
+    assert!(state_of(shell, 1, 0) == 1 && state_of(shell, 2, 0) == 3, "PROBE-2: nothing settled")
+    assert!(evm.balance(loot) == Wei::zero(), "PROBE-3: no nested claim landed")
+    check_invariants(shell, 2, Wei::zero())
+    assert!(evm.send_value(addr: x, gas: 500000, value: wei(1)).success(), "control: fallback ran")
+    assert!(state_of(shell, 2, 0) == 4 && evm.balance(loot) == ether(1), "PROBE-4 control: with real gas the cross re-entry claims 2/0")
+    check_invariants(shell, 2, Wei::zero())
+    let got: Wei = evm.call(addr: x, gas: 5000000, value: Wei::zero(), message: AttackMsg::RefundTo { to: Address::new(0x9b1) })
+    assert!(got == ether(1) && state_of(shell, 1, 0) == 5, "PROBE-5: the refund then goes to an EOA once")
+    check_invariants(shell, 2, Wei::zero())
+    assert!(evm.balance(shell) == Wei::zero(), "PROBE-6: everything settled exactly once")
+}
+
+// The same with real gas forwarded by the refund (as a mutated refund_handler would): CEI alone
+// must keep the books straight when the payee re-enters the other payout.
+#[test(balance = 300_000_000_000_000_000_000)]
+fn r006_probe_cross_reentry_books_balance() uses (evm: mut Evm) {
+    probe()
+    let shell = shell_at_1000()
+    let p = actor(11)
+    let v = actor(12)
+    let x = evm.create2<Cross>(value: Wei::zero(), args: (), salt: 42)
+    let loot = Address::new(LOOT)
+    assert!(create_as(x, shell, parties(single(2000), p, v), ether(1)) == 1)
+    assert!(create(shell, parties(single(5000), x, v), ether(1)) == 2)
+    set_time(shell, 1500)
+    aim(x, shell, 2, 0)
+    evm.call(addr: x, gas: 2000000, value: Wei::zero(), message: AttackMsg::SubmitAs { evidence: 0xe1 })
+    assert!(approve_out(v, shell, 2, 0, 0xe1, 1).success())
+    evm.call(addr: x, gas: 200000, value: Wei::zero(), message: AttackMsg::AimRefund { target: shell, id: 1, m: 0 })
+    set_time(shell, 2000)
+    let out = evm.try_call(addr: x, gas: 5000000, value: Wei::zero(), message: AttackMsg::RefundTo { to: x })
+    if out.success() {
+        assert!(state_of(shell, 1, 0) == 5 && state_of(shell, 2, 0) == 4, "PROBE-G1: both settled once")
+        assert!(evm.balance(x) == ether(1) && evm.balance(loot) == ether(1), "PROBE-G2: exact amounts")
+    }
+    check_invariants(shell, 2, Wei::zero())
+}

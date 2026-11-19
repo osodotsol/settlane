@@ -233,6 +233,30 @@ uses (
 """
 
 
+CLOCK = "Clock { now: ctx.timestamp() }"
+
+
+def clock_in_arm(arm, replacement):
+    """Mutation (R-006 L-1): replace the production clock INSIDE ONE ARM of settlane.fe. The arm is
+    looked up by name, and the clock must belong to that arm (no other arm header in between), so
+    reordering the arms can never turn a control into a mutation of a different arm."""
+
+    def mutate(root):
+        p = root / "ingots/settlane/src/settlane.fe"
+        s = p.read_text()
+        hdr = re.search(rf"\n        (?:#\[payable\]\n        )?{arm} \{{", s)
+        assert hdr, f"arm {arm} not found in settlane.fe"
+        i = s.index(CLOCK, hdr.end())
+        assert not re.search(r"\n        (?:#\[payable\]\n        )?[A-Z]\w* \{", s[hdr.end() : i]), f"the next clock after {arm} belongs to another arm"
+        p.write_text(s[:i] + replacement + s[i + len(CLOCK) :])
+
+    return mutate
+
+
+FROZEN = "Clock { now: Timestamp::from_seconds(0) }"
+AHEAD = "Clock { now: Timestamp::from_seconds(ctx.timestamp().as_seconds() + 86400) }"
+
+
 PATCHES = REPO / "experiments/review/r005/patches"
 
 
@@ -268,20 +292,33 @@ ONLY_FAILING = {
 ATTACKERS = {"a_reentrant_provider_is_paid_exactly_once", "a_provider_that_always_re_enters_is_never_paid_under_the_stipend_and_never_twice", "a_provider_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_paid"}
 # Phase 3B: the two client attackers without a gas threshold.
 REFUND_ATTACKERS = {"a_client_that_always_re_enters_is_never_refunded_under_the_stipend_and_never_twice", "a_client_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_refunded"}
+# R-006 L-2: the two payees that re-enter the OTHER payout.
+CROSS_REFUND = "a_refund_payee_that_re_enters_claim_in_another_agreement_cannot_be_refunded_and_nothing_settles"
+CROSS_CLAIM = "a_claim_payee_that_re_enters_refund_in_another_agreement_cannot_be_paid_and_nothing_settles"
 MUST_FAIL = {
-    "mut-claim-forwards-gas": ATTACKERS,
+    "mut-claim-forwards-gas": ATTACKERS | {CROSS_CLAIM},
     "mut-claim-effects-after-transfer-with-gas": ATTACKERS,
     "r005-b1-gas-expression": ATTACKERS,
     "r005-b2-try-call-raw-forwards-gas": ATTACKERS,
     "r005-b3b-nested-send-with-gas": ATTACKERS,
     "r005-b7-double-pay-under-60k": {"a_provider_that_always_re_enters_is_never_paid_under_the_stipend_and_never_twice", "a_provider_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_paid"},
-    "mut-refund-forwards-gas": REFUND_ATTACKERS,
+    "mut-refund-forwards-gas": REFUND_ATTACKERS | {CROSS_REFUND},
     "mut-refund-effects-after-transfer-with-gas": REFUND_ATTACKERS,
+    "l1-refund-clock-ahead": {"production_refunds_are_never_expired_in_a_frozen_block_and_report_each_reason_in_order"},
 }
 
 # After CI has run, the policy lint is also run on the mutated copy and must reject it with every
 # rule listed (R-005 F-1): a bypass the tests happen to catch must not be one the lint lets through.
 LINT_ALSO = {
+    # R-006 L-1: a production arm whose clock is not `ctx.timestamp()`. For four of the five arms no
+    # test can see it (the test block never advances), so the lint is the only layer; every one of
+    # them must be rejected with C-CLOCK.
+    "l1-create-clock-frozen": ["C-CLOCK"],
+    "l1-submit-clock-frozen": ["C-CLOCK"],
+    "l1-approve-clock-frozen": ["C-CLOCK"],
+    "l1-reject-clock-frozen": ["C-CLOCK"],
+    "l1-refund-clock-frozen": ["C-CLOCK"],
+    "l1-refund-clock-ahead": ["C-CLOCK"],
     "r005-b1-gas-expression": ["C-XFER"],
     "r005-b2-try-call-raw-forwards-gas": ["C-XFER", "C-XFER-RAW"],
     "r005-b2b-try-call-raw-stipend-write-after": ["C-XFER", "C-XFER-RAW"],
@@ -476,6 +513,15 @@ MUTATIONS = {
     "r005-evm-send-in-production-helper": ("R-005: `evm.send_value` in a production helper (only a #[test] fn of tests.fe may use it)", "policy lint (fails", add_fixture("bad_xfer_evm_send_in_helper.fe", "ingots/settlane/src/attack.fe")),
     "r005-test-fn-in-production-file": ("R-005: a #[test] function in a production file other than tests.fe", "policy lint (fails", add_fixture("bad_xfer_send_in_test_fn_of_production_file.fe", "ingots/settlane/src/attack.fe")),
     "r005-tests-module-reference": ("R-005: a production file imports the tests module", "policy lint (fails", replace_in(HANDLERS, "use ingot::rules\n", "use ingot::rules\nuse ingot::tests\n")),
+    # R-006 L-1: the production clock of each arm, frozen at 0. Only Create's is visible to a test
+    # (creation needs a future deadline); in the other four the tests stay green and the lint is
+    # the only layer that fails, which these controls pin by requiring C-CLOCK (LINT_ALSO).
+    "l1-create-clock-frozen": ("R-006 L-1: the production Create arm reads a clock frozen at 0 (a test sees it)", "Tests for both ingots", clock_in_arm("Create", FROZEN)),
+    "l1-submit-clock-frozen": ("R-006 L-1: the production Submit arm reads a clock frozen at 0 (delivery would never close; only the lint can see it)", "policy lint (fails", clock_in_arm("Submit", FROZEN)),
+    "l1-approve-clock-frozen": ("R-006 L-1: the production Approve arm reads a clock frozen at 0 (the review window would never close; only the lint can see it)", "policy lint (fails", clock_in_arm("Approve", FROZEN)),
+    "l1-reject-clock-frozen": ("R-006 L-1: the production Reject arm reads a clock frozen at 0 (only the lint can see it)", "policy lint (fails", clock_in_arm("Reject", FROZEN)),
+    "l1-refund-clock-frozen": ("R-006 L-1: the production Refund arm reads a clock frozen at 0 (every milestone would be unrefundable forever; only the lint can see it)", "policy lint (fails", clock_in_arm("Refund", FROZEN)),
+    "l1-refund-clock-ahead": ("R-006 L-1: the production Refund arm reads a clock one day ahead (premature refunds; the frozen-block refund test sees it)", "Tests for both ingots", clock_in_arm("Refund", AHEAD)),
     "unformatted-dev-code": ("badly formatted dev code", "Format check", lambda r: write(r, "ingots/settlane-dev/src/messy.fe", "pub fn   messy ( )   ->  u256 {   1 }\n")),
 }
 

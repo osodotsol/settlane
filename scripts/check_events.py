@@ -272,6 +272,8 @@ EXPECTED_TRANSITIONS = {
         S(1, 0, 0xE1), A(1, 0, 0xE1), S(1, 0, 0xE1), A(1, 0, 0xE1), S(1, 2, 0xE3), A(1, 2, 0xE3), S(1, 2, 0xE3), A(1, 2, 0xE3)],
     ("settlane_dev", "a_provider_that_always_re_enters_is_never_paid_under_the_stipend_and_never_twice"): [S(1, 0, 0xE1), A(1, 0, 0xE1), S(1, 1, 0xE2), A(1, 1, 0xE2)],
     ("settlane_dev", "a_provider_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_paid"): [S(1, 0, 0xE1), A(1, 0, 0xE1), S(1, 1, 0xE2), A(1, 1, 0xE2)],
+    ("settlane_dev", "a_refund_payee_that_re_enters_claim_in_another_agreement_cannot_be_refunded_and_nothing_settles"): [S(2, 0, 0xE1), A(2, 0, 0xE1), S(2, 1, 0xE2), A(2, 1, 0xE2)],
+    ("settlane_dev", "a_claim_payee_that_re_enters_refund_in_another_agreement_cannot_be_paid_and_nothing_settles"): [S(2, 0, 0xE1), A(2, 0, 0xE1)],
     ("settlane_dev", "a_payee_is_given_no_more_than_the_2300_gas_stipend"): [S(1, 0, 0xE1), A(1, 0, 0xE1)],
     ("settlane_dev", "precompile_payees_are_the_providers_own_choice_and_some_strand_the_eth"): [S(1, 0, 0xE1), A(1, 0, 0xE1), S(1, 1, 0xE2), A(1, 1, 0xE2)],
     ("settlane_dev", "the_client_refunds_expired_milestones_once_and_claim_and_refund_exclude_each_other"): [S(1, 1, 0xE2), S(1, 2, 0xE3), A(1, 2, 0xE3)],
@@ -310,6 +312,9 @@ EXPECTED_CLAIMS = {
     ("settlane_dev", "a_failed_transfer_reverts_the_whole_claim_and_a_retry_to_another_payee_succeeds"): [C(1, 1, PAYEE, 2 * ETHER)],
     ("settlane_dev", "a_reentrant_provider_is_paid_exactly_once"): [C(1, 0, "provider", ETHER)],
     ("settlane_dev", "claim_is_not_payable"): [C(1, 0, PAYEE, ETHER)],
+    # the control's nested claim went to the third address; the attack itself emitted nothing
+    ("settlane_dev", "a_refund_payee_that_re_enters_claim_in_another_agreement_cannot_be_refunded_and_nothing_settles"): [C(2, 0, LOOT, ETHER), C(2, 1, PAYEE2, 2 * ETHER)],
+    ("settlane_dev", "a_claim_payee_that_re_enters_refund_in_another_agreement_cannot_be_paid_and_nothing_settles"): [C(2, 0, PAYEE, ETHER)],
     ("settlane_dev", "a_provider_that_always_re_enters_is_never_paid_under_the_stipend_and_never_twice"): [C(1, 0, LOOT, ETHER), C(1, 1, PAYEE, 2 * ETHER)],
     # the control's nested claim (the fallback had real gas, and a stipend send to it succeeds)
     ("settlane_dev", "a_provider_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_paid"): [C(1, 0, "provider", ETHER)],
@@ -341,6 +346,9 @@ EXPECTED_REFUNDS = {
     # the control's nested refund went to the attacker, which is agreement 1's client
     ("settlane_dev", "a_client_that_re_enters_once_with_whatever_gas_it_gets_cannot_be_refunded"): [C(1, 0, "client", ETHER)],
     ("settlane_dev", "refund_is_not_payable_on_production_or_the_shell"): [C(1, 0, PAYEE, ETHER, 1)],
+    ("settlane_dev", "a_refund_payee_that_re_enters_claim_in_another_agreement_cannot_be_refunded_and_nothing_settles"): [C(1, 0, PAYEE, ETHER)],
+    # the control's nested refund went to the third address; the attack itself emitted nothing
+    ("settlane_dev", "a_claim_payee_that_re_enters_refund_in_another_agreement_cannot_be_paid_and_nothing_settles"): [C(1, 0, LOOT, ETHER), C(1, 1, PAYEE2, 2 * ETHER)],
     ("settlane_dev", "refunds_belong_to_each_agreements_client_and_accounting_holds_across_claims_and_refunds"): [
         C(1, 1, PAYEE, 2 * ETHER), C(2, 0, PAYEE2, ETHER), C(2, 1, PAYEE2, 2 * ETHER), C(1, 2, PAYEE, 3 * ETHER)],
 }

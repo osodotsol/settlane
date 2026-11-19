@@ -26,8 +26,8 @@ python3 scripts/settlane_lint.py ingots --abi-dir out   # policy lint; fails on 
 python3 scripts/settlane_lint.py --selftest             # lint self-test (90 fixtures, 47 unit checks)
 python3 scripts/check_tests.py --selftest               # test-gate self-test (10 cases)
 python3 scripts/check_events.py --selftest              # event-checker self-test (115 cases, each negative asserts its reason); python3 scripts/keccak.py checks Keccak-256
-python3 scripts/ci_negative_controls.py # proves CI FAILS for each D-014 mistake, review finding and broken lifecycle rule (local, ~1.5 h, 136 controls, needs PyYAML); --dry-run checks every mutation still applies
-bash experiments/review/run.sh          # review 2026-11-18 and R-005 repros: the lint rejects them, b6 still crashes `fe test` (FE_NOTES)
+python3 scripts/ci_negative_controls.py # proves CI FAILS for each D-014 mistake, review finding and broken lifecycle rule (local, ~2 h, 142 controls, needs PyYAML); --dry-run checks every mutation still applies
+bash experiments/review/run.sh          # review 2026-11-18, R-005 and R-006 repros: the lint rejects them, b6 still crashes `fe test` (FE_NOTES), a frozen production clock is rejected by C-CLOCK in every arm
 bash experiments/phase1/run.sh          # Phase 1 compiler experiments (remove before submission)
 fe test ingots/settlane-dev             # focused run of one ingot
 ```

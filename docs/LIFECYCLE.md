@@ -1,6 +1,6 @@
 # Lifecycle specification
 
-**Status:** Phase 3B implements T1 to T6 and the queries. `Claim` (T5) and `Refund` (T6) are the only transitions that move ETH. Provisionally approved by the owner on 2026-11-18 (D-005a refund, D-006b revision-request rejection, D-009 Clock effect, D-011 distinct verifier). Final approval is at the Phase 2 review. This document is authoritative for settlement behavior, and any transition not listed here **must revert**.
+**Status:** Phase 3B implements T1 to T6 and the queries. `Claim` (T5) and `Refund` (T6) are the only transitions that move ETH. Provisionally approved by the owner on 2026-11-18 (D-005a refund, D-006b revision-request rejection, D-009 Clock effect, D-011 distinct verifier). D-005a and D-024 (Refund, with D-005 resolved) were approved by the owner on 2026-11-19. Final approval of the rest is at the Phase 2 review. This document is authoritative for settlement behavior, and any transition not listed here **must revert**.
 
 ## Agreement
 - Creation and funding are one payable call (D-003), so an unfunded or partially funded agreement cannot exist on-chain.

@@ -4,6 +4,7 @@
 # 2. The policy lint now REJECTS every attack repro (H1-H4), and the real M1 shape:
 #    a dev contract's bytecode built into out/ without an ABI.
 # 3. R-005 (2026-11-19): the F-1 transfer bypasses are rejected (experiments/review/r005/run.sh).
+# 4. R-006 (2026-11-19): L-1 and L-2 (experiments/review/r006/run.sh).
 # Usage: bash experiments/review/run.sh   (from the repo root; exit 0 = all hold)
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -106,6 +107,9 @@ fi
 
 # R-005 (docs/reviews/2026-11-19-phase3a.md): the nine transfer bypasses are now rejected.
 bash "$here/r005/run.sh" || fail=1
+# R-006 (docs/reviews/2026-11-19-phase3b.md): a frozen production clock is rejected by C-CLOCK in every
+# arm, and the cross-payout probe still behaves as recorded.
+bash "$here/r006/run.sh" || fail=1
 
 [ $fail -eq 0 ] && echo "review regressions: all hold" || echo "review regressions: FAILED"
 exit $fail

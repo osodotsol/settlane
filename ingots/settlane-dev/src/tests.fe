@@ -7,6 +7,7 @@ use ingot::{
     Actor,
     ActorMsg,
     AttackMsg,
+    Cross,
     DevMsg,
     GasCap,
     Greedy,
@@ -3367,7 +3368,12 @@ uses (evm: mut Evm)
     assert!(evm.balance(Address::new(0x9b2)) == ether(6))
 
     // Submitted: not expired at deliver_by, expires exactly at decide_by. Review and refund are
-    // disjoint: at decide_by - 1 the verifier can still act and the client cannot.
+    // disjoint. This test asserts the client's side at decide_by - 1 (refused) and both sides at
+    // decide_by (the verifier is refused, the client is refunded). The verifier's side at
+    // decide_by - 1 (still able to approve and reject) is asserted by
+    // `the_review_window_closes_exactly_at_decide_by_and_a_late_submission_keeps_it_whole`, and the
+    // exactly-one-holds property at every second by the pure
+    // `rules_expired_is_the_exact_negation_of_the_open_windows_at_d_minus_1_d_d_plus_1`.
     k = 0
     while k < 3 {
         let d: u256 = 2000 + 1000 * (k as u256)
@@ -3873,6 +3879,329 @@ uses (evm: mut Evm)
     assert_money(shell, ether(3))
     // The last milestone: refunded by its client, and then nothing is owed anywhere.
     assert!(refund_ok(shell, 1, 2, payee) == ether(3))
+    check_invariants(shell, 2, Wei::zero())
+    assert_money(shell, Wei::zero())
+}
+
+// ------------------------------------------------- R-006 L-2: a payee that re-enters the OTHER payout
+// `Cross` is the client of one agreement and the provider of another, and its fallback always
+// re-enters (whatever gas it has) the payout the test chose with `ReenterClaim` or `ReenterRefund`,
+// asking for the ETH to go to `LOOT`. With the stipend the fallback cannot finish, so the send
+// fails and the whole payout reverts; with real gas the nested payout lands (the liveness control).
+
+fn reenter(_ attacker: Address, _ refund: bool) uses (evm: mut Evm) {
+    if refund {
+        evm.call(
+            addr: attacker,
+            gas: 200000,
+            value: Wei::zero(),
+            message: AttackMsg::ReenterRefund {},
+        )
+    } else {
+        evm.call(
+            addr: attacker,
+            gas: 200000,
+            value: Wei::zero(),
+            message: AttackMsg::ReenterClaim {},
+        )
+    }
+}
+
+// The attacker (the provider of `id`) submits milestone m and the verifier approves it.
+fn cross_approve(_ x: Address, _ v: Address, _ s: Address, _ id: u256, _ m: u8, _ e: u256)
+uses (evm: mut Evm)
+{
+    aim(x, s, id, m)
+    evm.call(
+        addr: x,
+        gas: 2000000,
+        value: Wei::zero(),
+        message: AttackMsg::SubmitAs { evidence: e },
+    )
+    assert!(approve_out(v, s, id, m, e, 1).success(), "setup: approve")
+}
+
+fn cross_claims(_ x: Address, _ to: Address) -> Wei uses (evm: mut Evm) {
+    evm.call(
+        addr: x,
+        gas: 5000000,
+        value: Wei::zero(),
+        message: AttackMsg::ClaimTo { to },
+    )
+}
+
+fn cross_refunds(_ x: Address, _ to: Address) -> Wei uses (evm: mut Evm) {
+    evm.call(
+        addr: x,
+        gas: 5000000,
+        value: Wei::zero(),
+        message: AttackMsg::RefundTo { to },
+    )
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn a_refund_payee_that_re_enters_claim_in_another_agreement_cannot_be_refunded_and_nothing_settles()
+uses (evm: mut Evm)
+{
+    probe()
+    let p = actor(11)
+    let v = actor(12)
+    let x = evm.create2<Cross>(value: Wei::zero(), args: (), salt: 43)
+    let shell = shell_at_1000()
+    let loot = Address::new(LOOT)
+    let honest = Address::new(0x9b1)
+    let payee = Address::new(0x9b2)
+    // Agreement 1: x is the CLIENT (1 ETH due at 2000). Agreement 2: x is the PROVIDER of two
+    // approved milestones (1 + 2 ETH); the test contract is its client.
+    assert!(
+        create_as(x, shell, parties(single(2000), p, v), ether(1)) == 1,
+        "x is the client of 1",
+    )
+    assert!(
+        create(shell, parties(two(5000, 6000), x, v), ether(3)) == 2,
+        "x is the provider of 2",
+    )
+    set_time(shell, 1500)
+    cross_approve(x, v, shell, 2, 0, 0xe1)
+    cross_approve(x, v, shell, 2, 1, 0xe2)
+    set_time(shell, 2000)
+    aim_refund(x, shell, 1, 0)
+    reenter(x, false)
+    check_invariants(shell, 2, Wei::zero())
+
+    // Positive control: the attacker IS live. With real gas its fallback claims milestone 2/0 to
+    // the third address, nothing in the attacker stops it, and 1/0 is untouched.
+    aim(x, shell, 2, 0)
+    assert!(
+        evm.send_value(addr: x, gas: 500000, value: wei(1)).success(),
+        "control: the fallback ran with real gas",
+    )
+    assert!(
+        evm.balance(loot) == ether(1),
+        "control: the nested claim paid the third address",
+    )
+    assert!(
+        state_of(shell, 2, 0) == 4 && state_of(shell, 1, 0) == 1,
+        "control: 2/0 Paid, 1/0 untouched",
+    )
+    assert!(
+        evm.balance(x) == wei(1),
+        "control: the attacker kept only its wei",
+    )
+    check_invariants(shell, 2, Wei::zero())
+
+    // The attack: refund 1/0 to the attacker itself while 2/1 is claimable. The send carries only
+    // the stipend, the fallback cannot finish, the send fails and the whole refund reverts.
+    aim(x, shell, 2, 1)
+    let refunded_before = milestone(shell, 1, 0)
+    let claimable_before = milestone(shell, 2, 1)
+    let acc1 = accounting(shell, 1)
+    let acc2 = accounting(shell, 2)
+    let owed = outstanding(shell)
+    let held = evm.balance(shell)
+    assert!(
+        because(attacker_refunds(x, x), Why::TransferFailed),
+        "a refund payee that re-enters Claim cannot be refunded with the stipend",
+    )
+    assert!(
+        same_milestone(milestone(shell, 1, 0), refunded_before),
+        "1/0 is still Funded, unchanged",
+    )
+    assert!(
+        same_milestone(milestone(shell, 2, 1), claimable_before),
+        "2/1 is still Approved, unchanged",
+    )
+    assert!(
+        same_accounting(accounting(shell, 1), acc1),
+        "agreement 1 accounting unchanged",
+    )
+    assert!(
+        same_accounting(accounting(shell, 2), acc2),
+        "agreement 2 accounting unchanged",
+    )
+    assert!(
+        outstanding(shell) == owed && evm.balance(shell) == held,
+        "totals and balance unchanged",
+    )
+    assert!(
+        evm.balance(loot) == ether(1) && evm.balance(x) == wei(1),
+        "nobody was paid by the failed refund",
+    )
+    check_invariants(shell, 2, Wei::zero())
+
+    // Neither party is locked out: each payout goes once to an address that can receive it.
+    assert!(
+        cross_refunds(x, honest) == ether(1),
+        "the refund goes to an ordinary address",
+    )
+    assert!(
+        cross_claims(x, payee) == ether(2),
+        "and the claim of 2/1 still pays once",
+    )
+    assert!(state_of(shell, 1, 0) == 5 && state_of(shell, 2, 1) == 4)
+    assert!(
+        because(attacker_refunds(x, honest), Why::NotRefundable),
+        "the refund only once",
+    )
+    assert!(
+        because(attacker_claims(x, payee), Why::NotApproved),
+        "the claim only once",
+    )
+    assert!(
+        evm.balance(honest) == ether(1) && evm.balance(payee) == ether(2),
+    )
+    assert!(
+        acc_is(
+            accounting(shell, 1),
+            ether(1),
+            Wei::zero(),
+            ether(1),
+            Wei::zero(),
+        ),
+        "agreement 1: refunded 1, nothing owed",
+    )
+    assert!(
+        acc_is(
+            accounting(shell, 2),
+            ether(3),
+            ether(3),
+            Wei::zero(),
+            Wei::zero(),
+        ),
+        "agreement 2: paid 1 + 2, nothing owed",
+    )
+    check_invariants(shell, 2, Wei::zero())
+    assert_money(shell, Wei::zero())
+}
+
+#[test(balance = 300_000_000_000_000_000_000)]
+fn a_claim_payee_that_re_enters_refund_in_another_agreement_cannot_be_paid_and_nothing_settles()
+uses (evm: mut Evm)
+{
+    probe()
+    let p = actor(11)
+    let v = actor(12)
+    let x = evm.create2<Cross>(value: Wei::zero(), args: (), salt: 44)
+    let shell = shell_at_1000()
+    let loot = Address::new(LOOT)
+    let honest = Address::new(0x9b1)
+    let payee = Address::new(0x9b2)
+    // Agreement 1: x is the CLIENT of two milestones (1 + 2 ETH, due at 2000 and 3000), both
+    // expired at 3000. Agreement 2: x is the PROVIDER of one approved 1 ETH milestone.
+    assert!(
+        create_as(x, shell, parties(two(2000, 3000), p, v), ether(3)) == 1,
+        "x is the client of 1",
+    )
+    assert!(
+        create(shell, parties(single(5000), x, v), ether(1)) == 2,
+        "x is the provider of 2",
+    )
+    set_time(shell, 1500)
+    cross_approve(x, v, shell, 2, 0, 0xe1)
+    set_time(shell, 3000)
+    reenter(x, true)
+    aim(x, shell, 2, 0)
+    check_invariants(shell, 2, Wei::zero())
+
+    // Positive control: with real gas the fallback refunds milestone 1/0 to the third address.
+    aim_refund(x, shell, 1, 0)
+    assert!(
+        evm.send_value(addr: x, gas: 500000, value: wei(1)).success(),
+        "control: the fallback ran with real gas",
+    )
+    assert!(
+        evm.balance(loot) == ether(1),
+        "control: the nested refund paid the third address",
+    )
+    assert!(
+        state_of(shell, 1, 0) == 5 && state_of(shell, 2, 0) == 3,
+        "control: 1/0 Refunded, 2/0 untouched",
+    )
+    assert!(
+        evm.balance(x) == wei(1),
+        "control: the attacker kept only its wei",
+    )
+    check_invariants(shell, 2, Wei::zero())
+
+    // The attack: claim 2/0 to the attacker itself while 1/1 is refundable.
+    aim_refund(x, shell, 1, 1)
+    let claimed_before = milestone(shell, 2, 0)
+    let refundable_before = milestone(shell, 1, 1)
+    let acc1 = accounting(shell, 1)
+    let acc2 = accounting(shell, 2)
+    let owed = outstanding(shell)
+    let held = evm.balance(shell)
+    assert!(
+        because(attacker_claims(x, x), Why::TransferFailed),
+        "a claim payee that re-enters Refund cannot be paid with the stipend",
+    )
+    assert!(
+        same_milestone(milestone(shell, 2, 0), claimed_before),
+        "2/0 is still Approved, unchanged",
+    )
+    assert!(
+        same_milestone(milestone(shell, 1, 1), refundable_before),
+        "1/1 is still Funded, unchanged",
+    )
+    assert!(
+        same_accounting(accounting(shell, 1), acc1),
+        "agreement 1 accounting unchanged",
+    )
+    assert!(
+        same_accounting(accounting(shell, 2), acc2),
+        "agreement 2 accounting unchanged",
+    )
+    assert!(
+        outstanding(shell) == owed && evm.balance(shell) == held,
+        "totals and balance unchanged",
+    )
+    assert!(
+        evm.balance(loot) == ether(1) && evm.balance(x) == wei(1),
+        "nobody was paid by the failed claim",
+    )
+    check_invariants(shell, 2, Wei::zero())
+
+    // Each payout then goes once to an ordinary address.
+    assert!(
+        cross_claims(x, honest) == ether(1),
+        "the claim goes to an ordinary address",
+    )
+    assert!(
+        cross_refunds(x, payee) == ether(2),
+        "and the refund of 1/1 still pays once",
+    )
+    assert!(state_of(shell, 2, 0) == 4 && state_of(shell, 1, 1) == 5)
+    assert!(
+        because(attacker_claims(x, honest), Why::NotApproved),
+        "the claim only once",
+    )
+    assert!(
+        because(attacker_refunds(x, payee), Why::NotRefundable),
+        "the refund only once",
+    )
+    assert!(
+        evm.balance(honest) == ether(1) && evm.balance(payee) == ether(2),
+    )
+    assert!(
+        acc_is(
+            accounting(shell, 1),
+            ether(3),
+            Wei::zero(),
+            ether(3),
+            Wei::zero(),
+        ),
+        "agreement 1: refunded 1 + 2, nothing owed",
+    )
+    assert!(
+        acc_is(
+            accounting(shell, 2),
+            ether(1),
+            ether(1),
+            Wei::zero(),
+            Wei::zero(),
+        ),
+        "agreement 2: paid 1, nothing owed",
+    )
     check_invariants(shell, 2, Wei::zero())
     assert_money(shell, Wei::zero())
 }
