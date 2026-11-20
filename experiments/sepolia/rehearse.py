@@ -50,10 +50,10 @@ def free_port():
 
 
 class Anvil:
-    def __init__(self, chain_id, hardfork=None, fork_url=None):
+    def __init__(self, chain_id, hardfork=None, fork_url=None, extra=()):
         self.port = free_port()
         self.url = f"http://127.0.0.1:{self.port}"
-        self.proc = subprocess.Popen([lib.tool("anvil"), "--host", "127.0.0.1", "--port", str(self.port), "--chain-id", str(chain_id), "--silent"] + (["--hardfork", hardfork] if hardfork else []) + (["--fork-url", fork_url] if fork_url else []), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.proc = subprocess.Popen([lib.tool("anvil"), "--host", "127.0.0.1", "--port", str(self.port), "--chain-id", str(chain_id), "--silent"] + (["--hardfork", hardfork] if hardfork else []) + (["--fork-url", fork_url] if fork_url else []) + list(extra), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.rpc = lib.Rpc(self.url)
         for _ in range(100):
             try:
@@ -276,6 +276,103 @@ def extra_checks(fork, fork_url, base, out_all):
         shutil.rmtree(base2, ignore_errors=True)
 
 
+def budget_and_step_checks(fork, fork_url, base, out_all):
+    """The spending budget (internal transfers, refundable deposits, unexpected inflows) and the one-transaction step mode."""
+    import types, shutil as sh
+    d = pathlib.Path(tempfile.mkdtemp(prefix="settlane-bud-"))
+    sh.copytree(base / "keystores", d / "keystores"); sh.copytree(base / "passwords", d / "passwords")
+    for p in (d, d / "keystores", d / "passwords"):
+        p.chmod(0o700)
+    old_dir, old_budget = lib.STATE_DIR, dict(testnet.BUDGET)
+    lib.STATE_DIR = d
+    try:
+        w = lib.load_wallets(d)
+        c, p_, v = w["client"].address, w["provider"].address, w["verifier"].address
+        CONTRACT = "0x00000000000000000000000000000000000c0de1"
+        # ---- 1. the accounting rules, with scripted balances (nothing on any chain)
+        class Bal(lib.Rpc):
+            def __init__(self):
+                self.url = "http://127.0.0.1:0"
+                self.b = {c: 10**18, p_: 0, v: 0}
+            def balance(self, a):
+                return self.b[a.lower()]
+        rpc = Bal()
+        testnet.BUDGET["wei"] = 3_500_000_000_000_000  # 0.0035 ETH
+        FEE = 10**12  # a transaction's fee in these scripted steps
+        def attempt(reserve_extra):
+            try:
+                testnet.enforce_budget(rpc, FEE + reserve_extra); return None
+            except lib.Abort as e:
+                return str(e)
+        check("a transfer to one of our own wallets is not exposure (its value is not reserved)", testnet.at_risk_value(p_, 4 * 10**15) == 0 and testnet.at_risk_value(CONTRACT, 10**15) == 10**15 and testnet.at_risk_value(None, 0) == 0)
+        check("the first send records the baseline and a fee alone passes", attempt(0) is None and testnet.load_state(lib.SEPOLIA)["budget_start_total_wei"] == 10**18)
+        rpc.b[c] -= 4 * 10**15 + FEE; rpc.b[p_] += 4 * 10**15            # fund provider: only the fee leaves
+        check("after an internal transfer only its fee counts as spent (the 0.004 ETH moved between our wallets is not)", attempt(testnet.at_risk_value(v, 4 * 10**15)) is None and 10**18 - sum(rpc.b.values()) == FEE)
+        rpc.b[c] -= 4 * 10**15 + FEE; rpc.b[v] += 4 * 10**15            # fund verifier
+        check("a second internal transfer is allowed even though 2 x 0.004 ETH exceeds the 0.0035 ETH budget", attempt(0) is None and 10**18 - sum(rpc.b.values()) == 2 * FEE)
+        rpc.b[c] -= 10**15 + FEE                                         # create #1: deposit 0.001 locked in the contract
+        check("a deposit counts as spent while it is locked (3 x 0.001 ETH fit in 0.0035 ETH, the 4th would not)", attempt(10**15) is None)
+        rpc.b[c] -= 10**15 + FEE
+        check("a second deposit still fits", attempt(10**15) is None)
+        rpc.b[c] -= 10**15 + FEE
+        msg = attempt(10**15)
+        check("the fourth deposit is refused: locked deposits are exposure", msg is not None and "budget" in msg and "exceeded" in msg, (msg or "ACCEPTED")[:70])
+        rpc.b[p_] += 10**15                                              # claim: the deposit comes back to a wallet of ours
+        rpc.b[c] += 10**15                                               # refund: the deposit comes back to the client
+        check("once a claim and a refund bring deposits back to our wallets, they stop counting and the next deposit is allowed", attempt(10**15) is None)
+        rpc.b[c] += 5 * 10**17                                           # an unexpected deposit (e.g. a faucet drip)
+        msg = attempt(0)
+        check("an unexpected increase of the combined balance stops the workflow (the baseline would hide losses)", msg is not None and "MORE than at the start" in msg, (msg or "ACCEPTED")[:70])
+    finally:
+        lib.STATE_DIR = old_dir
+        testnet.BUDGET.update(old_budget)
+        sh.rmtree(d, ignore_errors=True)
+
+    # ---- 2. step mode end to end, with a budget that internal-transfer or deposit mis-counting would break
+    base3 = pathlib.Path(tempfile.mkdtemp(prefix="settlane-step-"))
+    sh.copytree(base / "keystores", base3 / "keystores"); sh.copytree(base / "passwords", base3 / "passwords")
+    for p in (base3, base3 / "keystores", base3 / "passwords"):
+        p.chmod(0o700)
+    node = Anvil(lib.SEPOLIA, fork, fork_url, extra=("--base-fee", "16"))
+    try:
+        w3 = lib.load_wallets(base3)
+        node.rpc.call("anvil_setBalance", w3["client"].address, hex(10**18))
+        BUD = ["--budget-wei", str(3_500_000_000_000_000)]
+        def step(*extra):
+            rc, out = cli(node.url, base3, "step", *extra, *BUD); out_all.append(out); return rc, out
+        n0 = nonce_of(node, w3["client"].address)
+        rc, out = step()
+        check("`step` without --broadcast only describes the next transaction (recipient, value, gas, worst case) and sends nothing", rc == 0 and "dry run" in out and "fund-provider" in out and nonce_of(node, w3["client"].address) == n0)
+        rc, out = cli(node.url, base3, "step", "--broadcast", "--budget-wei", "1000"); out_all.append(out)
+        check("`step --broadcast` with a budget too small for its worst case is refused before signing", rc == 2 and "budget" in out and nonce_of(node, w3["client"].address) == n0, out.strip().splitlines()[-1][:90])
+        names = []
+        for i in range(8):                                                # everything up to the second create
+            rc, out = step("--broadcast")
+            names.append((rc, out.count("STOPPED")))
+            if rc != 0:
+                print(out)
+                break
+        check("eight single steps (2 internal transfers, deploy, A1 create/submit/approve/claim, A2 create) each run exactly one transaction and stop", all(r == 0 and n == 1 for r, n in names) and len(names) == 8, str(names))
+        st = json.loads((base3 / f"state-{lib.SEPOLIA}.json").read_text())
+        check("each step was recorded with its hash, block and gas used", [x["name"] for x in st["steps_done"]] == testnet.STEPS[:8] and all(len(x["tx"]) == 66 for x in st["steps_done"]))
+        n1 = nonce_of(node, w3["client"].address)
+        rc, out = step("--broadcast")
+        check("the refund step does NOT send before the Funded deadline: it reports the time left and the simulated revert", rc == 0 and "before the Funded deadline" in out and "milestone has not expired" in out and nonce_of(node, w3["client"].address) == n1, out.strip().splitlines()[-1][:100])
+        node.rpc.call("evm_setNextBlockTimestamp", st["a2_deliver_by"] + 1); node.rpc.call("evm_mine")
+        rc, out = step("--broadcast")
+        check("after the chain's clock passes the deadline the refund step sends one transaction and verifies the payout", rc == 0 and "0 step(s) remain" in out and "gas used" in out, out.strip().splitlines()[-1][:110])
+        st = json.loads((base3 / f"state-{lib.SEPOLIA}.json").read_text())
+        total = sum(node.rpc.balance(x.address) for x in w3.values())
+        check("the nine steps complete within the 0.0035 ETH budget; only fees (under 0.0002 ETH) were lost (internal transfers and returned deposits cost nothing)", len(st["steps_done"]) == 9 and 0 < 10**18 - total < 2 * 10**14, f"lost {(10**18 - total) / 1e18:.9f} ETH")
+        rc, out = cli(node.url, base3, "verify"); out_all.append(out)
+        check("the read-only verification passes after the step-by-step run", rc == 0 and " 0 failed" in out)
+        rc, out = cli(node.url, base3, "run", "--broadcast"); out_all.append(out)
+        check("`run` refuses once step mode is in use (the two are not mixed)", rc == 2 and "step` mode is in use" in out)
+    finally:
+        node.stop()
+        sh.rmtree(base3, ignore_errors=True)
+
+
 def main():
     git_before = lib.run(["git", "status", "--porcelain"], cwd=lib.REPO).stdout
     base = pathlib.Path(tempfile.mkdtemp(prefix="settlane-rehearsal-"))
@@ -389,6 +486,7 @@ def main():
         out_all.append(out)
         check("verification FAILS on a contract with other code", rc == 1 and "FAIL  the deployed runtime code equals" in out)
         extra_checks(fork, fork_url, base, out_all)
+        budget_and_step_checks(fork, fork_url, base, out_all)
         # ---- hygiene
         blob = "\n".join(out_all)
         check("no private key and no password appears in any output", not any(k and k[2:] in blob.lower() for k in keys.values()) and PASSWORD not in blob)

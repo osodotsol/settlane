@@ -16,6 +16,7 @@ Subcommands
   deploy                    build with Fe 26.6.0 and deploy Settlane                (sends 1 tx)
   run                       Create, Submit, Approve, Claim; Create and Refund; [Submitted refund]
   verify                    read-only verification of the deployment (bytecode, ABI, events, accounting)
+  step                      ONE transaction of the first-run plan (dry run without --broadcast), verified, recorded, then stop
   budget                    read-only: worst-case and expected cost of every transaction at the live fee, against the budget
   artifact                  show or check (--write: re-pin) the production build against experiments/sepolia/artifact.json
   resolve-pending           after a transaction without a receipt: check it, clear it or keep refusing
@@ -100,23 +101,38 @@ def wallets_total(rpc):
     return sum(rpc.balance(w.address) for w in L.load_wallets().values())
 
 
+def at_risk_value(to, value):
+    """The part of a transaction's value that LEAVES our three wallets: a transfer to one of them (`fund`) is internal,
+    so it is not exposure; value sent to the contract (an agreement's deposit) is, until it comes back (refund, or claim to a wallet)."""
+    own = {w.address.lower() for w in L.load_wallets().values()}
+    return 0 if (to and to.lower() in own) else value
+
+
 def enforce_budget(rpc, reserve_wei):
-    """Total spending cap. `spent` = the three wallets' combined balance at the first send minus now, so it counts
-    gas fees AND the value sitting in the contract (conservative: locked value usually comes back). A send is refused
-    if spent + this transaction's worst case (gas limit x max fee + value) would exceed the budget. Recorded in the state."""
+    """Total spending cap. spent = the three wallets' combined balance at the FIRST send minus now. Therefore:
+      * a transfer between our own wallets changes nothing but its fee (internal, not exposure);
+      * a deposit in the contract counts as spent while it is locked, and stops counting when a refund or a claim to
+        one of our wallets brings it back (conservative, and exact once settled);
+      * an INCREASE of the combined balance above the baseline (a faucet drip, anything unexpected) is refused: the
+        baseline would silently hide losses, so the workflow stops until the owner decides.
+    A send is refused if spent + this transaction's worst case (gas limit x max fee + the value that leaves our wallets)
+    would exceed the budget. The baseline is recorded in the state file at the first send."""
     st = load_state(L.SEPOLIA)
     now = wallets_total(rpc)
     if "budget_start_total_wei" not in st:
         st["budget_start_total_wei"] = now
         save_state(L.SEPOLIA, st)
-    spent = st["budget_start_total_wei"] - now
+    start = st["budget_start_total_wei"]
+    if now > start:
+        raise L.Abort(f"the three wallets hold {(now - start) / L.ETH:.6f} ETH MORE than at the start of the budget: an unexpected deposit. The budget baseline would hide losses, so nothing was sent; the owner must decide (delete budget_start_total_wei from the state file to re-baseline deliberately)")
+    spent = start - now
     if spent + reserve_wei > BUDGET["wei"]:
         raise L.Abort(f"the spending budget of {BUDGET['wei'] / L.ETH:.4f} ETH would be exceeded (spent so far {spent / L.ETH:.6f} ETH, this transaction's worst case {reserve_wei / L.ETH:.6f} ETH): nothing was sent. Raise it only deliberately with --budget-wei")
 
 
 def tsend(rpc, wallet, to, data, value, cap, label, create=False, broadcast=False):
     """lib.send with the budget guard and the pending marker (written at submission, cleared when the receipt arrives)."""
-    return L.send(rpc, wallet, to, data, value, cap, create=create, broadcast=broadcast, on_submit=lambda h: pending_add(label, h), on_done=pending_clear, before=lambda limit, fee: enforce_budget(rpc, limit * fee["max_fee"] + value))
+    return L.send(rpc, wallet, to, data, value, cap, create=create, broadcast=broadcast, on_submit=lambda h: pending_add(label, h), on_done=pending_clear, before=lambda limit, fee: enforce_budget(rpc, limit * fee["max_fee"] + at_risk_value(to, value)))
 
 
 def progress_add(label, tx, extra=None):
@@ -425,6 +441,8 @@ def cmd_run(a):
         raise L.Abort("preflight failed: nothing was sent")
     ensure_no_pending(rpc)
     st = load_state(L.SEPOLIA)
+    if st.get("steps_done"):
+        raise L.Abort("`step` mode is in use in this state: continue with `step`; `run` and `step` are not mixed")
     pr = st.get("progress")
     if pr and not pr.get("complete") and not a.abandon_previous:
         raise L.Abort(f"the previous run stopped after {len(pr['steps'])} step(s) (last: {pr['steps'][-1]['label'] if pr['steps'] else 'none'}) and is not complete. Inspect {state_path(L.SEPOLIA)} and the transactions, then pass --abandon-previous to start a NEW run (it creates new agreements)")
@@ -606,36 +624,159 @@ def cmd_resolve_pending(a):
 
 
 def cmd_budget(a):
-    """Read-only: the worst-case and expected cost of every transaction at the live fee, against the budget."""
+    """Read-only: the exact transactions of the plan with sender, recipient, value, gas and worst case at the live fee, against the budget."""
     rpc = L.Rpc(a.rpc_url)
     L.require_chain(rpc)
     fee = L.fees(rpc)
     w = L.load_wallets()
+    st = load_state(L.SEPOLIA)
     g = GAS_TABLE
-    rows = [("fund provider", "client", g["fund"]), ("fund verifier", "client", g["fund"]), ("deploy Settlane", "client", g["deploy"]),
-            ("A1 create", "client", g["create"]), ("A1 submit", "provider", g["submit"]), ("A1 approve", "verifier", g["approve"]), ("A1 claim", "provider", g["claim"]),
-            ("A2 create", "client", g["create"]), ("A2 refund", "client", g["refund"])]
+    c, p, v = w["client"], w["provider"], w["verifier"]
+    addr = st.get("address")
+    if not addr:
+        nonce = int(rpc.call("eth_getTransactionCount", c.address, "pending"), 16) + 2  # after the two fund transfers
+        addr = L.run([L.tool("cast"), "compute-address", c.address, "--nonce", str(nonce)]).stdout.split()[-1].lower()
+        addr_note = f"{addr} (predicted: the client's nonce {nonce})"
+    else:
+        addr_note = addr
+    amt, fw = a.amount_wei, a.fund_wei
+    rows = [("1 fund provider", c, p.address, fw, g["fund"]), ("2 fund verifier", c, v.address, fw, g["fund"]), ("3 deploy Settlane", c, "(creates the contract)", 0, g["deploy"]),
+            ("4 A1 create", c, addr, amt, g["create"]), ("5 A1 submit", p, addr, 0, g["submit"]), ("6 A1 approve", v, addr, 0, g["approve"]), ("7 A1 claim -> provider", p, addr, 0, g["claim"]),
+            ("8 A2 create", c, addr, amt, g["create"]), ("9 A2 refund -> client", c, addr, 0, g["refund"])]
     if a.with_submitted_refund:
-        rows += [("A3 create", "client", g["create"]), ("A3 submit", "provider", g["submit"]), ("A3 refund", "client", g["refund"])]
+        rows += [("10 A3 create", c, addr, amt, g["create"]), ("11 A3 submit", p, addr, 0, g["submit"]), ("12 A3 refund -> client", c, addr, 0, g["refund"])]
     eff, mx = fee["base"] + fee["tip"], fee["max_fee"]
-    log(f"live fee: base {fee['base']} wei, our tip {fee['tip']} wei -> effective {eff} wei per gas; max fee {mx} wei; gas limit = estimate x {HEADROOM} + 1000")
-    log(f"{'transaction':18s} {'sender':9s} {'gas (estimate)':>14s} {'gas limit':>11s} {'expected fee ETH':>17s} {'worst case ETH (limit x max fee)':>33s}")
-    tot_exp = tot_wc = 0
-    for name, who, gas in rows:
+    log(f"contract: {addr_note}")
+    log(f"live fee: base {fee['base']} wei, tip {fee['tip']} wei -> effective {eff} wei/gas; max fee {mx} wei/gas; gas limit = estimate x {HEADROOM} + 1000; budget {BUDGET['wei'] / L.ETH:.4f} ETH")
+    log(f"{'#  transaction':25s} {'from':9s} {'to':44s} {'value ETH':>10s} {'gas est':>9s} {'limit':>9s} {'max fee ETH':>12s} {'expected ETH':>13s}")
+    tot_exp = tot_wc = ext = 0
+    for name, snd, to, val, gas in rows:
         lim = int(gas * HEADROOM) + 1000
         e, wc = gas * eff, lim * mx
         tot_exp += e; tot_wc += wc
-        log(f"{name:18s} {who:9s} {gas:14d} {lim:11d} {e / L.ETH:17.9f} {wc / L.ETH:33.9f}")
-    locked = (3 if a.with_submitted_refund else 2) * a.amount_wei
-    log(f"{'TOTAL':18s} {'':9s} {sum(r[2] for r in rows):14d} {'':11s} {tot_exp / L.ETH:17.9f} {tot_wc / L.ETH:33.9f}")
-    log(f"value locked in agreements at the peak: {locked / L.ETH:.4f} ETH (A1's goes to the provider wallet, A2 and A3 return to the client); `fund` moves {2 * a.fund_wei / L.ETH:.4f} ETH between our own wallets")
-    worst = tot_wc + locked
-    log(f"WORST CASE at the live fee (every limit fully used, every value lost): {worst / L.ETH:.6f} ETH = {worst / BUDGET['wei'] * 100:.2f}% of the {BUDGET['wei'] / L.ETH:.2f} ETH budget; EXPECTED: {tot_exp / L.ETH:.6f} ETH of fees")
-    lims = sum(int(gas * HEADROOM) + 1000 for _, _, gas in rows)
-    be = ((BUDGET["wei"] - locked) / lims - fee["tip"]) / 2
-    log(f"the budget would be exhausted by the worst case only if the BASE fee rose to about {be / 1e9:.2f} gwei (now {fee['base'] / 1e9:.9f}); above 60 gwei max fee the runner refuses anyway, and the budget guard refuses each send whose own worst case would break the total")
+        ext += val if (to.startswith("0x") and to.lower() not in {x.address.lower() for x in w.values()}) else 0
+        log(f"{name:25s} {snd.role:9s} {to:44s} {val / L.ETH:10.4f} {gas:9d} {lim:9d} {wc / L.ETH:12.9f} {e / L.ETH:13.9f}")
+    peak = amt  # one agreement's deposit is locked at a time in the first-run plan (A1's is claimed before A2 is created)
+    log(f"{'TOTAL fees':25s} {'':9s} {'':44s} {'':>10s} {sum(r[4] for r in rows):9d} {'':9s} {tot_wc / L.ETH:12.9f} {tot_exp / L.ETH:13.9f}")
+    log(f"value: 'fund' moves {2 * fw / L.ETH:.4f} ETH between our own wallets (internal: not exposure); deposits to the contract total {ext / L.ETH:.4f} ETH, at most {peak / L.ETH:.4f} ETH locked at once, and each comes back to a wallet of ours (A1: claim to the provider, A2: refund to the client)")
+    log(f"TOTAL EXPOSURE, worst case at the live fee (every limit used at the max fee, and every deposit never recovered): {(tot_wc + ext) / L.ETH:.6f} ETH = {(tot_wc + ext) / BUDGET['wei'] * 100:.2f}% of the budget; EXPECTED loss: {tot_exp / L.ETH:.6f} ETH of fees only")
+    lims = sum(int(r[4] * HEADROOM) + 1000 for r in rows)
+    be = ((BUDGET["wei"] - ext) / lims - fee["tip"]) / 2
+    log(f"the budget could only be exhausted if the BASE fee rose to about {be / 1e9:.2f} gwei (now {fee['base'] / 1e9:.9f}); the guard refuses each send whose own worst case would break the total, and nothing is ever resent or escalated")
     for r in ("client", "provider", "verifier"):
         log(f"  {r:9s} {w[r].address}  balance {rpc.balance(w[r].address) / L.ETH:.6f} ETH")
+    return 0
+
+
+STEPS = ["fund-provider", "fund-verifier", "deploy", "a1-create", "a1-submit", "a1-approve", "a1-claim", "a2-create", "a2-refund"]
+
+
+def cmd_step(a):
+    """Execute (with --broadcast) or describe (without) exactly ONE next transaction of the first-run plan, verify
+    its receipt, record it, and stop. Never continues by itself; never resends; stops on anything unexpected."""
+    rpc = L.Rpc(a.rpc_url)
+    L.require_chain(rpc)
+    w = L.load_wallets()
+    st = load_state(L.SEPOLIA)
+    if st.get("progress"):
+        raise L.Abort("`run` has already been used in this state: finish or inspect it; `step` and `run` are not mixed")
+    done = [x["name"] for x in st.get("steps_done", [])]
+    nxt = next((x for x in STEPS if x not in done), None)
+    if nxt is None:
+        log("every step is done: run `verify`")
+        return 0
+    if a.broadcast:
+        L.require_send_allowed(rpc, True)
+        ensure_no_pending(rpc)
+    amount, fee = a.amount_wei, L.fees(rpc)
+    c, p, v = w["client"], w["provider"], w["verifier"]
+    address = st.get("address")
+    r = Runner(rpc, w, address, a) if address else None
+    log(f"next step {len(done) + 1} of {len(STEPS)}: {nxt}")
+    # ---- build the transaction
+    if nxt.startswith("fund"):
+        tgt = p if nxt == "fund-provider" else v
+        sender, to, data, value, create, cap = c, tgt.address, None, a.fund_wei, False, GAS["fund"]
+    elif nxt == "deploy":
+        out, init, runtime, _ = L.build_artifacts()
+        problems, _ = L.check_artifact(L.artifact_facts(out, init, runtime))
+        if problems:
+            raise L.Abort("the build is not the pinned artifact, nothing was deployed: " + "; ".join(problems))
+        nonce = int(rpc.call("eth_getTransactionCount", c.address, "pending"), 16)
+        predicted = L.run([L.tool("cast"), "compute-address", c.address, "--nonce", str(nonce)]).stdout.split()[-1].lower()
+        sender, to, data, value, create, cap = c, None, "0x" + init, 0, True, GAS["deploy"]
+        log(f"  the contract will be created at {predicted} (the client's next nonce {nonce})")
+    else:
+        if not address:
+            raise L.Abort("no deployed address in the state")
+        if nxt in ("a1-create", "a2-create"):
+            window = a.a1_window if nxt == "a1-create" else a.a2_window
+            deliver_by = rpc.ts() + window  # the chain's clock now + the window; the same value goes into the transaction and the record
+            data = L.calldata("create(address,address,uint256,uint8,uint256[3],uint256[3],uint256[3])", p.address, v.address, 3600, 1, f"[{amount},0,0]", f"[{deliver_by},0,0]", "[81,0,0]")
+            sender, value = c, amount
+        else:
+            i = st["a1_id"] if nxt.startswith("a1") else st["a2_id"]
+            data = {"a1-submit": L.calldata("submit(uint256,uint8,uint256)", i, 0, 0xE1) if nxt == "a1-submit" else None,
+                    "a1-approve": L.calldata("approve(uint256,uint8,uint256,uint256)", i, 0, 0xE1, 1) if nxt == "a1-approve" else None,
+                    "a1-claim": L.calldata("claim(uint256,uint8,address)", i, 0, p.address) if nxt == "a1-claim" else None,
+                    "a2-refund": L.calldata("refund(uint256,uint8,address)", i, 0, c.address) if nxt == "a2-refund" else None}[nxt]
+            sender = {"a1-submit": p, "a1-approve": v, "a1-claim": p, "a2-refund": c}[nxt]
+            value = 0
+        to, create, cap = address, False, GAS["create"] if "create" in nxt else GAS["other"]
+        if nxt == "a2-refund":
+            left = st["a2_deliver_by"] - rpc.ts()
+            sim = Runner(rpc, w, address, a).sim(c, data)
+            if left > 0:
+                log(f"  the chain's clock is {left} s before the Funded deadline; a refund now simulates as: {sim} (nothing sent). Run `step` again after the chain time passes {st['a2_deliver_by']}")
+                return 0
+    est = L.estimate_gas(rpc, sender, to, data, value, create)
+    limit = int(est * HEADROOM) + 1000
+    worst = limit * fee["max_fee"] + at_risk_value(to, value)
+    log(f"  from {sender.role} {sender.address}\n  to   {to or '(contract creation)'}\n  value {value} wei ({value / L.ETH} ETH){' [internal transfer between our own wallets]' if at_risk_value(to, value) == 0 and value else ''}\n  gas estimate {est}, limit {limit} (cap {cap}); max fee {fee['max_fee']} wei/gas, tip {fee['tip']} wei; worst case {worst / L.ETH:.9f} ETH; budget {BUDGET['wei'] / L.ETH:.4f} ETH")
+    if not a.broadcast:
+        log("  dry run: nothing was sent (add --broadcast to send exactly this one transaction)")
+        return 0
+    # ---- send exactly one transaction and verify it
+    before_c = {"contract": rpc.balance(address) if address else 0, "to": rpc.balance(to) if to else 0}
+    rc = tsend(rpc, sender, to, data, value, cap, nxt, create=create, broadcast=True)
+    used = int(rc["gasUsed"], 16)
+    rec = {"name": nxt, "tx": rc["_hash"], "block": int(rc["blockNumber"], 16), "gas_used": used, "gas_estimate": est}
+    log(f"  ok  tx {rc['_hash']}  block {rec['block']}  gas used {used} (estimate {est})  status 1")
+    if nxt.startswith("fund"):
+        if rpc.balance(to) - before_c["to"] != value:
+            raise L.Abort(f"UNEXPECTED: the recipient's balance changed by {rpc.balance(to) - before_c['to']}, not {value}")
+    elif nxt == "deploy":
+        code = rpc.call("eth_getCode", rc["contractAddress"], "latest")
+        if code != "0x" + runtime or rc["contractAddress"].lower() != predicted:
+            raise L.Abort(f"UNEXPECTED: the deployed code or address is not the pinned artifact's ({rc['contractAddress']} vs predicted {predicted})")
+        st = load_state(L.SEPOLIA)
+        st.update({"address": rc["contractAddress"].lower(), "deploy_tx": rc["_hash"], "deploy_block": rec["block"], "deployer": c.address, "runtime_sha256": L.sha256_hex(runtime)})
+        save_state(L.SEPOLIA, st)
+        log(f"  deployed at {rc['contractAddress']}; code equals the pinned runtime ({L.sha256_hex(runtime)[:16]}...)")
+    else:
+        r = Runner(rpc, w, address, a)
+        st = load_state(L.SEPOLIA)
+        if nxt in ("a1-create", "a2-create"):
+            sig = "AgreementCreated(uint256,address,address,address,uint256,uint8)"
+            logs = [lg for lg in rc["logs"] if lg["topics"][0] == L.keccak(sig)]
+            want = 1 if nxt == "a1-create" else 2
+            i = int(logs[0]["topics"][1], 16) if len(logs) == 1 else None
+            if i != want or r.view("getMilestone(uint256,uint8)", i, 0)[0] != 1 or rpc.balance(address) - before_c["contract"] != amount:
+                raise L.Abort(f"UNEXPECTED: create did not produce agreement {want} in state Funded holding {amount} wei")
+            st["a1_id" if nxt == "a1-create" else "a2_id"] = i
+            st["a1_deliver_by" if nxt == "a1-create" else "a2_deliver_by"] = deliver_by
+        else:
+            i = st["a1_id"] if nxt.startswith("a1") else st["a2_id"]
+            want_state = {"a1-submit": 2, "a1-approve": 3, "a1-claim": 4, "a2-refund": 5}[nxt]
+            ev = {"a1-submit": "MilestoneSubmitted(uint256,uint8,uint256,uint256)", "a1-approve": "MilestoneApproved(uint256,uint8,uint256,uint256)", "a1-claim": "MilestoneClaimed(uint256,uint8,address,uint256)", "a2-refund": "MilestoneRefunded(uint256,uint8,address,uint256)"}[nxt]
+            if sum(1 for lg in rc["logs"] if lg["topics"][0] == L.keccak(ev)) != 1 or r.view("getMilestone(uint256,uint8)", i, 0)[0] != want_state:
+                raise L.Abort(f"UNEXPECTED: {nxt} did not leave milestone {i} in state {want_state} with exactly one {ev.split('(')[0]}")
+            if nxt in ("a1-claim", "a2-refund"):
+                r.expect_payout("claim" if nxt == "a1-claim" else "refund", i, amount, before_c["contract"])
+    st["steps_done"] = st.get("steps_done", []) + [rec]
+    save_state(L.SEPOLIA, st)
+    total_now = wallets_total(rpc)
+    log(f"  recorded. Spent so far (combined balance of the three wallets vs the start): {(st.get('budget_start_total_wei', total_now) - total_now) / L.ETH:.9f} ETH of the {BUDGET['wei'] / L.ETH:.4f} ETH budget. {len(STEPS) - len(st['steps_done'])} step(s) remain. STOPPED: run `step` again to continue.")
     return 0
 
 
@@ -654,7 +795,7 @@ def cmd_check_wallets(a):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", choices=["plan", "node-preflight", "check-wallets", "artifact", "budget", "preflight", "fund", "deploy", "run", "resolve-pending", "verify"])
+    ap.add_argument("cmd", choices=["plan", "node-preflight", "check-wallets", "artifact", "budget", "step", "preflight", "fund", "deploy", "run", "resolve-pending", "verify"])
     ap.add_argument("--rpc-url")
     ap.add_argument("--broadcast", action="store_true", help="actually send transactions (default: refuse)")
     ap.add_argument("--address")
@@ -676,7 +817,7 @@ def main(argv=None):
     if a.cmd not in ("plan", "check-wallets", "artifact") and not a.rpc_url:
         ap.error("--rpc-url is required")
     try:
-        return {"plan": cmd_plan, "node-preflight": cmd_node_preflight, "check-wallets": cmd_check_wallets, "artifact": cmd_artifact, "budget": cmd_budget, "resolve-pending": cmd_resolve_pending, "preflight": cmd_preflight, "fund": cmd_fund, "deploy": cmd_deploy, "run": cmd_run, "verify": cmd_verify}[a.cmd](a)
+        return {"plan": cmd_plan, "node-preflight": cmd_node_preflight, "check-wallets": cmd_check_wallets, "artifact": cmd_artifact, "budget": cmd_budget, "step": cmd_step, "resolve-pending": cmd_resolve_pending, "preflight": cmd_preflight, "fund": cmd_fund, "deploy": cmd_deploy, "run": cmd_run, "verify": cmd_verify}[a.cmd](a)
     except L.Abort as e:
         log(f"ABORT: {e}")
         return 2

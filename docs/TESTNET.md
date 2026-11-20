@@ -54,6 +54,33 @@ If you fund only the client and let `fund` send 0.004 ETH to each of the other t
 
 **Remaining prerequisites (yours):** (1) run `make_wallets.sh` and send me only the three addresses; (2) fund the client (about 0.06 ETH; or each wallet per the table); (3) answer the approval questions in section 8. Still unverified until a real run: `eth_sendRawTransaction` on the endpoint, inclusion with a 0.01 gwei tip, gas used vs estimate on the real chain, and the public node's behavior under a real send.
 
+## 0d. Deployment authorization package (2026-11-20, read-only, nothing sent)
+**Parameters (the owner's):** Sepolia only (chain id 11155111, refused otherwise); total spending budget **0.06 ETH**; publicnode primary RPC, Tenderly fallback; tip **0.01 gwei**; receipt timeout **600 s**; `fund` provider and verifier with **0.004 ETH** each from the client; the optional submitted-refund run (A3) **skipped**; **no automatic fee escalation** (there is no resend, retry or fee-bump code anywhere: the tip is the fixed `--tip-wei`, the max fee is 2 x the base fee at send time + the tip, and a transaction without a receipt stops the workflow).
+
+**The budget guard, checked against internal transfers and refundable deposits** (rehearsal-tested with scripted balances and end to end):
+- *Internal transfers*: `spent` is the three wallets' combined balance at the first send minus now, so a transfer between our own wallets (`fund`) costs only its fee. The pre-send reservation used to include the value of such a transfer; it no longer does (`at_risk_value`). Two internal transfers of 0.004 ETH are allowed under a 0.0035 ETH budget.
+- *Refundable deposits*: a deposit in the contract counts as spent while it is locked (three 0.001 ETH deposits fit in 0.0035 ETH, a fourth is refused) and stops counting when a refund or a claim to one of our wallets brings it back.
+- *Unexpected inflows*: an increase of the combined balance above the baseline (a faucet drip) now stops the workflow instead of silently hiding losses.
+- End to end: the nine-step run completes under a 0.0035 ETH budget (fees lost 0.000135 ETH in the rehearsal), which a mis-count of either internal transfers or deposits would have refused.
+
+**The first run, one transaction at a time** (`testnet.py step`, dry run without `--broadcast`): each call executes exactly ONE transaction, verifies its receipt, status, events, the milestone state and the balances, records it, prints the spent total, and stops. It never continues by itself and never resends; any unexpected result (a wrong recipient balance, a wrong deployed code or address, a wrong agreement id or state) aborts. The refund step does not send before the chain's clock passes the Funded deadline; it reports the seconds left and the simulated revert instead.
+| # | Step | From | To | Value | Gas estimate | Limit | Max fee (worst case) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | fund provider | client | provider wallet | 0.004 ETH (internal) | 207,391 | 270,608 | 0.0000027 ETH |
+| 2 | fund verifier | client | verifier wallet | 0.004 ETH (internal) | 207,391 | 270,608 | 0.0000027 ETH |
+| 3 | deploy Settlane (pinned init code) | client | contract creation, the address from the client's nonce 2 | 0 | 9,649,454 | 12,545,290 | 0.0001255 ETH |
+| 4 | A1 create | client | Settlane | 0.001 ETH deposit | 1,482,393 | 1,928,110 | 0.0000193 ETH |
+| 5 | A1 submit | provider | Settlane | 0 | 266,257 | 347,134 | 0.0000035 ETH |
+| 6 | A1 approve | verifier | Settlane | 0 | 50,864 | 67,123 | 0.0000007 ETH |
+| 7 | A1 claim, to the provider | provider | Settlane | 0 (the 0.001 ETH deposit returns to the provider wallet) | 196,037 | 255,848 | 0.0000026 ETH |
+| 8 | A2 create | client | Settlane | 0.001 ETH deposit | 1,482,393 | 1,928,110 | 0.0000193 ETH |
+| 9 | A2 refund, to the client (after its 180 s Funded deadline) | client | Settlane | 0 (the 0.001 ETH deposit returns to the client) | 196,215 | 256,079 | 0.0000026 ETH |
+Totals at the live fee (base 15 wei, max fee 10,000,030 wei/gas): 13,738,395 gas; **expected loss 0.000137 ETH of fees**; worst-case fees 0.000179 ETH; plus 0.002 ETH of deposits that are expected to come back; **total exposure 0.00218 ETH = 3.6% of the 0.06 ETH budget**. The base fee would have to reach about 1.6 gwei (a hundred million times today's) before the worst case reached the budget, and the guard refuses a send long before that.
+
+**Final read-only preflight:** artifact equals the pin; both endpoints 16 of 16; the real-wallet `preflight` passes everything except the two expected items (the provider and the verifier hold 0 ETH until steps 1 and 2); the first step's dry run on the real network describes exactly transaction 1 and sends nothing. Rehearsal 70 of 70 on a Sepolia fork, on `osaka` and on Anvil's default fork.
+
+**Stop conditions (the workflow stops, nothing continues):** a status-0 receipt; a receipt missing after 600 s (pending marker, every later send refused until `resolve-pending`, never resent); a result that differs from the expected (balance, code, address, id, state, event count); a step whose simulation reverts; a chain id other than 11155111; the budget; an unexpected inflow; a build that is not the pinned artifact; a changed fee above 60 gwei.
+
 ## 0c. Final preflight with the funded client (2026-11-20, read-only, nothing sent)
 **Funding verified on two independent endpoints (publicnode and Tenderly agree):** the faucet transfer of **2.08 ETH** to the client address is mined with status 1 (a plain transfer to a new account, gas used 204,600), 26 confirmations when checked, **not yet finalized** (finalization takes about two epochs, roughly 13 minutes; finality is not needed for the testnet run but wait if you want certainty). The client's balance is 2.08 ETH, its nonce 0, no code at the address, and the address equals the client keystore's address. Provider and verifier hold 0 ETH. The gas used by that transfer on the REAL chain (204,600) matches the cost of a transfer to a new account that the estimates and the local rehearsals show (our estimate for it is 207,391, within 1.4%), which is the first real-chain evidence that the receipt's gas used includes the same state costs as the estimate.
 

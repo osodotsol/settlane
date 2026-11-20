@@ -33,6 +33,7 @@ bash experiments/anvil/install_foundry.sh  # anvil + cast v1.10.0 (pinned SHA-25
 python3 experiments/anvil/run.py [--mutations]  # PRODUCTION bytecode on a local Anvil with fixed block timestamps: 52 checks, +8 wrong-clock mutations (~7 min); also CI job `anvil`; `release-gate` requires `test` and `anvil` (README there)
 python3 experiments/sepolia/rehearse.py --hardfork osaka   # LOCAL rehearsal of the Sepolia plan (20 checks, ~1 min); nothing is sent to a public network; see docs/TESTNET.md
 bash experiments/sepolia/make_wallets.sh                      # YOU run it, in a terminal: creates the three dedicated test wallets (owner-only, outside the repo); never run by the assistant
+python3 experiments/sepolia/testnet.py step --rpc-url <sepolia rpc> [--broadcast]   # ONE transaction of the first-run plan (dry run without --broadcast); verify, record, stop. Only after the owner's explicit authorization
 python3 experiments/sepolia/testnet.py budget --rpc-url <sepolia rpc>   # read-only: cost of every transaction at the live fee vs the 0.06 ETH spending budget (a hard guard on every send)
 python3 experiments/sepolia/testnet.py artifact              # the production build must equal the pinned artifact (hashes in experiments/sepolia/artifact.json)
 python3 experiments/sepolia/testnet.py node-preflight --rpc-url <sepolia rpc>   # read-only, no wallet: chain, fork, fees, real gas estimates, cost
