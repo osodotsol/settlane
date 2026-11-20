@@ -210,6 +210,12 @@ fe 26.6.0 (5b3f96a). Reproduction: `experiments/review/r005/patches/b6_test_attr
 | The production runtime reads the block timestamp (`ctx.timestamp()`): the same calldata succeeds or reverts exactly as the block timestamp crosses `deliver_by` or `decide_by`, with the chain's clock set thousands of seconds ahead of the wall clock. | Submit, Approve, Reject, Refund, Create boundary checks |
 | A frozen (0) or one-day-ahead clock in any one production arm is invisible to every Fe test and is caught by this script, with only that arm's checks failing. | `--mutations` |
 
+### Sepolia facts (2026-11-20, from real transactions)
+| Fact | Evidence |
+| --- | --- |
+| On Sepolia's current fork every transaction that moves ETH carries an extra **protocol log** from the system address `0xfff...fffe`, shaped like an ERC-20 `Transfer(from, to, value)` (topic0 `0xddf252ad...`). A plain transfer has exactly that one log; Settlane's `create` with a 0.001 ETH deposit has two logs (the system transfer log, then `AgreementCreated` from the contract); the value-less deployment has none. Anything that counts a receipt's logs must filter by the contract's address (the verifier and `step` do); claims and refunds will carry the same system log for the payout. | Steps 1, 3 and 4 receipts |
+| Gas used equals the local Sepolia-fork measurements: transfer to a new account 204,600, deployment 9,572,316, `create` 1,469,971 (the estimates were 207,391, 9,649,454 and 1,482,805). | Steps 1 to 4 receipts |
+
 ## Still unverified (Phase 2–4 checks)
 - Is the production contract deployed by the dev-ingot tests byte-identical to the shipped `Prod` artifact? It is the same source and compiler, but `fe` offers no way to compare. Mitigation: all tests that do not need time travel live in the production ingot.
 - A reentrant recipient under the 2300 stipend: **tested for Claim** (Phase 3A, strengthened by R-005) **and for Refund** (Phase 3B, the same attackers as clients). Measured: an attacker that always re-enters cannot finish its fallback under the stipend (the send fails and the claim reverts with `transfer failed`), and the same attacker given 500k gas re-enters and claims. EIP-2200's SSTORE rule is not probed separately. Refund needs the same tests in Phase 3B.
