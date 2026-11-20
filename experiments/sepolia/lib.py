@@ -252,7 +252,7 @@ class Pending(Abort):
 RECEIPT_TIMEOUT_S = 600
 
 
-def send(rpc, wallet, to, data, value=0, gas_cap=1_500_000, create=False, broadcast=False, on_submit=None, on_done=None):
+def send(rpc, wallet, to, data, value=0, gas_cap=1_500_000, create=False, broadcast=False, on_submit=None, on_done=None, before=None):
     """Sign with the keystore and send one transaction; returns the receipt. Guards first.
 
     The gas limit is the node's estimate plus 30%, never above `gas_cap`; the fee is explicit (see `fees`).
@@ -270,6 +270,8 @@ def send(rpc, wallet, to, data, value=0, gas_cap=1_500_000, create=False, broadc
     limit = int(est * 1.3) + 1000
     if limit > gas_cap:
         raise Abort(f"the gas estimate {est} (limit {limit}) exceeds the cap {gas_cap}; nothing was sent")
+    if before:
+        before(limit, fee)  # e.g. the spending-budget guard: may refuse (Abort) before anything is signed or sent
     cmd = [tool("cast"), "send", "--async", "--keystore", str(wallet.keystore), "--password-file", str(wallet.password_file), "--rpc-url", rpc.url, "--gas-limit", str(limit), "--gas-price", str(fee["max_fee"]), "--priority-gas-price", str(fee["tip"]), "--value", str(value)]
     cmd += ["--create", data] if create else ([to, data] if data else [to])
     r = run(cmd)

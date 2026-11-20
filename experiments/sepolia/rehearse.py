@@ -264,6 +264,12 @@ def extra_checks(fork, fork_url, base, out_all):
         st = json.loads((base2 / f"state-{lib.SEPOLIA}.json").read_text())
         check("once mined, resolve-pending clears it and the workflow may continue", rc == 0 and not st.get("pending") and "resolved" in out)
         nodeb.rpc.call("evm_setAutomine", True)
+        # the spending budget: a send whose worst case would break it is refused before anything is signed
+        nb2 = nonce_of(nodeb, w2["client"].address)
+        rc, out = cli(nodeb.url, base2, "fund", "--broadcast", "--budget-wei", "1000"); out_all.append(out)
+        check("a send that would exceed the spending budget is refused before it is signed, and nothing is sent", rc == 2 and "budget" in out and nonce_of(nodeb, w2["client"].address) == nb2, out.strip().splitlines()[-1][:110])
+        st = json.loads((base2 / f"state-{lib.SEPOLIA}.json").read_text())
+        check("the budget's starting point (the three wallets' combined balance) is recorded in the state", st.get("budget_start_total_wei", 0) > 0, str(st.get("budget_start_total_wei")))
     finally:
         lib.STATE_DIR = old_dir
         nodeb.stop()

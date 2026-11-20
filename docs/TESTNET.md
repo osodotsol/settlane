@@ -54,6 +54,26 @@ If you fund only the client and let `fund` send 0.004 ETH to each of the other t
 
 **Remaining prerequisites (yours):** (1) run `make_wallets.sh` and send me only the three addresses; (2) fund the client (about 0.06 ETH; or each wallet per the table); (3) answer the approval questions in section 8. Still unverified until a real run: `eth_sendRawTransaction` on the endpoint, inclusion with a 0.01 gwei tip, gas used vs estimate on the real chain, and the public node's behavior under a real send.
 
+## 0c. Final preflight with the funded client (2026-11-20, read-only, nothing sent)
+**Funding verified on two independent endpoints (publicnode and Tenderly agree):** the faucet transfer of **2.08 ETH** to the client address is mined with status 1 (a plain transfer to a new account, gas used 204,600), 26 confirmations when checked, **not yet finalized** (finalization takes about two epochs, roughly 13 minutes; finality is not needed for the testnet run but wait if you want certainty). The client's balance is 2.08 ETH, its nonce 0, no code at the address, and the address equals the client keystore's address. Provider and verifier hold 0 ETH. The gas used by that transfer on the REAL chain (204,600) matches the cost of a transfer to a new account that the estimates and the local rehearsals show (our estimate for it is 207,391, within 1.4%), which is the first real-chain evidence that the receipt's gas used includes the same state costs as the estimate.
+
+**Wallets:** `~/.settlane-sepolia` and its `keystores` and `passwords` directories are 0700 and owned by you; the three keystores and three password files are 0600; the three addresses are different; every password file opens its keystore; no state file exists yet (nothing has ever been sent). `preflight` (read-only, with the real wallets) passes its node, fee, repository, pinned-artifact and deployment-estimate checks and reports exactly two expected failures: the provider and verifier hold 0 ETH (the optional `fund` step, 0.004 ETH each, fixes that) and the confirmation variable `SETTLANE_TESTNET_CONFIRM` is deliberately not set yet (it is only exported for a send you approved).
+
+**Pinned bytecode and estimates (unchanged):** the build equals the pin (Fe 26.6.0; init `62ac0e9f...`, runtime `f0965efd...`, ABI `abb232ad...`; clean tree). Real-node estimates: deploy 9,649,454, create 1,482,393, transfer to a new account 207,391; limits 12,545,290 / 1,928,110 / 270,608 fit the caps. Fork `0x6c1d9423`, no next fork; base fee 16 wei; our max fee 10,000,032 wei.
+
+**Maximum cost and the 0.06 ETH budget** (`testnet.py budget`, live fee, plan A1+A2+A3 with `fund`; 15,683,260 gas in 12 transactions):
+| | ETH |
+| --- | --- |
+| Expected fees (gas x base fee + our tip) | **0.000157** |
+| Worst case of the fees (every gas limit fully used, at the max fee) | 0.000204 |
+| Value in the contract at the peak (A1's goes to the provider wallet, A2 and A3 return to the client) | 0.003 |
+| Worst case in total | **0.0032 = 5.3% of the 0.06 ETH budget** |
+| Deployment alone: expected / worst case | 0.0000965 / 0.000125 |
+| `fund` moves between our own wallets | 0.008 |
+The base fee would have to rise to about **1.39 gwei, some 87 million times today's**, before the worst case reached 0.06 ETH. **The 0.06 ETH budget is ample; nothing technically justifies a higher one.** It is now a hard guard: the runner records the three wallets' combined balance at the first send and refuses any send whose worst case (gas limit x max fee + value) added to what has been spent so far would exceed the budget (`--budget-wei`, default 0.06 ETH; rehearsal-tested: refused before signing, nothing sent). The client holds 2.08 ETH, far more than the budget, so the budget, not the balance, is the limit; the rest of the faucet ETH is never touched.
+
+**Not sent / unverified:** no transaction, no transfer, no deployment. Still unverified until a real send: `eth_sendRawTransaction` on the endpoint, inclusion with a 0.01 gwei tip, and the public node under a real send.
+
 ## 1. The artifact (Fe 26.6.0 build of this checkout)
 | Item | Value |
 | --- | --- |
@@ -103,6 +123,7 @@ T="python3 experiments/sepolia/testnet.py"
 
 $T plan                                      # 0. print the plan and cost; sends nothing
 $T node-preflight --rpc-url $RPC --with-submitted-refund   # 1a. read-only, no wallet: chain, genesis, fork, fees, real gas estimates, limits, cost (done: section 0)
+$T budget --rpc-url $RPC --with-submitted-refund   # 1a'. read-only: the cost of every transaction at the live fee against the 0.06 ETH budget
 $T artifact                                  # 1b. the build equals the pinned artifact (hashes below)
 $T check-wallets                             # 1c. offline: the wallet layout (after you create the wallets)
 $T preflight --rpc-url $RPC --with-submitted-refund     # 1d. read-only with the wallets: balances at the live fee, deploy estimate, repo scan

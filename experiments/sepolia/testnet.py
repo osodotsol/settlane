@@ -16,6 +16,7 @@ Subcommands
   deploy                    build with Fe 26.6.0 and deploy Settlane                (sends 1 tx)
   run                       Create, Submit, Approve, Claim; Create and Refund; [Submitted refund]
   verify                    read-only verification of the deployment (bytecode, ABI, events, accounting)
+  budget                    read-only: worst-case and expected cost of every transaction at the live fee, against the budget
   artifact                  show or check (--write: re-pin) the production build against experiments/sepolia/artifact.json
   resolve-pending           after a transaction without a receipt: check it, clear it or keep refusing
 
@@ -91,9 +92,31 @@ def ensure_no_pending(rpc):
             raise L.Abort(f"the earlier transaction '{p['label']}' {p['tx']} has no receipt yet. It may still be mined: do not resend. Wait, then run `resolve-pending`")
 
 
+BUDGET_WEI = 60 * 10**15  # 0.06 ETH: the total the three wallets may lose, unless the owner raises it with --budget-wei
+BUDGET = {"wei": BUDGET_WEI}
+
+
+def wallets_total(rpc):
+    return sum(rpc.balance(w.address) for w in L.load_wallets().values())
+
+
+def enforce_budget(rpc, reserve_wei):
+    """Total spending cap. `spent` = the three wallets' combined balance at the first send minus now, so it counts
+    gas fees AND the value sitting in the contract (conservative: locked value usually comes back). A send is refused
+    if spent + this transaction's worst case (gas limit x max fee + value) would exceed the budget. Recorded in the state."""
+    st = load_state(L.SEPOLIA)
+    now = wallets_total(rpc)
+    if "budget_start_total_wei" not in st:
+        st["budget_start_total_wei"] = now
+        save_state(L.SEPOLIA, st)
+    spent = st["budget_start_total_wei"] - now
+    if spent + reserve_wei > BUDGET["wei"]:
+        raise L.Abort(f"the spending budget of {BUDGET['wei'] / L.ETH:.4f} ETH would be exceeded (spent so far {spent / L.ETH:.6f} ETH, this transaction's worst case {reserve_wei / L.ETH:.6f} ETH): nothing was sent. Raise it only deliberately with --budget-wei")
+
+
 def tsend(rpc, wallet, to, data, value, cap, label, create=False, broadcast=False):
-    """lib.send with the pending marker: written when the transaction is submitted, cleared when its receipt arrives."""
-    return L.send(rpc, wallet, to, data, value, cap, create=create, broadcast=broadcast, on_submit=lambda h: pending_add(label, h), on_done=pending_clear)
+    """lib.send with the budget guard and the pending marker (written at submission, cleared when the receipt arrives)."""
+    return L.send(rpc, wallet, to, data, value, cap, create=create, broadcast=broadcast, on_submit=lambda h: pending_add(label, h), on_done=pending_clear, before=lambda limit, fee: enforce_budget(rpc, limit * fee["max_fee"] + value))
 
 
 def progress_add(label, tx, extra=None):
@@ -582,6 +605,40 @@ def cmd_resolve_pending(a):
     return 0 if not load_state(L.SEPOLIA).get("pending") else 1
 
 
+def cmd_budget(a):
+    """Read-only: the worst-case and expected cost of every transaction at the live fee, against the budget."""
+    rpc = L.Rpc(a.rpc_url)
+    L.require_chain(rpc)
+    fee = L.fees(rpc)
+    w = L.load_wallets()
+    g = GAS_TABLE
+    rows = [("fund provider", "client", g["fund"]), ("fund verifier", "client", g["fund"]), ("deploy Settlane", "client", g["deploy"]),
+            ("A1 create", "client", g["create"]), ("A1 submit", "provider", g["submit"]), ("A1 approve", "verifier", g["approve"]), ("A1 claim", "provider", g["claim"]),
+            ("A2 create", "client", g["create"]), ("A2 refund", "client", g["refund"])]
+    if a.with_submitted_refund:
+        rows += [("A3 create", "client", g["create"]), ("A3 submit", "provider", g["submit"]), ("A3 refund", "client", g["refund"])]
+    eff, mx = fee["base"] + fee["tip"], fee["max_fee"]
+    log(f"live fee: base {fee['base']} wei, our tip {fee['tip']} wei -> effective {eff} wei per gas; max fee {mx} wei; gas limit = estimate x {HEADROOM} + 1000")
+    log(f"{'transaction':18s} {'sender':9s} {'gas (estimate)':>14s} {'gas limit':>11s} {'expected fee ETH':>17s} {'worst case ETH (limit x max fee)':>33s}")
+    tot_exp = tot_wc = 0
+    for name, who, gas in rows:
+        lim = int(gas * HEADROOM) + 1000
+        e, wc = gas * eff, lim * mx
+        tot_exp += e; tot_wc += wc
+        log(f"{name:18s} {who:9s} {gas:14d} {lim:11d} {e / L.ETH:17.9f} {wc / L.ETH:33.9f}")
+    locked = (3 if a.with_submitted_refund else 2) * a.amount_wei
+    log(f"{'TOTAL':18s} {'':9s} {sum(r[2] for r in rows):14d} {'':11s} {tot_exp / L.ETH:17.9f} {tot_wc / L.ETH:33.9f}")
+    log(f"value locked in agreements at the peak: {locked / L.ETH:.4f} ETH (A1's goes to the provider wallet, A2 and A3 return to the client); `fund` moves {2 * a.fund_wei / L.ETH:.4f} ETH between our own wallets")
+    worst = tot_wc + locked
+    log(f"WORST CASE at the live fee (every limit fully used, every value lost): {worst / L.ETH:.6f} ETH = {worst / BUDGET['wei'] * 100:.2f}% of the {BUDGET['wei'] / L.ETH:.2f} ETH budget; EXPECTED: {tot_exp / L.ETH:.6f} ETH of fees")
+    lims = sum(int(gas * HEADROOM) + 1000 for _, _, gas in rows)
+    be = ((BUDGET["wei"] - locked) / lims - fee["tip"]) / 2
+    log(f"the budget would be exhausted by the worst case only if the BASE fee rose to about {be / 1e9:.2f} gwei (now {fee['base'] / 1e9:.9f}); above 60 gwei max fee the runner refuses anyway, and the budget guard refuses each send whose own worst case would break the total")
+    for r in ("client", "provider", "verifier"):
+        log(f"  {r:9s} {w[r].address}  balance {rpc.balance(w[r].address) / L.ETH:.6f} ETH")
+    return 0
+
+
 def cmd_check_wallets(a):
     """Offline: the three keystores and password files exist, sit outside the repo, are protected, and are three different addresses."""
     import stat as st
@@ -597,12 +654,13 @@ def cmd_check_wallets(a):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", choices=["plan", "node-preflight", "check-wallets", "artifact", "preflight", "fund", "deploy", "run", "resolve-pending", "verify"])
+    ap.add_argument("cmd", choices=["plan", "node-preflight", "check-wallets", "artifact", "budget", "preflight", "fund", "deploy", "run", "resolve-pending", "verify"])
     ap.add_argument("--rpc-url")
     ap.add_argument("--broadcast", action="store_true", help="actually send transactions (default: refuse)")
     ap.add_argument("--address")
     ap.add_argument("--amount-wei", type=int, default=AMOUNT_DEFAULT)
     ap.add_argument("--fund-wei", type=int, default=4 * 10**15)
+    ap.add_argument("--budget-wei", type=int, default=BUDGET_WEI, help="total the three wallets may lose, fees plus value in the contract (default 0.06 ETH)")
     ap.add_argument("--tip-wei", type=int, default=L.TIP_WEI, help="priority fee we offer per gas (default 0.01 gwei)")
     ap.add_argument("--a1-window", type=int, default=900)
     ap.add_argument("--a2-window", type=int, default=180)
@@ -613,11 +671,12 @@ def main(argv=None):
     ap.add_argument("--rehearsal-warp", action="store_true", help="local rehearsal only: fast-forward the node's clock instead of waiting")
     a = ap.parse_args(argv)
     L.TIP_WEI = a.tip_wei
+    BUDGET["wei"] = a.budget_wei
     L.RECEIPT_TIMEOUT_S = a.receipt_timeout
     if a.cmd not in ("plan", "check-wallets", "artifact") and not a.rpc_url:
         ap.error("--rpc-url is required")
     try:
-        return {"plan": cmd_plan, "node-preflight": cmd_node_preflight, "check-wallets": cmd_check_wallets, "artifact": cmd_artifact, "resolve-pending": cmd_resolve_pending, "preflight": cmd_preflight, "fund": cmd_fund, "deploy": cmd_deploy, "run": cmd_run, "verify": cmd_verify}[a.cmd](a)
+        return {"plan": cmd_plan, "node-preflight": cmd_node_preflight, "check-wallets": cmd_check_wallets, "artifact": cmd_artifact, "budget": cmd_budget, "resolve-pending": cmd_resolve_pending, "preflight": cmd_preflight, "fund": cmd_fund, "deploy": cmd_deploy, "run": cmd_run, "verify": cmd_verify}[a.cmd](a)
     except L.Abort as e:
         log(f"ABORT: {e}")
         return 2
