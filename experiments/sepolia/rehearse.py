@@ -55,7 +55,7 @@ class Anvil:
         self.url = f"http://127.0.0.1:{self.port}"
         self.proc = subprocess.Popen([lib.tool("anvil"), "--host", "127.0.0.1", "--port", str(self.port), "--chain-id", str(chain_id), "--silent"] + (["--hardfork", hardfork] if hardfork else []) + (["--fork-url", fork_url] if fork_url else []) + list(extra), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.rpc = lib.Rpc(self.url)
-        for _ in range(100):
+        for _ in range(400):  # a node that forks Sepolia fetches state from the public endpoint at startup: allow up to 40 s
             try:
                 self.rpc.chain_id()
                 return
