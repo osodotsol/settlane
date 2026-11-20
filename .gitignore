@@ -1,2 +1,13 @@
 out/
 __pycache__/
+
+# Secrets must never be committed (Sepolia preparation, docs/TESTNET.md). The real ones live outside
+# the repository; these patterns are a second line of defence.
+.env
+.env.*
+keystores/
+*.keystore
+*.pw
+*.password
+mnemonic*
+.settlane-sepolia/

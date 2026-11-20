@@ -31,6 +31,8 @@ bash experiments/review/run.sh          # review 2026-11-18, R-005 and R-006 rep
 bash experiments/phase1/run.sh          # Phase 1 compiler experiments (remove before submission)
 bash experiments/anvil/install_foundry.sh  # anvil + cast v1.10.0 (pinned SHA-256), outside the repo; needed only for the next two
 python3 experiments/anvil/run.py [--mutations]  # PRODUCTION bytecode on a local Anvil with fixed block timestamps: 52 checks, +8 wrong-clock mutations (~7 min); also CI job `anvil`; `release-gate` requires `test` and `anvil` (README there)
+python3 experiments/sepolia/rehearse.py --hardfork osaka   # LOCAL rehearsal of the Sepolia plan (20 checks, ~1 min); nothing is sent to a public network; see docs/TESTNET.md
+python3 experiments/sepolia/testnet.py plan                  # print the Sepolia plan; sending subcommands need --broadcast, chain id 11155111 and a keystore outside the repo
 fe test ingots/settlane-dev             # focused run of one ingot
 ```
 
