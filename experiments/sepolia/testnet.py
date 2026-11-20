@@ -16,6 +16,8 @@ Subcommands
   deploy                    build with Fe 26.6.0 and deploy Settlane                (sends 1 tx)
   run                       Create, Submit, Approve, Claim; Create and Refund; [Submitted refund]
   verify                    read-only verification of the deployment (bytecode, ABI, events, accounting)
+  artifact                  show or check (--write: re-pin) the production build against experiments/sepolia/artifact.json
+  resolve-pending           after a transaction without a receipt: check it, clear it or keep refusing
 
 Common options: --rpc-url URL  [--broadcast]  [--address 0x..]  [--amount-wei N]
                 [--a1-window S] [--a2-window S] [--with-submitted-refund] [--rehearsal-warp]
@@ -64,6 +66,43 @@ def save_state(chain, st):
     state_path(chain).write_text(json.dumps(st, indent=2))
 
 
+def pending_add(label, h):
+    st = load_state(L.SEPOLIA)
+    st.setdefault("pending", []).append({"label": label, "tx": h})
+    save_state(L.SEPOLIA, st)
+
+
+def pending_clear(h):
+    st = load_state(L.SEPOLIA)
+    st["pending"] = [p for p in st.get("pending", []) if p["tx"] != h]
+    save_state(L.SEPOLIA, st)
+
+
+def ensure_no_pending(rpc):
+    """A submitted transaction without a receipt must be resolved before ANYTHING new is sent."""
+    for p in load_state(L.SEPOLIA).get("pending", []):
+        rc = rpc.call("eth_getTransactionReceipt", p["tx"])
+        if rc:
+            pending_clear(p["tx"])
+            log(f"  note: the earlier transaction '{p['label']}' {p['tx']} is now mined with status {int(rc['status'], 16)}; cleared from the pending list")
+            if rc["status"] != "0x1":
+                raise L.Abort(f"the earlier transaction '{p['label']}' {p['tx']} FAILED (status 0): inspect it before continuing")
+        else:
+            raise L.Abort(f"the earlier transaction '{p['label']}' {p['tx']} has no receipt yet. It may still be mined: do not resend. Wait, then run `resolve-pending`")
+
+
+def tsend(rpc, wallet, to, data, value, cap, label, create=False, broadcast=False):
+    """lib.send with the pending marker: written when the transaction is submitted, cleared when its receipt arrives."""
+    return L.send(rpc, wallet, to, data, value, cap, create=create, broadcast=broadcast, on_submit=lambda h: pending_add(label, h), on_done=pending_clear)
+
+
+def progress_add(label, tx, extra=None):
+    st = load_state(L.SEPOLIA)
+    pr = st.setdefault("progress", {"steps": [], "complete": False, "address": st.get("address")})
+    pr["steps"].append({"label": label.strip(), "tx": tx, **(extra or {})})
+    save_state(L.SEPOLIA, st)
+
+
 # ------------------------------------------------------------------ repo hygiene
 def scan_repo_for_secrets():
     """No key material in tracked or untracked-but-not-ignored files. Returns the offending paths."""
@@ -95,13 +134,13 @@ GAS_TABLE = {"deploy": 9_649_454, "create": 1_482_393, "fund": 207_391, "submit"
 HEADROOM = 1.3  # the gas limit is the estimate x 1.3 (lib.send); the fee paid is for the gas actually used
 
 
-def cost_model(price_wei, max_fee_wei, amount, with_a3, deploy=True):
+def cost_model(price_wei, max_fee_wei, amount, with_a3, deploy=True, fund_wei=0):
     """Per wallet: ETH to HOLD to complete the run (fees at `price_wei` for all the gas, the largest single
     upfront reservation limit x max_fee, and the value the client locks), and the expected fees alone."""
     k = 3 if with_a3 else 2  # agreements
     g = GAS_TABLE
     txs = {
-        "client": ([g["deploy"]] if deploy else []) + [g["create"]] * k + [g["refund"]] * (k - 1),
+        "client": ([g["deploy"]] if deploy else []) + [g["create"]] * k + [g["refund"]] * (k - 1) + ([g["fund"]] * 2 if fund_wei else []),
         "provider": [g["submit"], g["claim"]] + ([g["submit"]] if with_a3 else []),
         "verifier": [g["approve"]],
     }
@@ -109,7 +148,7 @@ def cost_model(price_wei, max_fee_wei, amount, with_a3, deploy=True):
     for r, lst in txs.items():
         fees_total = int(sum(lst) * price_wei)
         reserve = int(max(lst) * HEADROOM * max_fee_wei)
-        locked = k * amount if r == "client" else 0
+        locked = (k * amount + 2 * fund_wei) if r == "client" else 0  # value locked in agreements, plus what `fund` sends to the other two
         out[r] = {"fees": fees_total, "hold": fees_total + reserve + locked, "gas": sum(lst)}
     return out
 
@@ -142,7 +181,9 @@ def preflight(rpc, wallets, address=None, need_balance=True, say=log, amount=AMO
         ok = (not need_balance or bal >= need[role]) and bal <= MAX_WALLET_WEI
         check(f"{role} {w.address}: a funded but small test balance", ok, f"{bal / L.ETH:.6f} ETH (needs >= {need[role] / L.ETH:.6f} at this gas price, refuse > {MAX_WALLET_WEI / L.ETH:.0f})")
     if deploy and "client" in wallets:
-        _, init, _, _ = L.build_artifacts()
+        out, init, runtime, _ = L.build_artifacts()
+        problems, notes = L.check_artifact(L.artifact_facts(out, init, runtime))
+        check("the production build equals the pinned artifact (Fe version, init, runtime and ABI hashes, clean tree)", not problems, "; ".join(problems)[:200] or L.sha256_hex(runtime)[:16] + "...")
         try:
             est = L.estimate_gas(rpc, wallets["client"], None, "0x" + init, 0, create=True)
         except L.Abort as e:
@@ -213,7 +254,8 @@ class Runner:
         s = self.sim(wallet, data, value)
         if s != "ok":
             raise L.Abort(f"step '{label}' would revert ({s}); nothing was sent for it")
-        rc = L.send(self.rpc, wallet, self.addr, data, value, GAS[gas], broadcast=self.a.broadcast)
+        rc = tsend(self.rpc, wallet, self.addr, data, value, GAS[gas], label, broadcast=self.a.broadcast)
+        progress_add(label, rc["_hash"])
         used = int(rc["gasUsed"], 16)
         self.gas_used.append((label, used))
         log(f"  ok   {label}  tx {rc['_hash']}  block {int(rc['blockNumber'], 16)}  gas used {used} (estimate {rc['_estimate']})")
@@ -314,8 +356,9 @@ def cmd_fund(a):
     rpc = L.Rpc(a.rpc_url)
     L.require_send_allowed(rpc, a.broadcast)
     w = L.load_wallets()
+    ensure_no_pending(rpc)
     for role in ("provider", "verifier"):
-        rc = L.send(rpc, w["client"], w[role].address, None, a.fund_wei, GAS["fund"], broadcast=a.broadcast)
+        rc = tsend(rpc, w["client"], w[role].address, None, a.fund_wei, GAS["fund"], f"fund {role}", broadcast=a.broadcast)
         log(f"  ok   funded {role} {w[role].address} with {a.fund_wei} wei  tx {rc['_hash']}")
     return 0
 
@@ -327,8 +370,13 @@ def cmd_deploy(a):
     if not preflight(rpc, w, None, say=log, amount=a.amount_wei, with_a3=a.with_submitted_refund):
         raise L.Abort("preflight failed: nothing was deployed")
     _, init, runtime, _ = L.build_artifacts()
-    log(f"deploying Settlane: init {len(init) // 2} bytes, runtime sha256 {L.sha256_hex(runtime)}")
-    rc = L.send(rpc, w["client"], None, "0x" + init, 0, GAS["deploy"], create=True, broadcast=a.broadcast)
+    ensure_no_pending(rpc)
+    out, _, _, _ = L.build_artifacts()
+    problems, notes = L.check_artifact(L.artifact_facts(out, init, runtime))
+    if problems:
+        raise L.Abort("the build is not the pinned artifact, nothing was deployed: " + "; ".join(problems))
+    log(f"deploying Settlane: init {len(init) // 2} bytes, runtime sha256 {L.sha256_hex(runtime)} (equals the pinned artifact)")
+    rc = tsend(rpc, w["client"], None, "0x" + init, 0, GAS["deploy"], "deploy Settlane", create=True, broadcast=a.broadcast)
     addr = rc["contractAddress"].lower()
     if rpc.call("eth_getCode", addr, "latest") != "0x" + runtime:
         raise L.Abort(f"the code at {addr} is NOT Settlane.runtime.bin")
@@ -352,6 +400,13 @@ def cmd_run(a):
         raise L.Abort("no deployed address: run `deploy` first or pass --address")
     if not preflight(rpc, w, address, say=log, amount=amount, with_a3=a.with_submitted_refund, deploy=False):
         raise L.Abort("preflight failed: nothing was sent")
+    ensure_no_pending(rpc)
+    st = load_state(L.SEPOLIA)
+    pr = st.get("progress")
+    if pr and not pr.get("complete") and not a.abandon_previous:
+        raise L.Abort(f"the previous run stopped after {len(pr['steps'])} step(s) (last: {pr['steps'][-1]['label'] if pr['steps'] else 'none'}) and is not complete. Inspect {state_path(L.SEPOLIA)} and the transactions, then pass --abandon-previous to start a NEW run (it creates new agreements)")
+    st.pop("progress", None)  # recreated by the first transaction actually sent, so a run that aborts before sending leaves no trace
+    save_state(L.SEPOLIA, st)
     r = Runner(rpc, w, address, a)
     r.a1(amount)
     r.a2(amount)
@@ -359,11 +414,13 @@ def cmd_run(a):
         r.a3(amount)
     log("\ngas used per transaction: " + ", ".join(f"{k.split()[0]}={v}" for k, v in r.gas_used))
     log("gas ESTIMATED per transaction: " + ", ".join(f"{k.split()[0]}={v}" for k, v in r.estimates))
+    st = load_state(L.SEPOLIA)
+    st.setdefault("progress", {"steps": []})["complete"] = True
     st["gas_used"] = dict(r.gas_used)
     st["gas_estimate"] = dict(r.estimates)
     save_state(L.SEPOLIA, st)
     log("\nverifying the deployment (read-only):")
-    return 0 if verify_deployment.verify(rpc, address, L.SEPOLIA, st.get("deploy_block", 0), say=log) else 1
+    return 0 if verify_deployment.verify(rpc, address, L.SEPOLIA, st.get("deploy_block", 0), json.loads(L.PIN.read_text())["runtime_sha256"], say=log) else 1
 
 
 def cmd_verify(a):
@@ -372,7 +429,7 @@ def cmd_verify(a):
     address = a.address or st.get("address")
     if not address:
         raise L.Abort("no address: pass --address")
-    return 0 if verify_deployment.verify(rpc, address, L.SEPOLIA, st.get("deploy_block", 0), say=log) else 1
+    return 0 if verify_deployment.verify(rpc, address, L.SEPOLIA, st.get("deploy_block", 0), json.loads(L.PIN.read_text())["runtime_sha256"], say=log) else 1
 
 
 
@@ -426,6 +483,10 @@ def cmd_node_preflight(a):
     check(f"the max fee we would set is at most {L.MAX_GAS_PRICE_GWEI} gwei", fee["max_fee"] / 1e9 <= L.MAX_GAS_PRICE_GWEI)
     # gas estimates on the real node
     o, init, runtime, _ = L.build_artifacts()
+    problems, notes = L.check_artifact(L.artifact_facts(o, init, runtime))
+    check("the production build equals the pinned artifact (Fe version, init, runtime and ABI hashes, clean tree)", not problems, "; ".join(problems)[:200] or f"runtime sha256 {L.sha256_hex(runtime)}")
+    for n in notes:
+        log(f"      note: {n}")
     est = {}
     base_ov = {DUMMY: {"balance": hex(10**18)}}
     try:
@@ -474,10 +535,51 @@ def cmd_node_preflight(a):
     now_need = needs(fee["max_fee"], a.amount_wei, True, True, fee["base"] + fee["tip"])
     log("bare minimum at OUR tip (expected scenario x 1.5 margin, plan A1+A2+A3): " + ", ".join(f"{r} {v / L.ETH:.5f}" for r, v in now_need.items()) + f"  (total {sum(now_need.values()) / L.ETH:.5f} ETH)")
     rec = needs(2 * fee["base"] + 10**9, a.amount_wei, True, True, fee["base"] + 10**9)
+    log(f"\nfunding per wallet (plan A1+A2+A3; 50 percent margin included; `fund` = the client sends {a.fund_wei / L.ETH:.4f} ETH to each of the other two, 2 more transactions):")
+    for name, price, mx in scen[:2]:
+        direct = {r: int(1.5 * v["hold"]) for r, v in cost_model(price, mx, a.amount_wei, True).items()}
+        viafund = int(1.5 * cost_model(price, mx, a.amount_wei, True, True, a.fund_wei)["client"]["hold"])
+        log(f"  {name:42s} faucet to EACH wallet: client {direct['client'] / L.ETH:.5f}  provider {direct['provider'] / L.ETH:.5f}  verifier {direct['verifier'] / L.ETH:.5f}   |   faucet to the client ONLY, then `fund`: client {viafund / L.ETH:.5f} (provider and verifier get {a.fund_wei / L.ETH:.4f} each)")
     log("\nrecommended minimum test ETH (stress scenario x 1.5 safety margin, plan A1+A2+A3): " + ", ".join(f"{r} {v / L.ETH:.4f}" for r, v in rec.items()) + f"  (total {sum(rec.values()) / L.ETH:.4f} ETH)")
     failed = results.count(False)
     log(f"\nnode-preflight: {len(results) - failed} ok, {failed} failed ({len(results)} checks); no transaction was sent, no wallet was used")
     return 0 if not failed else 1
+
+
+def cmd_artifact(a):
+    """Show the production build's identity; `--write` re-pins it (only after reviewing a contract change)."""
+    out, init, runtime, _ = L.build_artifacts()
+    facts = L.artifact_facts(out, init, runtime)
+    for k, v in facts.items():
+        log(f"  {k}: {v}")
+    if a.write:
+        if facts["production_tree_dirty"]:
+            raise L.Abort("refusing to pin a build from a tree with uncommitted production changes")
+        L.PIN.write_text(json.dumps({k: v for k, v in facts.items() if k != "production_tree_dirty"}, indent=2) + "\n")
+        log(f"pinned in {L.PIN}")
+        return 0
+    problems, notes = L.check_artifact(facts)
+    for n in notes:
+        log(f"  note: {n}")
+    log("artifact: " + ("equals the pin" if not problems else "DIFFERS from the pin: " + "; ".join(problems)))
+    return 0 if not problems else 1
+
+
+def cmd_resolve_pending(a):
+    rpc = L.Rpc(a.rpc_url)
+    L.require_chain(rpc)
+    st = load_state(L.SEPOLIA)
+    if not st.get("pending"):
+        log("no pending transactions")
+        return 0
+    for p in list(st["pending"]):
+        rc = rpc.call("eth_getTransactionReceipt", p["tx"])
+        if rc:
+            pending_clear(p["tx"])
+            log(f"  resolved '{p['label']}' {p['tx']}: mined in block {int(rc['blockNumber'], 16)}, status {int(rc['status'], 16)}")
+        else:
+            log(f"  STILL PENDING '{p['label']}' {p['tx']}: no receipt yet; do not resend. If the node dropped it, check the account's nonce and inspect it on a block explorer before doing anything")
+    return 0 if not load_state(L.SEPOLIA).get("pending") else 1
 
 
 def cmd_check_wallets(a):
@@ -486,9 +588,6 @@ def cmd_check_wallets(a):
     w = L.load_wallets()
     for role, wl in w.items():
         log(f"  ok   {role:9s} {wl.address}   keystore {wl.keystore}   password file mode {oct(st.S_IMODE(wl.password_file.stat().st_mode))}")
-    for role, wl in w.items():
-        if wl.keystore.stat().st_mode & 0o077:
-            log(f"  WARN the {role} keystore file is readable by others (it is encrypted, but): chmod 600 {wl.keystore}")
     d = L.STATE_DIR.stat().st_mode & 0o077
     log(("  ok   " if not d else "  WARN ") + f"{L.STATE_DIR} " + ("is private to you" if not d else "is accessible to others: chmod 700 it"))
     log("check-wallets: ok (offline: no network, no balance, nothing printed but addresses and paths)")
@@ -498,7 +597,7 @@ def cmd_check_wallets(a):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", choices=["plan", "node-preflight", "check-wallets", "preflight", "fund", "deploy", "run", "verify"])
+    ap.add_argument("cmd", choices=["plan", "node-preflight", "check-wallets", "artifact", "preflight", "fund", "deploy", "run", "resolve-pending", "verify"])
     ap.add_argument("--rpc-url")
     ap.add_argument("--broadcast", action="store_true", help="actually send transactions (default: refuse)")
     ap.add_argument("--address")
@@ -508,14 +607,17 @@ def main(argv=None):
     ap.add_argument("--a1-window", type=int, default=900)
     ap.add_argument("--a2-window", type=int, default=180)
     ap.add_argument("--with-submitted-refund", action="store_true")
+    ap.add_argument("--write", action="store_true", help="artifact: re-pin the build (after reviewing a contract change)")
+    ap.add_argument("--abandon-previous", action="store_true", help="run: start a new run although the previous one did not complete")
+    ap.add_argument("--receipt-timeout", type=int, default=600, help="seconds to wait for a receipt before stopping with a pending marker")
     ap.add_argument("--rehearsal-warp", action="store_true", help="local rehearsal only: fast-forward the node's clock instead of waiting")
     a = ap.parse_args(argv)
-    ap_tip = a.tip_wei
-    L.TIP_WEI = ap_tip
-    if a.cmd not in ("plan", "check-wallets") and not a.rpc_url:
+    L.TIP_WEI = a.tip_wei
+    L.RECEIPT_TIMEOUT_S = a.receipt_timeout
+    if a.cmd not in ("plan", "check-wallets", "artifact") and not a.rpc_url:
         ap.error("--rpc-url is required")
     try:
-        return {"plan": cmd_plan, "node-preflight": cmd_node_preflight, "check-wallets": cmd_check_wallets, "preflight": cmd_preflight, "fund": cmd_fund, "deploy": cmd_deploy, "run": cmd_run, "verify": cmd_verify}[a.cmd](a)
+        return {"plan": cmd_plan, "node-preflight": cmd_node_preflight, "check-wallets": cmd_check_wallets, "artifact": cmd_artifact, "resolve-pending": cmd_resolve_pending, "preflight": cmd_preflight, "fund": cmd_fund, "deploy": cmd_deploy, "run": cmd_run, "verify": cmd_verify}[a.cmd](a)
     except L.Abort as e:
         log(f"ABORT: {e}")
         return 2

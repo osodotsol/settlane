@@ -176,20 +176,46 @@ class Wallet:
         self.address = r.stdout.strip().lower()
 
 
+def _perm_problem(path, kind, want_dir=False):
+    """Why `path` is not owner-only, or None. Applies to the keystore and password files and their directories."""
+    p = pathlib.Path(path)
+    if p.is_symlink():
+        return f"{kind} {p} is a symbolic link: use the real file (a link can point into the repository or elsewhere)"
+    st = p.stat()
+    if st.st_uid != os.getuid():
+        return f"{kind} {p} is owned by another user (uid {st.st_uid})"
+    if want_dir and not stat.S_ISDIR(st.st_mode):
+        return f"{kind} {p} is not a directory"
+    mode = stat.S_IMODE(st.st_mode)
+    if mode & 0o077:
+        return f"{kind} {p} is accessible to group or others (mode {oct(mode)}): chmod {'700' if want_dir else '600'} {p}"
+    return None
+
+
 def check_secret_paths(keystore, password_file, role):
+    """Everything that holds or protects a key must be OUTSIDE the repository and owner-only (0600 files,
+    0700 directories, no symlinks, owned by the current user). Refuses otherwise: it never fixes silently."""
     for what, p in (("keystore", keystore), ("password file", password_file)):
         p = pathlib.Path(p)
-        if not p.exists():
+        if not p.exists() and not p.is_symlink():
             raise Abort(f"the {role} {what} does not exist: {p}")
         if inside_repo(p):
             raise Abort(f"the {role} {what} is inside the repository ({p}): move it out; secrets never live in the checkout")
-    mode = stat.S_IMODE(pathlib.Path(password_file).stat().st_mode)
-    if mode & 0o077:
-        raise Abort(f"the {role} password file is readable by others (mode {oct(mode)}): chmod 600 it")
+        bad = _perm_problem(p, f"the {role} {what}")
+        if bad:
+            raise Abort(bad)
+        if p.parent.exists():
+            bad = _perm_problem(p.parent, f"the directory of the {role} {what}", want_dir=True)
+            if bad:
+                raise Abort(bad)
 
 
 def load_wallets(directory=None):
     d = pathlib.Path(directory or STATE_DIR)
+    if d.exists():
+        bad = _perm_problem(d, "the wallet directory", want_dir=True)
+        if bad:
+            raise Abort(bad)
     ws = {}
     for role in ROLES:
         ks, pw = d / "keystores" / role, d / "passwords" / f"{role}.pw"
@@ -219,12 +245,21 @@ def estimate_gas(rpc, wallet, to, data, value=0, create=False):
         raise Abort(f"the transaction would revert ({revert_reason(e)}); nothing was sent")
 
 
-def send(rpc, wallet, to, data, value=0, gas_cap=1_500_000, create=False, broadcast=False):
+class Pending(Abort):
+    """A transaction was submitted but no receipt arrived in time. It may still be mined: do NOT resend."""
+
+
+RECEIPT_TIMEOUT_S = 600
+
+
+def send(rpc, wallet, to, data, value=0, gas_cap=1_500_000, create=False, broadcast=False, on_submit=None, on_done=None):
     """Sign with the keystore and send one transaction; returns the receipt. Guards first.
 
-    The gas limit is the node's estimate plus 30%, never above `gas_cap` (a node on a newer fork can
-    price the same call differently, so a fixed limit would fail or overpay). A transaction that is
-    mined with status 0 raises: a failed send must never look like a success."""
+    The gas limit is the node's estimate plus 30%, never above `gas_cap`; the fee is explicit (see `fees`).
+    The transaction is submitted with `--async` and the receipt is polled here with our own timeout:
+      * mined with status 0 -> Abort (a failed send must never look like a success);
+      * no receipt within RECEIPT_TIMEOUT_S -> Pending (names the hash; the caller records it and the
+        workflow stops: it must never resend a transaction that may still be mined)."""
     require_send_allowed(rpc, broadcast)
     if value > MAX_AGREEMENT_WEI:
         raise Abort(f"value {value} wei exceeds the {MAX_AGREEMENT_WEI} wei cap per transaction")
@@ -235,22 +270,29 @@ def send(rpc, wallet, to, data, value=0, gas_cap=1_500_000, create=False, broadc
     limit = int(est * 1.3) + 1000
     if limit > gas_cap:
         raise Abort(f"the gas estimate {est} (limit {limit}) exceeds the cap {gas_cap}; nothing was sent")
-    cmd = [tool("cast"), "send", "--keystore", str(wallet.keystore), "--password-file", str(wallet.password_file), "--rpc-url", rpc.url, "--gas-limit", str(limit), "--gas-price", str(fee["max_fee"]), "--priority-gas-price", str(fee["tip"]), "--value", str(value), "--json"]
+    cmd = [tool("cast"), "send", "--async", "--keystore", str(wallet.keystore), "--password-file", str(wallet.password_file), "--rpc-url", rpc.url, "--gas-limit", str(limit), "--gas-price", str(fee["max_fee"]), "--priority-gas-price", str(fee["tip"]), "--value", str(value)]
     cmd += ["--create", data] if create else ([to, data] if data else [to])
     r = run(cmd)
     if r.returncode:
         # the message may echo arguments but never the key: the password is in a file, not in argv
         raise Abort("cast send failed: " + (r.stderr.strip() or r.stdout.strip())[-400:])
-    h = json.loads(r.stdout)["transactionHash"]
-    for _ in range(300):
+    h = r.stdout.strip().split()[-1]
+    if not re.fullmatch(r"0x[0-9a-fA-F]{64}", h):
+        raise Abort("cast send returned something that is not a transaction hash: " + r.stdout.strip()[:120])
+    if on_submit:
+        on_submit(h)
+    deadline = time.time() + RECEIPT_TIMEOUT_S
+    while time.time() < deadline:
         rc = rpc.call("eth_getTransactionReceipt", h)
         if rc:
             rc["_hash"], rc["_estimate"], rc["_limit"] = h, est, limit
+            if on_done:
+                on_done(h)
             if rc.get("status") != "0x1":
-                raise Abort(f"transaction {h} was mined with status 0 (gas used {int(rc['gasUsed'], 16)} of {limit})")
+                raise Abort(f"transaction {h} was mined with status 0 (gas used {int(rc['gasUsed'], 16)} of {limit}); the workflow stopped")
             return rc
-        time.sleep(2)
-    raise Abort(f"transaction {h} was not mined in time")
+        time.sleep(min(2, max(deadline - time.time(), 0.05)))
+    raise Pending(f"transaction {h} has no receipt after {RECEIPT_TIMEOUT_S} s. It may still be mined: do NOT resend. Check it, then run `resolve-pending`")
 
 
 def wait_until(rpc, target_ts, warp=False, log=print):
@@ -265,3 +307,38 @@ def wait_until(rpc, target_ts, warp=False, log=print):
             raise Abort("waiting for the chain's clock took far longer than expected")
         time.sleep(6)
     log(f"      chain time {rpc.ts()} >= {target_ts}")
+
+
+# ------------------------------------------------------------------ pinned artifact
+PIN = pathlib.Path(__file__).resolve().parent / "artifact.json"
+
+
+def artifact_facts(out, init, runtime):
+    """What identifies the production build: the hashes of its three outputs and the git tree of the production ingot."""
+    tree = run(["git", "rev-parse", "HEAD:ingots/settlane"], cwd=REPO).stdout.strip()
+    dirty = bool(run(["git", "status", "--porcelain", "--", "ingots/settlane", "fe.toml"], cwd=REPO).stdout.strip())
+    import hashlib
+    return {
+        "fe": run(["fe", "--version"]).stdout.strip(),
+        "init_sha256": sha256_hex(init), "runtime_sha256": sha256_hex(runtime),
+        "abi_sha256": hashlib.sha256((pathlib.Path(out) / "Settlane.abi.json").read_bytes()).hexdigest(),
+        "init_bytes": len(init) // 2, "runtime_bytes": len(runtime) // 2,
+        "production_tree": tree, "production_tree_dirty": dirty,
+    }
+
+
+def check_artifact(facts):
+    """Compare a build with the pinned artifact. Returns (problems, notes). The BYTECODE hashes decide; a
+    different source tree with identical bytecode is only a note."""
+    if not PIN.exists():
+        return ([f"{PIN.name} is missing: run `testnet.py artifact --write` after reviewing the build"], [])
+    pin = json.loads(PIN.read_text())
+    problems, notes = [], []
+    for k in ("fe", "init_sha256", "runtime_sha256", "abi_sha256", "init_bytes", "runtime_bytes"):
+        if facts[k] != pin.get(k):
+            problems.append(f"{k}: built {facts[k]}, pinned {pin.get(k)}")
+    if facts["production_tree_dirty"]:
+        problems.append("the production ingot has uncommitted changes: deploy only from a committed tree")
+    if facts["production_tree"] != pin.get("production_tree"):
+        notes.append(f"the production ingot's git tree {facts['production_tree'][:12]} differs from the pinned {str(pin.get('production_tree'))[:12]} (the bytecode is identical, so this is only a note)")
+    return problems, notes

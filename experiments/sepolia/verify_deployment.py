@@ -73,7 +73,8 @@ def verify(rpc, address, expect_chain=lib.SEPOLIA, from_block=0, expect_runtime_
     check("the address holds code", code not in ("0x", "0x0", None), f"{(len(code) - 2) // 2} bytes")
     check("the deployed runtime code equals Settlane.runtime.bin built from this checkout, byte for byte", code == "0x" + runtime)
     if expect_runtime_sha:
-        check("the runtime code hash is the expected one", rt_sha == expect_runtime_sha.lower(), rt_sha)
+        check("the runtime code hash is the pinned one (experiments/sepolia/artifact.json) or the one given", rt_sha == expect_runtime_sha.lower(), rt_sha)
+        check("the DEPLOYED code hash is that same hash", lib.sha256_hex(code) == expect_runtime_sha.lower(), lib.sha256_hex(code))
 
     # ---- ABI: the built ABI equals the lock, and every entry point is live
     policy = json.loads((HERE.parents[1] / "scripts" / "lint-policy.json").read_text())
@@ -192,7 +193,8 @@ def main():
     ap.add_argument("--expect-runtime-sha256")
     a = ap.parse_args()
     try:
-        return 0 if verify(lib.Rpc(a.rpc_url), a.address, a.expect_chain, a.from_block, a.expect_runtime_sha256) else 1
+        pinned = json.loads(lib.PIN.read_text())["runtime_sha256"] if lib.PIN.exists() else None
+        return 0 if verify(lib.Rpc(a.rpc_url), a.address, a.expect_chain, a.from_block, a.expect_runtime_sha256 or pinned) else 1
     except lib.Abort as e:
         print(f"ABORT: {e}")
         return 2

@@ -81,6 +81,9 @@ def make_wallets(base):
         assert r.returncode == 0, r.stderr
         d = lib.run([lib.tool("cast"), "wallet", "decrypt-keystore", role, "--keystore-dir", str(base / "keystores"), "--unsafe-password", PASSWORD])
         keys[role] = [t for t in d.stdout.split() if t.startswith("0x") and len(t) == 66][0] if d.returncode == 0 else None
+        (base / "keystores" / role).chmod(0o600)  # the documented step: cast creates keystores world-readable
+    for p in (base, base / "keystores", base / "passwords"):
+        p.chmod(0o700)
     return keys
 
 
@@ -90,6 +93,181 @@ def cli(url, base, *args, extra_env=None):
     env.update(extra_env or {})
     r = subprocess.run([sys.executable, str(HERE / "testnet.py"), *args, "--rpc-url", url], capture_output=True, text=True, env=env)
     return r.returncode, r.stdout + r.stderr
+
+
+def nonce_of(node, addr):
+    return int(node.rpc.call("eth_getTransactionCount", addr, "latest"), 16)
+
+
+def extra_checks(fork, fork_url, base, out_all):
+    """Permissions, the pinned artifact, make_wallets.sh, and the failure and delay behavior."""
+    import types
+    # ---------------- permissions: every loosening is refused, nothing is fixed silently
+    def variant(mutator):
+        d = pathlib.Path(tempfile.mkdtemp(prefix="settlane-perm-"))
+        shutil.copytree(base / "keystores", d / "keystores"); shutil.copytree(base / "passwords", d / "passwords")
+        for p in (d, d / "keystores", d / "passwords"):
+            p.chmod(0o700)
+        for p in list((d / "keystores").iterdir()) + list((d / "passwords").iterdir()):
+            p.chmod(0o600)
+        mutator(d)
+        try:
+            lib.load_wallets(d)
+            return None
+        except lib.Abort as e:
+            return str(e)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+    check("owner-only wallets are accepted (control for the refusals below)", variant(lambda d: None) is None)
+    for label, mut, needle in (
+        ("a keystore readable by group or others (0644)", lambda d: (d / "keystores" / "client").chmod(0o644), "accessible to group or others"),
+        ("a password file readable by group (0640)", lambda d: (d / "passwords" / "verifier.pw").chmod(0o640), "accessible to group or others"),
+        ("a keystores directory open to others (0755)", lambda d: (d / "keystores").chmod(0o755), "accessible to group or others"),
+        ("a passwords directory open to group (0750)", lambda d: (d / "passwords").chmod(0o750), "accessible to group or others"),
+        ("the wallet directory itself open to others (0755)", lambda d: d.chmod(0o755), "accessible to group or others"),
+        ("a keystore that is a symbolic link", lambda d: ((d / "keystores" / "provider").rename(d / "real"), (d / "keystores" / "provider").symlink_to(d / "real")), "symbolic link"),
+    ):
+        msg = variant(mut)
+        check(f"{label} is refused", msg is not None and needle in msg, (msg or "ACCEPTED")[:90])
+
+    # ---------------- the pinned artifact
+    out, init, runtime, _ = lib.build_artifacts()
+    facts = lib.artifact_facts(out, init, runtime)
+    problems, _ = lib.check_artifact(facts)
+    check("the production build equals the pinned artifact (hashes of init, runtime and ABI, Fe version)", not problems, "; ".join(problems)[:120] or facts["runtime_sha256"][:16] + "...")
+    for key in ("runtime_sha256", "init_sha256", "abi_sha256", "fe"):
+        bad = dict(facts, **{key: "tampered"})
+        pr, _ = lib.check_artifact(bad)
+        check(f"a different {key} is refused", any(key in x for x in pr))
+    check("uncommitted production changes are refused", any("uncommitted" in x for x in lib.check_artifact(dict(facts, production_tree_dirty=True))[0]))
+    # a deploy with a wrong pin sends nothing
+    pin_backup = lib.PIN
+    tmp_pin = pathlib.Path(tempfile.mkdtemp(prefix="settlane-pin-")) / "artifact.json"
+    pin = json.loads(pin_backup.read_text()); pin["runtime_sha256"] = "0" * 64; tmp_pin.write_text(json.dumps(pin))
+
+    # ---------------- make_wallets.sh through a pty (nothing real is created)
+    mw = pathlib.Path(tempfile.mkdtemp(prefix="settlane-mw-"))
+    pw = "correct-horse-battery-1"
+    feeder = "(sleep 1.5; for i in 1 2 3; do printf '%s\\n' '" + pw + "'; printf '%s\\n' '" + pw + "'; done; sleep 6)"
+    env = {**os.environ, "SETTLANE_TESTNET_DIR": str(mw / "w")}
+    r = subprocess.run(["bash", "-c", feeder + f" | script -qec 'bash {HERE}/make_wallets.sh' {mw}/typescript"], capture_output=True, text=True, env=env, timeout=120)
+    try:
+        wl = lib.load_wallets(mw / "w")
+        made = len({w_.address for w_ in wl.values()}) == 3
+    except lib.Abort as e:
+        made = False
+    modes = {str(p.relative_to(mw)): oct(p.stat().st_mode & 0o777) for p in [mw / "w", mw / "w/keystores", mw / "w/passwords", *(mw / "w/keystores").glob("*"), *(mw / "w/passwords").glob("*")]} if (mw / "w").exists() else {}
+    check("make_wallets.sh creates three different wallets that load and pass every permission check", made)
+    check("every directory is 0700 and every keystore and password file is 0600", bool(modes) and all(v == ("0o700" if "." not in k.split("/")[-1] and k.split("/")[-1] in ("w", "keystores", "passwords") else "0o600") for k, v in modes.items()), str(sorted(set(modes.values()))))
+    ts = (mw / "typescript").read_text(errors="ignore") if (mw / "typescript").exists() else ""
+    check("the typed password is not echoed anywhere in the terminal session (echo stays off), and is not in any other output", pw not in ts and pw not in r.stdout + r.stderr)
+    r2 = subprocess.run(["bash", "-c", "printf 'x\\n' | script -qec 'bash " + str(HERE) + "/make_wallets.sh' /dev/null"], capture_output=True, text=True, env=env, timeout=60)
+    check("running it again refuses to overwrite the existing wallets", "refusing to overwrite" in r2.stdout)
+    r3 = subprocess.run(["bash", str(HERE / "make_wallets.sh")], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, timeout=30)
+    check("it refuses to run without a terminal", "no terminal" in r3.stderr)
+    shutil.rmtree(mw, ignore_errors=True)
+
+    # ---------------- a transaction mined with status 0 stops the workflow
+    class FailRpc(lib.Rpc):
+        def call(self, method, *params):
+            if method == "eth_getTransactionReceipt":
+                return {"status": "0x0", "gasUsed": "0x5208", "blockNumber": "0x1"}
+            return super().call(method, *params)
+    node = Anvil(lib.SEPOLIA, fork, fork_url)
+    try:
+        w = lib.load_wallets(base)
+        node.rpc.call("anvil_setBalance", w["client"].address, hex(10**17))
+        real_run, real_est = lib.run, lib.estimate_gas
+        try:
+            lib.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "0x" + "ab" * 32 + "\n", "") if "send" in cmd else real_run(cmd, **kw)
+            lib.estimate_gas = lambda *a_, **k_: 21000
+            try:
+                lib.send(FailRpc(node.url), w["client"], "0x00000000000000000000000000000000000abc77", None, 1, 100_000, broadcast=True)
+                msg = "NO ABORT"
+            except lib.Abort as e:
+                msg = str(e)
+        finally:
+            lib.run, lib.estimate_gas = real_run, real_est
+        check("a transaction mined with status 0 aborts the workflow", "status 0" in msg and "stopped" in msg, msg[:90])
+    finally:
+        node.stop()
+
+    # ---------------- a run that stops midway, and a delayed transaction (node B, its own state)
+    base2 = pathlib.Path(tempfile.mkdtemp(prefix="settlane-b-"))
+    shutil.copytree(base / "keystores", base2 / "keystores"); shutil.copytree(base / "passwords", base2 / "passwords")
+    for p in (base2, base2 / "keystores", base2 / "passwords"):
+        p.chmod(0o700)
+    nodeb = Anvil(lib.SEPOLIA, fork, fork_url)
+    old_dir = lib.STATE_DIR
+    lib.STATE_DIR = base2
+    try:
+        w2 = lib.load_wallets(base2)
+        nodeb.rpc.call("anvil_setBalance", w2["client"].address, hex(10**17))
+        n0 = int(nodeb.rpc.call("eth_getTransactionCount", w2["client"].address, "latest"), 16)
+        rc, out = cli(nodeb.url, base2, "fund", "--broadcast", "--fund-wei", str(5 * 10**15)); out_all.append(out)
+        check("node B: `fund` succeeds", rc == 0)
+        # a build that is not the pinned artifact is never deployed
+        import contextlib, io
+        ns0 = types.SimpleNamespace(rpc_url=nodeb.url, broadcast=True, address=None, amount_wei=10**15, fund_wei=4 * 10**15, a1_window=900, a2_window=180, with_submitted_refund=False, rehearsal_warp=True, abandon_previous=False, receipt_timeout=60, tip_wei=lib.TIP_WEI)
+        nb = nonce_of(nodeb, w2["client"].address)
+        lib.PIN = tmp_pin
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                testnet.cmd_deploy(ns0)
+            msg = "NO ABORT"
+        except lib.Abort as e:
+            msg = str(e)
+        finally:
+            lib.PIN = pin_backup
+        check("a build that differs from the pinned artifact is NOT deployed (the preflight and the deploy both refuse)", "FAIL  the production build equals the pinned artifact" in buf.getvalue() and "nothing was deployed" in msg and nonce_of(nodeb, w2["client"].address) == nb, msg[:80])
+        rc, out = cli(nodeb.url, base2, "deploy", "--broadcast"); out_all.append(out)
+        check("node B: `deploy` of the pinned artifact succeeds", rc == 0)
+        n0 = nonce_of(nodeb, w2["client"].address)
+        rc, out = cli(nodeb.url, base2, "run", "--broadcast", "--a1-window", "0", "--rehearsal-warp")
+        out_all.append(out)
+        check("a step that would revert is refused BEFORE anything is sent (simulated first), and leaves no run record", rc == 2 and "would revert" in out and "deliver_by not in the future" in out and nonce_of(nodeb, w2["client"].address) == n0 and "progress" not in json.loads((base2 / f"state-{lib.SEPOLIA}.json").read_text() if (base2 / f"state-{lib.SEPOLIA}.json").exists() else "{}"), out.strip().splitlines()[-1][:100])
+        # failure after the first transaction of A1
+        real_tsend, calls = testnet.tsend, []
+        def flaky(*a_, **k_):
+            calls.append(1)
+            if len(calls) == 2:
+                raise lib.Abort("simulated failure of step 2 (a node error)")
+            return real_tsend(*a_, **k_)
+        testnet.tsend = flaky
+        try:
+            ns = types.SimpleNamespace(rpc_url=nodeb.url, broadcast=True, address=None, amount_wei=10**15, fund_wei=4 * 10**15, a1_window=900, a2_window=180, with_submitted_refund=False, rehearsal_warp=True, abandon_previous=False, receipt_timeout=60, tip_wei=lib.TIP_WEI)
+            try:
+                testnet.cmd_run(ns); msg = "NO ABORT"
+            except lib.Abort as e:
+                msg = str(e)
+        finally:
+            testnet.tsend = real_tsend
+        st = json.loads((base2 / f"state-{lib.SEPOLIA}.json").read_text())
+        check("a failure after the first transaction stops the run and records exactly what was done", "simulated failure" in msg and len(st["progress"]["steps"]) == 1 and st["progress"]["complete"] is False, f"{len(st['progress']['steps'])} step recorded")
+        n1 = nonce_of(nodeb, w2["client"].address)
+        rc, out = cli(nodeb.url, base2, "run", "--broadcast", "--rehearsal-warp"); out_all.append(out)
+        check("the next run REFUSES to start (it would create duplicate agreements) and sends nothing", rc == 2 and "previous run stopped" in out and nonce_of(nodeb, w2["client"].address) == n1, out.strip().splitlines()[-1][:110])
+        rc, out = cli(nodeb.url, base2, "run", "--broadcast", "--rehearsal-warp", "--abandon-previous"); out_all.append(out)
+        check("--abandon-previous starts a new, complete run", rc == 0 and "0 failed" in out)
+        # delayed transaction: the node stops mining
+        nodeb.rpc.call("evm_setAutomine", False)
+        rc, out = cli(nodeb.url, base2, "fund", "--broadcast", "--receipt-timeout", "4"); out_all.append(out)
+        st = json.loads((base2 / f"state-{lib.SEPOLIA}.json").read_text())
+        check("a transaction without a receipt in time stops the workflow, names the hash and says not to resend", rc == 2 and "do NOT resend" in out and len(st.get("pending", [])) == 1, out.strip().splitlines()[-1][:100])
+        rc, out = cli(nodeb.url, base2, "fund", "--broadcast"); out_all.append(out)
+        check("while it is pending, no new transaction can be sent", rc == 2 and "no receipt yet" in out)
+        rc, out = cli(nodeb.url, base2, "resolve-pending"); out_all.append(out)
+        check("resolve-pending reports it as still pending and keeps refusing", rc == 1 and "STILL PENDING" in out)
+        nodeb.rpc.call("evm_mine")
+        rc, out = cli(nodeb.url, base2, "resolve-pending"); out_all.append(out)
+        st = json.loads((base2 / f"state-{lib.SEPOLIA}.json").read_text())
+        check("once mined, resolve-pending clears it and the workflow may continue", rc == 0 and not st.get("pending") and "resolved" in out)
+        nodeb.rpc.call("evm_setAutomine", True)
+    finally:
+        lib.STATE_DIR = old_dir
+        nodeb.stop()
+        shutil.rmtree(base2, ignore_errors=True)
 
 
 def main():
@@ -164,7 +342,7 @@ def main():
         try:
             lib.check_secret_paths(base / "keystores" / "client", pwf, "client"); r2 = False
         except lib.Abort as e:
-            r2 = "readable by others" in str(e)
+            r2 = "accessible to group or others" in str(e)
         pwf.chmod(0o600)
         check("a world-readable password file is refused", r2)
         dup = pathlib.Path(tempfile.mkdtemp(prefix="settlane-dup-"))
@@ -204,6 +382,7 @@ def main():
         rc, out = cli(url, base, "verify", "--address", fake)
         out_all.append(out)
         check("verification FAILS on a contract with other code", rc == 1 and "FAIL  the deployed runtime code equals" in out)
+        extra_checks(fork, fork_url, base, out_all)
         # ---- hygiene
         blob = "\n".join(out_all)
         check("no private key and no password appears in any output", not any(k and k[2:] in blob.lower() for k in keys.values()) and PASSWORD not in blob)

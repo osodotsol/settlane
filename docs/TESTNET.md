@@ -34,6 +34,26 @@ All three working endpoints agree on chain, genesis, fork, base fee and every ga
 
 **Wallet setup instructions verified** (throwaway directory, nothing real): the directory commands, the interactive `cast wallet new` prompt (driven through a pseudo-terminal), the password-file snippet and `check-wallets` all work; `check-wallets` prints only addresses, paths and modes, and a mistyped password file is rejected ("cannot open the provider keystore"). The keystore files are created world-readable (encrypted, but) so section 2 now says `chmod 600` and `check-wallets` warns.
 
+## 0b. Final preparation (2026-11-20, nothing broadcast, no wallet created)
+**Exact production bytecode (pinned in `experiments/sepolia/artifact.json`, reproduced by an independent build in a fresh directory):** Fe `26.6.0 (5b3f96a)`; init code 6,076 bytes `62ac0e9f537c0e8c22b230b86bb4c3569bafd7a85dc380b3a71b1805cd05e9d6`; runtime code 6,056 bytes `f0965efd4e9d2a0fcfd0eae88d5e6e9c0a938b22c03949b54f015b2600f4b3a8`; ABI JSON `abb232adda8dd130a619ea8d9c1e18032c949ef0d3ea262ec37f907b02b4d1a7`; git tree of the production ingot `a83c9b9fbd7dc87d7dfbc1a1e94193fd97a1c936`. If the contract ever changes, `deploy` refuses until the new build is reviewed and re-pinned with `testnet.py artifact --write`.
+
+**Sepolia re-checked read-only** on publicnode and Tenderly: the same fork (id `0x6c1d9423`, none scheduled), base fee 18 wei, and the same real-node estimates (deploy 9,649,454, create 1,482,393, transfer to a new account 207,391); the limits (estimate x 1.3 = 12,545,290 / 1,928,110 / 270,608) fit the caps (14,000,000 / 2,600,000 / 400,000) and the 16,777,216 protocol cap; our max fee 10,000,036 wei is far below the 60 gwei refusal. Both endpoints pass 16 of 16 checks, now including the pin.
+
+**Funding, each wallet separately** (plan with the optional submitted-refund run; includes a 50% margin; fees computed from the real estimates):
+| Wallet | Bare minimum (our 0.01 gwei tip) | Recommended (wallets' usual 1 gwei tip) | Notes |
+| --- | --- | --- | --- |
+| client | 0.0049 ETH | **0.045 ETH** | pays the deployment (9.65 M gas, the big cost), three creates, two refunds, and locks 0.001 ETH per agreement |
+| provider | 0.00002 ETH | **0.0016 ETH** | submit (twice), claim; receives 0.001 ETH from the claim |
+| verifier | about 0 | **0.0002 ETH** | one approve |
+| **Total** | 0.0049 ETH | **0.047 ETH** | |
+If you fund only the client and let `fund` send 0.004 ETH to each of the other two (two more transactions of 207,391 gas each), the client needs **0.017 ETH (bare) or 0.058 ETH (recommended)**; ask the faucet for about 0.06 ETH.
+
+**What stops the workflow, tested in the rehearsal:** a transaction mined with status 0; a step that would revert (simulated first, nothing sent); a transaction with no receipt in time (hash named, "do NOT resend", pending marker, every later send refused until `resolve-pending`, which keeps refusing while it is pending and clears it once mined); a failure after the first transaction of a run (the steps done are recorded and the next `run` refuses without `--abandon-previous`); a build that is not the pinned artifact; a chain id other than 11155111; a missing `--broadcast`; an owner-only violation.
+
+**Rehearsal:** 50 of 50 checks on a local fork of Sepolia and on `osaka`; read-only verification 24 checks; none of the commands wrote anything into the repository or printed a key or password.
+
+**Remaining prerequisites (yours):** (1) run `make_wallets.sh` and send me only the three addresses; (2) fund the client (about 0.06 ETH; or each wallet per the table); (3) answer the approval questions in section 8. Still unverified until a real run: `eth_sendRawTransaction` on the endpoint, inclusion with a 0.01 gwei tip, gas used vs estimate on the real chain, and the public node's behavior under a real send.
+
 ## 1. The artifact (Fe 26.6.0 build of this checkout)
 | Item | Value |
 | --- | --- |
@@ -47,21 +67,13 @@ The hashes are of the production sources at the commit that adds this file (the 
 
 ## 2. What you must provide (prerequisites)
 1. **Tools** (free, local): `bash experiments/anvil/install_foundry.sh` installs `anvil` and `cast` v1.10.0 with a pinned SHA-256 into `~/tools/foundry/bin`; `fe` 26.6.0.
-2. **Three dedicated test wallets, freshly generated** (never import an existing key, never reuse a mainnet key): **client**, **provider**, **verifier**. They must be three different addresses (D-011). Create each as an encrypted keystore **outside the repository**, entering the password at the hidden prompt:
+2. **Three dedicated test wallets, freshly generated** (never import an existing key, never reuse a mainnet key): **client**, **provider**, **verifier**, three different addresses (D-011). One command, run by you in a terminal (nothing of it has been run for real):
    ```sh
-   mkdir -p ~/.settlane-sepolia/keystores ~/.settlane-sepolia/passwords && chmod 700 ~/.settlane-sepolia ~/.settlane-sepolia/passwords
-   cast wallet new ~/.settlane-sepolia/keystores client      # prompts for a password; prints the address
-   cast wallet new ~/.settlane-sepolia/keystores provider
-   cast wallet new ~/.settlane-sepolia/keystores verifier
-   # a password FILE per wallet (the runner reads the file; the password is never an argument or a variable):
-   for r in client provider verifier; do ( umask 077; read -rsp "password for $r: " p; echo; printf %s "$p" > ~/.settlane-sepolia/passwords/$r.pw ); done
+   bash experiments/sepolia/make_wallets.sh
    ```
-   ```sh
-   chmod 600 ~/.settlane-sepolia/keystores/*     # the keystores are created world-readable; they are encrypted, but tighten them
-   python3 experiments/sepolia/testnet.py check-wallets   # offline: layout, modes, three distinct addresses, password files open the keystores; prints addresses only
-   ```
-   Record only the three **addresses**. Back up the keystores and passwords outside the repository if you want to keep the wallets. Test wallets hold test ETH only.
-3. **Test ETH.** **Recommended minimum 0.045 ETH on the client** (bare minimum about 0.005 ETH at our tip; see section 0), and 0.0016 ETH on the provider and 0.0002 ETH on the verifier (or let `fund` send 0.004 ETH to each). Get it from a Sepolia faucet to the **client** address; `fund` then moves gas money to the other two, or fund each address from the faucet.
+   It asks for each wallet's password twice (hidden, at least 12 characters; keep terminal echo off even for type-ahead), writes the 0600 password file and the encrypted keystore into `~/.settlane-sepolia/` (directories 0700, files 0600), refuses to overwrite an existing wallet, refuses a directory inside the repository and a session without a terminal, never puts a password on a command line, and prints only the three addresses by calling `check-wallets`. Tested in a throwaway directory through a pseudo-terminal: three different wallets, exact modes, zero echoes of the typed password, no password in any process's arguments (sampled every 5 ms), a second run refused. Afterwards `python3 experiments/sepolia/testnet.py check-wallets` re-checks the layout offline at any time.
+   Record only the three **addresses**; back up the keystores and passwords outside the repository if you want to keep the wallets. They hold test ETH only.
+3. **Test ETH, per wallet** (plan with the optional submitted-refund run, 50% margin included; section 0b has the table): **client at least 0.045 ETH** (bare minimum 0.0049 ETH at our tip), **provider at least 0.0016 ETH** (bare 0.00002), **verifier at least 0.0002 ETH** (bare about 0). The simplest way: ask the faucet for **about 0.06 ETH to the client only**, then `fund` sends 0.004 ETH to each of the other two. Get it from a Sepolia faucet to the **client** address; `fund` then moves gas money to the other two, or fund each address from the faucet.
 4. **A Sepolia RPC URL**: `https://ethereum-sepolia-rpc.publicnode.com` (selected; fallback `https://sepolia.gateway.tenderly.co`). No key is needed. It sees your addresses and transactions. A keyed endpoint's URL is a credential: keep it out of the repository and logs (pass it from your shell, never commit it).
 5. **Your approval** of the broadcast (this document ends with the questions).
 
@@ -76,6 +88,9 @@ The hashes are of the production sources at the commit that adds this file (the 
 | Value cap: at most 0.005 ETH per transaction (`MAX_AGREEMENT_WEI`), 0.001 ETH per test agreement by default; a wallet holding more than 5 ETH is refused as "not a dedicated test wallet" | `lib`, `testnet.preflight` |
 | Gas price cap 60 gwei; gas limit = the node's estimate + 30%, never above a cap; a transaction mined with status 0 aborts the run | `lib.send` |
 | Every state-changing step is simulated with `eth_call` first and aborts without sending if it would revert | `Runner.tx` |
+| **Owner-only secrets, enforced, never fixed silently**: every keystore and password file must be mode 0600 with its directory and the wallet directory 0700, owned by you, not a symbolic link, and outside the repository; anything looser is refused with the exact `chmod` to run (rehearsal refuses a 0644 keystore, a 0640 password file, 0755 and 0750 directories, a symlink) | `lib.check_secret_paths`, `lib.load_wallets` |
+| **Pinned artifact**: `experiments/sepolia/artifact.json` pins the Fe version and the SHA-256 of the init code, the runtime code and the ABI; `deploy` and the preflights refuse any other build, and the verifier requires the DEPLOYED code to hash to the pinned runtime hash | `lib.check_artifact`, `testnet.py artifact` |
+| **A failed or delayed transaction stops the workflow**: mined with status 0 aborts; no receipt within `--receipt-timeout` (default 600 s) stops with the hash and "do NOT resend", writes a pending marker, and **every later send is refused** until `resolve-pending` sees a receipt; a run that stops midway records its steps and the next `run` refuses unless `--abandon-previous` (it would create duplicate agreements); a step that would revert is simulated and refused before anything is sent | `lib.send`, `testnet.ensure_no_pending`, `Runner.tx` |
 | Preflight scans the repository for key material and requires the secret paths to be git-ignored (`.gitignore` now ignores `.env*`, `keystores/`, `*.pw`, `*.keystore`, `mnemonic*`) | `testnet.preflight` |
 | Logs show addresses and transaction hashes only; the rehearsal asserts that no private key and no password appears in any output | `rehearse.py` |
 
@@ -88,12 +103,14 @@ T="python3 experiments/sepolia/testnet.py"
 
 $T plan                                      # 0. print the plan and cost; sends nothing
 $T node-preflight --rpc-url $RPC --with-submitted-refund   # 1a. read-only, no wallet: chain, genesis, fork, fees, real gas estimates, limits, cost (done: section 0)
-$T check-wallets                             # 1b. offline: the wallet layout (after you create the wallets)
-$T preflight --rpc-url $RPC --with-submitted-refund     # 1c. read-only with the wallets: balances at the live fee, deploy estimate, repo scan
+$T artifact                                  # 1b. the build equals the pinned artifact (hashes below)
+$T check-wallets                             # 1c. offline: the wallet layout (after you create the wallets)
+$T preflight --rpc-url $RPC --with-submitted-refund     # 1d. read-only with the wallets: balances at the live fee, deploy estimate, repo scan
 $T fund   --rpc-url $RPC --broadcast         # 2. (optional) client -> provider and verifier, 0.004 ETH each   [2 tx, 207,391 gas each]
-$T deploy --rpc-url $RPC --broadcast         # 3. build with Fe 26.6.0, deploy, check the code == runtime.bin   [1 tx]
+$T deploy --rpc-url $RPC --broadcast         # 3. build with Fe 26.6.0, require the pinned hashes, deploy, check the code == runtime.bin   [1 tx]
 $T run    --rpc-url $RPC --broadcast --with-submitted-refund   # 4. A1, A2, A3, then the read-only verification   [9 tx]
-python3 experiments/sepolia/verify_deployment.py --rpc-url $RPC --address 0x<deployed> --from-block <deploy block>   # 5. re-verify any time; needs no key
+$T resolve-pending --rpc-url $RPC            # only if a step stopped with 'no receipt': never resend before this says it is resolved
+python3 experiments/sepolia/verify_deployment.py --rpc-url $RPC --address 0x<deployed> --from-block <deploy block>   # 5. re-verify any time; needs no key (checks the pinned runtime hash)
 ```
 State (deployed address, deploy block, gas used) is saved in `~/.settlane-sepolia/state-11155111.json`, outside the repository. The local rehearsal (nothing public): `python3 experiments/sepolia/rehearse.py --hardfork osaka` (also `prague`), about 1 minute.
 
@@ -128,6 +145,6 @@ See section 0: about 0.00013 ETH in fees at our 0.01 gwei tip (0.00015 with A3),
    Earlier note: **the runner has never run against a public network.** Public-node behavior (error formats, `debug_*` absence, estimate differences) is unverified; the rehearsal uses Anvil. The verifier avoids `debug_*` and uses only standard calls plus one state-override `eth_call` for the bare-transfer probe, which a node that does not support overrides would fail visibly rather than pass.
 
 ## 8. Exact next actions (nothing below has been done)
-1. **You** (no assistant needed): create the three wallets and tighten them (section 2), run `check-wallets`, and fund the **client** from a Sepolia faucet with at least 0.045 ETH (bare minimum 0.005). Do not send me keys, passwords or the RPC URL if it contains a key (the selected one does not).
-2. **Approve** (reply with the answers): (a) the wallets are freshly generated and hold only Sepolia test ETH; (b) the endpoint `https://ethereum-sepolia-rpc.publicnode.com` (fallback Tenderly); (c) include A3 (`--with-submitted-refund`) in the first run; (d) the tip policy (0.01 gwei, raised only if a transaction stalls); (e) permission to run `preflight`, `fund`, `deploy`, `run` with `SETTLANE_TESTNET_CONFIRM=sepolia-test-eth-only`.
+1. **You** (no assistant needed): run `bash experiments/sepolia/make_wallets.sh` (section 2; it creates, tightens and checks the three wallets), tell me only the three addresses, and fund the **client** from a Sepolia faucet with about **0.06 ETH** (0.045 if you fund each wallet from the faucet; the per-wallet table is in section 0b; bare minimum 0.017 with `fund`). Do not send me keys, passwords or the RPC URL if it contains a key (the selected one does not).
+2. **Approve** (reply with the answers): (a) the wallets are freshly generated and hold only Sepolia test ETH; (b) the endpoint `https://ethereum-sepolia-rpc.publicnode.com` (fallback Tenderly); (c) include A3 (`--with-submitted-refund`) in the first run; (d) the tip policy (0.01 gwei, raised only if a transaction stalls) and the 600 s receipt timeout; (e) permission to run `preflight`, `fund`, `deploy`, `run` with `SETTLANE_TESTNET_CONFIRM=sepolia-test-eth-only`.
 3. **Then** (assistant): `preflight` with the wallets (read-only), and on your word `fund`, `deploy`, `run`, and `verify`; report the transaction hashes and the verification.

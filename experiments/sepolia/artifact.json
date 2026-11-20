@@ -1,0 +1,9 @@
+{
+  "fe": "fe 26.6.0 (5b3f96a)",
+  "init_sha256": "62ac0e9f537c0e8c22b230b86bb4c3569bafd7a85dc380b3a71b1805cd05e9d6",
+  "runtime_sha256": "f0965efd4e9d2a0fcfd0eae88d5e6e9c0a938b22c03949b54f015b2600f4b3a8",
+  "abi_sha256": "abb232adda8dd130a619ea8d9c1e18032c949ef0d3ea262ec37f907b02b4d1a7",
+  "init_bytes": 6076,
+  "runtime_bytes": 6056,
+  "production_tree": "a83c9b9fbd7dc87d7dfbc1a1e94193fd97a1c936"
+}
