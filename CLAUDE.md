@@ -29,6 +29,8 @@ python3 scripts/check_events.py --selftest              # event-checker self-tes
 python3 scripts/ci_negative_controls.py # proves CI FAILS for each D-014 mistake, review finding and broken lifecycle rule (local, ~2 h, 142 controls, needs PyYAML); --dry-run checks every mutation still applies
 bash experiments/review/run.sh          # review 2026-11-18, R-005 and R-006 repros: the lint rejects them, b6 still crashes `fe test` (FE_NOTES), a frozen production clock is rejected by C-CLOCK in every arm
 bash experiments/phase1/run.sh          # Phase 1 compiler experiments (remove before submission)
+bash experiments/anvil/install_foundry.sh  # anvil + cast v1.10.0 (pinned SHA-256), outside the repo; needed only for the next two
+python3 experiments/anvil/run.py [--mutations]  # PRODUCTION bytecode on a local Anvil with fixed block timestamps: 52 checks, +8 wrong-clock mutations (~7 min); NOT in CI (README there)
 fe test ingots/settlane-dev             # focused run of one ingot
 ```
 

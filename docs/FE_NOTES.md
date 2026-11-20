@@ -200,6 +200,16 @@ test result: FAILED. 0 passed; 1 failed
 ```
 fe 26.6.0 (5b3f96a). Reproduction: `experiments/review/r005/patches/b6_test_attribute_on_helper.patch` applied to `ingots/settlane/src/handlers.fe` at `b3a12f1`, then `fe fmt ingots && fe check && fe build && fe test ingots/settlane`. `bash experiments/review/r005/run.sh` asserts this behavior, so an upstream fix shows up as a changed result. What matters for Settlane: before R-005 the old lint exempted every `#[test]` function from the transfer rules, so this shape also passed the lint; now `C-TEST` rejects `#[test]` outside `tests.fe` and `C-XFER` rejects the send. The crash was only the incidental reason the tests failed. Draft upstream report: a `#[test]` function that is also reachable from a contract entry point with an owner effect should be rejected with a diagnostic, not crash codegen.
 
+### Phase 4B facts: the production bytecode on a local Anvil (2026-11-20, all [ran], Foundry v1.10.0)
+| Fact | Evidence |
+| --- | --- |
+| `fe build --out-dir <dir>` writes the production artifacts to any directory (here a temp dir), so the script never touches `out/`. | `experiments/anvil/run.py` |
+| The init code `Settlane.bin` deploys with no constructor arguments (1,362,096 gas), and `eth_getCode` equals `Settlane.runtime.bin` byte for byte (6056 bytes). | deploy checks |
+| Anvil mines each transaction in its own block, and `evm_setNextBlockTimestamp` sets that block's exact timestamp (it must be strictly after the previous block's, so a test timeline only moves forward). A reverted transaction sent with an explicit gas limit is still mined with status 0. | every boundary check |
+| Revert reasons are read from `debug_traceTransaction` with the `callTracer`: its `output` is the `Error(string)` data. An `eth_call` is not needed and its block context is not relied on. | `Suite.reason` |
+| The production runtime reads the block timestamp (`ctx.timestamp()`): the same calldata succeeds or reverts exactly as the block timestamp crosses `deliver_by` or `decide_by`, with the chain's clock set thousands of seconds ahead of the wall clock. | Submit, Approve, Reject, Refund, Create boundary checks |
+| A frozen (0) or one-day-ahead clock in any one production arm is invisible to every Fe test and is caught by this script, with only that arm's checks failing. | `--mutations` |
+
 ## Still unverified (Phase 2–4 checks)
 - Is the production contract deployed by the dev-ingot tests byte-identical to the shipped `Prod` artifact? It is the same source and compiler, but `fe` offers no way to compare. Mitigation: all tests that do not need time travel live in the production ingot.
 - A reentrant recipient under the 2300 stipend: **tested for Claim** (Phase 3A, strengthened by R-005) **and for Refund** (Phase 3B, the same attackers as clients). Measured: an attacker that always re-enters cannot finish its fallback under the stipend (the send fails and the claim reverts with `transfer failed`), and the same attacker given 500k gas re-enters and claims. EIP-2200's SSTORE rule is not probed separately. Refund needs the same tests in Phase 3B.
