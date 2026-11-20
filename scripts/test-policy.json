@@ -7,7 +7,7 @@
     },
     "settlane_dev": {
       "path": "ingots/settlane-dev",
-      "min_tests": 41
+      "min_tests": 47
     }
   }
 }

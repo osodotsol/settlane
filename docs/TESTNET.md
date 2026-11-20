@@ -1,6 +1,6 @@
 # Sepolia testnet verification: preparation and read-only preflight (nothing has been broadcast)
 
-**Status: prepared and rehearsed locally. No transaction has been sent to Sepolia, no contract is deployed on any public network, and no wallet exists yet.** Every step that sends a transaction needs your explicit approval, a funded dedicated test wallet and the flags described below. Only Sepolia **test ETH** (no value) is ever used.
+**Status (updated 2026-11-20): the first-run plan has been executed on Sepolia.** The owner authorized each of its nine transactions individually, and each was sent once and verified: the pinned Settlane is deployed at `0xf79d229a039bf5c84ecc7327060f8bbc888d2182`, agreement A1 was created, submitted, approved and claimed, and A2 was created and refunded (transaction table in `README.md`, step records in `docs/PROGRESS.md`). No further transaction is authorized. The sections below are the preparation as written before the first broadcast and are kept as the record. Only Sepolia **test ETH** (no value) is ever used.
 
 Code: `experiments/sepolia/` (`lib.py` guards and helpers, `testnet.py` plan and runner, `verify_deployment.py` read-only verifier, `rehearse.py` local rehearsal). The contract, the Fe tests, the lint and the existing CI are unchanged.
 

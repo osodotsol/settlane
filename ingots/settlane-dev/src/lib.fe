@@ -242,6 +242,104 @@ pub contract Actor uses (ctx: Ctx, call: mut Call, log: mut Log) {
     }
 }
 
+// Audit T-1: an Actor that CAN receive ETH. `Actor` has no fallback, so a send to it fails, and a
+// regression that sent ETH from Submit, Approve or Reject to the caller, with the result ignored,
+// left every balance unchanged and passed the suite. With this actor as client, provider and
+// verifier, any successful send from a verification step shows up as a balance change. Its
+// fallback accepts plain ETH within the 2300-gas stipend and does nothing else.
+pub contract OpenActor uses (ctx: Ctx, call: mut Call, log: mut Log) {
+    recv {
+        #[payable]
+        ActorMsg::CreateVia {
+            target,
+            provider,
+            verifier,
+            review_period,
+            n,
+            amounts,
+            deliver_by,
+            specs,
+        } -> u256
+        uses (ctx, mut call, mut log)
+        {
+            log.emit(Acted { actor: ctx.address() })
+            call.call(
+                addr: target,
+                gas: 1000000,
+                value: ctx.value(),
+                message: SettleMsg::Create {
+                    provider,
+                    verifier,
+                    review_period,
+                    n,
+                    amounts,
+                    deliver_by,
+                    specs,
+                },
+            )
+        }
+
+        ActorMsg::SubmitVia { target, id, m, evidence }
+        uses (mut call)
+        {
+            call.call(
+                addr: target,
+                gas: 1000000,
+                value: Wei::zero(),
+                message: SettleMsg::Submit { id, m, evidence },
+            )
+        }
+
+        ActorMsg::ApproveVia { target, id, m, evidence, revision }
+        uses (mut call)
+        {
+            call.call(
+                addr: target,
+                gas: 1000000,
+                value: Wei::zero(),
+                message: SettleMsg::Approve { id, m, evidence, revision },
+            )
+        }
+
+        ActorMsg::RejectVia { target, id, m, evidence, revision }
+        uses (mut call)
+        {
+            call.call(
+                addr: target,
+                gas: 1000000,
+                value: Wei::zero(),
+                message: SettleMsg::Reject { id, m, evidence, revision },
+            )
+        }
+
+        ActorMsg::ClaimVia { target, id, m, to } -> Wei
+        uses (mut call)
+        {
+            call.call(
+                addr: target,
+                gas: 1000000,
+                value: Wei::zero(),
+                message: SettleMsg::Claim { id, m, to },
+            )
+        }
+
+        ActorMsg::RefundVia { target, id, m, to } -> Wei
+        uses (mut call)
+        {
+            call.call(
+                addr: target,
+                gas: 1000000,
+                value: Wei::zero(),
+                message: SettleMsg::Refund { id, m, to },
+            )
+        }
+
+        // Accept plain ETH (a payout) and nothing more.
+        #[payable]
+        _ {}
+    }
+}
+
 // A provider that tries to be paid twice. It forwards Submit and Claim to Settlane as itself,
 // and it can RECEIVE plain ETH through a payable fallback, which tries to claim the same
 // milestone again while the first payout is still in flight. Settlane must pay it exactly once:

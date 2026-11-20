@@ -11,15 +11,25 @@ env:
   # Any Fe release from 26.5.0 on is allowed for the contest. Settlane is
   # developed and verified on 26.6.0 (storage layout differs from 26.5).
   FE_VERSION: v26.6.0
+  # SHA-256 of the release asset fe_linux_amd64 of FE_VERSION, as published by GitHub for the
+  # argotorg/fe v26.6.0 release and equal to the locally verified binary (audit R-1, D-029).
+  # The step below downloads that exact asset and installs nothing on a mismatch. Change both
+  # values together.
+  FE_SHA256: 697081cb9265bd1be7a5d33e6bb0c8559ee5ff542abab9a046540fc151b4edaa
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Install Fe
+      # Pinned install (audit R-1): the release asset itself, checked against FE_SHA256, instead of
+      # running the unpinned installer script from the `master` branch. The step still begins with
+      # `curl`, so scripts/ci_negative_controls.py skips it exactly as before.
+      - name: Install Fe (pinned, SHA-256 verified)
         run: |
-          curl -fsSL https://raw.githubusercontent.com/argotorg/fe/master/feup/feup.sh | bash -s -- --version "$FE_VERSION" --no-modify-path
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/fe" "https://github.com/argotorg/fe/releases/download/${FE_VERSION}/fe_linux_amd64"
+          echo "${FE_SHA256}  $RUNNER_TEMP/fe" | sha256sum -c -
+          install -D -m 0755 "$RUNNER_TEMP/fe" "$HOME/.fe/bin/fe"
           echo "$HOME/.fe/bin" >> "$GITHUB_PATH"
       - run: fe --version
       # Workspace layout (D-014): `ingots/settlane` is the production ingot and the only
@@ -82,9 +92,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-      - name: Install Fe
+      # Pinned install (audit R-1): the release asset itself, checked against FE_SHA256, instead of
+      # running the unpinned installer script from the `master` branch. The step still begins with
+      # `curl`, so scripts/ci_negative_controls.py skips it exactly as before.
+      - name: Install Fe (pinned, SHA-256 verified)
         run: |
-          curl -fsSL https://raw.githubusercontent.com/argotorg/fe/master/feup/feup.sh | bash -s -- --version "$FE_VERSION" --no-modify-path
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/fe" "https://github.com/argotorg/fe/releases/download/${FE_VERSION}/fe_linux_amd64"
+          echo "${FE_SHA256}  $RUNNER_TEMP/fe" | sha256sum -c -
+          install -D -m 0755 "$RUNNER_TEMP/fe" "$HOME/.fe/bin/fe"
           echo "$HOME/.fe/bin" >> "$GITHUB_PATH"
       - run: fe --version
       - name: Install Foundry v1.10.0 (anvil and cast; pinned, SHA-256 verified)

@@ -162,6 +162,11 @@ fn exists(_ s: Address, _ id: u256) -> bool uses (evm: mut Evm) {
 
 // The accounting invariants (docs/SECURITY.md I1, I2, I9) for agreements 1..=last_id, and
 // that agreement last_id + 1 does not exist. Called after every state-changing step.
+// Audit T-2: `getAccounting` DERIVES outstanding as deposited - paid - refunded, so comparing it
+// with the other three counters proves nothing. Each counter is therefore compared with a sum
+// built independently from the milestones themselves: deposited with every used amount (I2), paid
+// with the Paid amounts, refunded with the Refunded amounts and outstanding with the live ones
+// (Funded, Submitted, Approved). The four sums partition the used amounts, so I1 follows.
 // I9 is `balance >= outstanding` in general: ETH can reach the contract without an agreement
 // (it is pre-funded at its address before deployment, forced in by selfdestruct or a coinbase
 // reward), and nothing in the contract can claim it. `surplus` is the extra ETH the test knows
@@ -173,20 +178,48 @@ uses (evm: mut Evm)
     var sum = Wei::zero()
     while id <= last_id {
         let acc = accounting(s, id)
-        // I1: deposited == paid + refunded + outstanding.
-        assert!(acc.0 == acc.1 + acc.2 + acc.3, "I1 conservation")
+        let n = agreement(s, id).4
+        var allocated = Wei::zero()
         var live = Wei::zero()
+        var paid = Wei::zero()
+        var refunded = Wei::zero()
         var m: u8 = 0
         while m < 3 {
             let x = milestone(s, id, m)
-            // states 1..=3 (Funded, Submitted, Approved) are still owed.
-            if x.0 >= 1 && x.0 <= 3 {
-                live = live + x.1
+            if m < n {
+                assert!(x.0 >= 1 && x.0 <= 5, "a used slot has a stored state")
+                assert!(
+                    x.1 != Wei::zero(),
+                    "I2 every used milestone has amount > 0",
+                )
+                allocated = allocated + x.1
+                // states 1..=3 (Funded, Submitted, Approved) are still owed, 4 Paid, 5 Refunded.
+                if x.0 <= 3 {
+                    live = live + x.1
+                } else if x.0 == 4 {
+                    paid = paid + x.1
+                } else {
+                    refunded = refunded + x.1
+                }
+            } else {
+                assert!(x.0 == 0 && x.1 == Wei::zero(), "an unused slot is empty")
             }
             m += 1
         }
         assert!(
-            live == acc.3,
+            acc.0 == allocated,
+            "I2 deposited equals the used milestone amounts",
+        )
+        assert!(
+            acc.1 == paid,
+            "paid equals the amounts of the Paid milestones",
+        )
+        assert!(
+            acc.2 == refunded,
+            "refunded equals the amounts of the Refunded milestones",
+        )
+        assert!(
+            acc.3 == live,
             "outstanding equals the live milestone amounts",
         )
         sum = sum + acc.3

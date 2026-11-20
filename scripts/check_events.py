@@ -325,6 +325,15 @@ EXPECTED_CLAIMS = {
     ("settlane_dev", "the_client_refunds_expired_milestones_once_and_claim_and_refund_exclude_each_other"): [C(1, 2, PAYEE, 3 * ETHER)],
     ("settlane_dev", "refunds_belong_to_each_agreements_client_and_accounting_holds_across_claims_and_refunds"): [
         C(2, 2, PAYEE, 3 * ETHER), C(1, 0, PAYEE2, ETHER)],
+    # Audit T-1 controls: the receive-capable provider pays itself, then the verifier actor
+    ("settlane_dev", "verification_steps_never_move_eth_even_when_every_party_can_receive_it"): [
+        C(1, 0, "provider", ETHER), C(1, 1, "any", 2 * ETHER)],
+    ("settlane_dev", "verification_steps_never_move_eth_on_the_shell_across_every_deadline"): [C(1, 0, "provider", ETHER)],
+    # Audit regressions
+    ("settlane_dev", "one_agreement_settled_three_ways_books_every_wei_to_the_right_counter"): [C(1, 0, 0x7A1, ETHER)],
+    ("settlane_dev", "evidence_and_revision_cannot_be_replayed_across_milestones_or_agreements"): [
+        C(2, 0, 0x7A1, ETHER), C(1, 0, 0x7A1, ETHER)],
+    ("settlane_dev", "roles_are_looked_up_per_agreement_when_addresses_swap_roles"): [C(2, 0, 0x7A1, ETHER)],
 }
 
 # Exact expected MilestoneRefunded events in order, per test (same tuple as C). Every test that
@@ -351,6 +360,13 @@ EXPECTED_REFUNDS = {
     ("settlane_dev", "a_claim_payee_that_re_enters_refund_in_another_agreement_cannot_be_paid_and_nothing_settles"): [C(1, 0, LOOT, ETHER), C(1, 1, PAYEE2, 2 * ETHER)],
     ("settlane_dev", "refunds_belong_to_each_agreements_client_and_accounting_holds_across_claims_and_refunds"): [
         C(1, 1, PAYEE, 2 * ETHER), C(2, 0, PAYEE2, ETHER), C(2, 1, PAYEE2, 2 * ETHER), C(1, 2, PAYEE, 3 * ETHER)],
+    # Audit T-1 control: the receive-capable client refunds the late-rejected milestone to itself
+    ("settlane_dev", "verification_steps_never_move_eth_on_the_shell_across_every_deadline"): [C(1, 1, "client", 2 * ETHER)],
+    # Audit regressions
+    ("settlane_dev", "one_agreement_settled_three_ways_books_every_wei_to_the_right_counter"): [
+        C(1, 2, 0x7A2, 3 * ETHER), C(1, 1, 0x7A2, 2 * ETHER)],
+    ("settlane_dev", "a_full_lifecycle_works_with_decide_by_at_the_top_of_time"): [C(1, 0, 0x7A2, ETHER)],
+    ("settlane_dev", "roles_are_looked_up_per_agreement_when_addresses_swap_roles"): [C(1, 0, 0x7A3, ETHER)],
 }
 
 
