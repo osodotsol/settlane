@@ -29,11 +29,9 @@ What `--mutations` checks: it rebuilds the contract in a temporary copy with the
 guard that arm's boundary to fail **and** the checks of the other arms to keep passing, so each
 mutation fails for its intended reason.
 
-**Not in CI.** The installer and the suite are verified here on Linux x86_64 only; nothing has run on
-a GitHub runner (the workflow has never run). To add it later, two steps after "Review regressions":
-`bash experiments/anvil/install_foundry.sh` then `python3 experiments/anvil/run.py` (and
-`--mutations`), with `~/tools/foundry/bin` on the path. The negative-control runner skips any step that
-mentions `experiments`, so it is unaffected.
+**In CI (job `anvil`, D-027), unverified on GitHub.** `.github/workflows/ci.yml` has three jobs: `test` (the existing Fe steps, unchanged), `anvil` (installs Fe, then `bash experiments/anvil/install_foundry.sh`, then `python3 experiments/anvil/run.py` and `python3 experiments/anvil/run.py --mutations`) and `release-gate`, which passes only when BOTH `test` and `anvil` succeeded (a failed, cancelled or skipped job fails it). The `anvil` job was emulated locally from a clean `HOME` with only `fe` on the PATH: the installer verified the pinned SHA-256 and installed Foundry, then the suite (52 of 52) and the mutations (8 of 8) passed. **The download itself was replaced by a stand-in for `curl` serving the already verified tarball**, because the live download timed out in this environment (the installer's 600 s cap was hit at 109 of 130 MB, on a slow connection that had fetched the same file in seconds earlier), so the live fetch is not verified here either. Also, the workflow has never run on a GitHub runner, so the runner-side behaviour (download speed, Anvil on the runner image, the 30-minute timeout) is unverified. The negative-control runner skips any step that mentions `experiments`, so it is unaffected.
 
-Limits: Anvil's timestamp rules are not a real chain's validator rules; this covers the clock of the
+**Making both jobs required for a release** is a repository setting that a workflow file cannot create: in GitHub, Settings > Branches > branch protection rule for the release branch > "Require status checks to pass" > select **`release-gate (test and anvil)`** (one check that stands for both jobs; selecting `test` and `anvil (production bytecode)` separately also works but a renamed job would silently stop being required). Until that rule exists the workflow only reports, it cannot block.
+
+Limits: the install is pinned for Linux x86_64 and its sigstore attestation is not verified (the SHA-256 proves the bytes, not the builder); Anvil's timestamp rules are not a real chain's validator rules; this covers the clock of the
 five arms, not the whole contract (the Fe suite does that); Claim has no clock.

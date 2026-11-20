@@ -17,7 +17,7 @@ fe fmt --check ingots && fe check && fe check ingots/settlane-dev
 python3 scripts/check_tests.py     # runs fe test for BOTH ingots; a bare `fe test` runs only the production ingot
 rm -rf out && fe build && python3 scripts/settlane_lint.py ingots --abi-dir out
 bash experiments/review/run.sh     # review 2026-11-18 regressions (docs/reviews/2026-11-18-phase1.md)
-bash experiments/anvil/install_foundry.sh && python3 experiments/anvil/run.py --mutations   # production bytecode on a local Anvil (not in CI)
+bash experiments/anvil/install_foundry.sh && python3 experiments/anvil/run.py --mutations   # production bytecode on a local Anvil (CI job `anvil`)
 ```
 
 Skill: `.agents/skills/independent-review/SKILL.md`.

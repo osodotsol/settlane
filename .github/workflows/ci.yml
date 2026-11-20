@@ -68,3 +68,48 @@ jobs:
       # the lint rejects every one of them (H1-H4, M1).
       - name: Review regressions
         run: bash experiments/review/run.sh
+
+  # Production bytecode on a local Anvil with fixed block timestamps (Phase 4B, D-026, D-027).
+  # No Fe test can reach a deadline on the production contract (the Fe test block never advances),
+  # so a wrong production clock in Submit, Approve, Reject or Refund passes every step of the
+  # `test` job and is seen only by the lint rule C-CLOCK. This job deploys the real Settlane.bin to
+  # a throw-away Anvil on 127.0.0.1 (simulated ETH, no network, no key) and crosses every deadline.
+  # Foundry is pinned: the installer checks a SHA-256 stored in this repository and installs
+  # nothing on a mismatch. The `test` job above is unchanged.
+  anvil:
+    name: anvil (production bytecode)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Fe
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/argotorg/fe/master/feup/feup.sh | bash -s -- --version "$FE_VERSION" --no-modify-path
+          echo "$HOME/.fe/bin" >> "$GITHUB_PATH"
+      - run: fe --version
+      - name: Install Foundry v1.10.0 (anvil and cast; pinned, SHA-256 verified)
+        run: |
+          bash experiments/anvil/install_foundry.sh
+          echo "$HOME/tools/foundry/bin" >> "$GITHUB_PATH"
+      - name: Anvil suite (52 checks on the production bytecode)
+        run: python3 experiments/anvil/run.py
+      - name: Anvil wrong-clock mutations (8 rebuilt contracts, each must fail only its own arm)
+        run: python3 experiments/anvil/run.py --mutations
+
+  # The one check to require before a release or a merge: it passes only when BOTH jobs passed
+  # (a skipped, cancelled or failed job fails it). Branch protection itself is a repository
+  # setting that a workflow file cannot create; see experiments/anvil/README.md.
+  release-gate:
+    name: release-gate (test and anvil)
+    needs: [test, anvil]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Both jobs must have succeeded
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          ANVIL_RESULT: ${{ needs.anvil.result }}
+        run: |
+          echo "test: $TEST_RESULT"
+          echo "anvil: $ANVIL_RESULT"
+          test "$TEST_RESULT" = "success" && test "$ANVIL_RESULT" = "success"
