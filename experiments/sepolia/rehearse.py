@@ -15,7 +15,7 @@ It proves, with exit code 0:
   * the verification FAILS on a contract with other code;
   * the private keys appear in no output and nothing was written into the repository.
 
-Usage: python3 experiments/sepolia/rehearse.py [--hardfork prague|osaka|...]   (needs anvil and cast, see experiments/anvil/README.md)
+Usage: python3 experiments/sepolia/rehearse.py [--hardfork prague|osaka|...] [--fork-url SEPOLIA_RPC]   (needs anvil and cast, see experiments/anvil/README.md)
 """
 import json
 import os
@@ -50,10 +50,10 @@ def free_port():
 
 
 class Anvil:
-    def __init__(self, chain_id, hardfork=None):
+    def __init__(self, chain_id, hardfork=None, fork_url=None):
         self.port = free_port()
         self.url = f"http://127.0.0.1:{self.port}"
-        self.proc = subprocess.Popen([lib.tool("anvil"), "--host", "127.0.0.1", "--port", str(self.port), "--chain-id", str(chain_id), "--silent"] + (["--hardfork", hardfork] if hardfork else []), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.proc = subprocess.Popen([lib.tool("anvil"), "--host", "127.0.0.1", "--port", str(self.port), "--chain-id", str(chain_id), "--silent"] + (["--hardfork", hardfork] if hardfork else []) + (["--fork-url", fork_url] if fork_url else []), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.rpc = lib.Rpc(self.url)
         for _ in range(100):
             try:
@@ -97,14 +97,17 @@ def main():
     base = pathlib.Path(tempfile.mkdtemp(prefix="settlane-rehearsal-"))
     fork = sys.argv[sys.argv.index("--hardfork") + 1] if "--hardfork" in sys.argv else None
     print(f"EVM hardfork of the rehearsal node: {fork or 'anvil default (latest)'}", flush=True)
-    sep, other = Anvil(lib.SEPOLIA, fork), Anvil(31337)
+    fork_url = sys.argv[sys.argv.index("--fork-url") + 1] if "--fork-url" in sys.argv else None
+    if fork_url:
+        print("the rehearsal node FORKS Sepolia read-only (state, fees and chain parameters come from the real chain; every transaction stays local)", flush=True)
+    sep, other = Anvil(lib.SEPOLIA, fork, fork_url), Anvil(31337)
     out_all = []
     try:
         check("the rehearsal node reports chain id 11155111", sep.rpc.chain_id() == lib.SEPOLIA)
         keys = make_wallets(base)
         check("three throwaway keystores were created outside the repository", all(keys.values()) and not lib.inside_repo(base), str(base))
         w = lib.load_wallets(base)
-        sep.rpc.call("anvil_setBalance", w["client"].address, hex(50 * 10**15))  # 0.05 ETH; provider and verifier start empty
+        sep.rpc.call("anvil_setBalance", w["client"].address, hex(100 * 10**15))  # 0.1 ETH; provider and verifier start empty
         url = sep.url
 
         def nonce(addr, rpc=sep.rpc):
@@ -181,7 +184,7 @@ def main():
         rc, out = cli(url, base, "preflight")
         out_all.append(out)
         check("preflight fails before provider and verifier are funded", rc == 1 and "FAIL" in out)
-        for step in (["fund", "--broadcast"], ["deploy", "--broadcast"]):
+        for step in (["fund", "--broadcast", "--fund-wei", str(5 * 10**15)], ["deploy", "--broadcast"]):
             rc, out = cli(url, base, *step)
             out_all.append(out)
             check(f"`{step[0]} --broadcast` succeeds", rc == 0, out.strip().splitlines()[-1][:110])

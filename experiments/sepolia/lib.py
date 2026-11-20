@@ -200,6 +200,15 @@ def load_wallets(directory=None):
     return ws
 
 
+TIP_WEI = 10_000_000  # priority fee we offer: 0.01 gwei. Sepolia blocks are about a third full, so a small tip is included; the wallet's default would be taken from recent tips (about 1 gwei)
+
+
+def fees(rpc):
+    """The fee we will pay per gas: base fee now, our fixed tip, and max fee = 2 x base + tip (we set them explicitly)."""
+    base = int(rpc.call("eth_getBlockByNumber", "latest", False).get("baseFeePerGas", "0x0"), 16)
+    return {"base": base, "tip": TIP_WEI, "max_fee": 2 * base + TIP_WEI, "gas_price": int(rpc.call("eth_gasPrice"), 16)}
+
+
 def estimate_gas(rpc, wallet, to, data, value=0, create=False):
     tx = {"from": wallet.address, "data": data if data else "0x", "value": hex(value)}
     if not create:
@@ -219,14 +228,14 @@ def send(rpc, wallet, to, data, value=0, gas_cap=1_500_000, create=False, broadc
     require_send_allowed(rpc, broadcast)
     if value > MAX_AGREEMENT_WEI:
         raise Abort(f"value {value} wei exceeds the {MAX_AGREEMENT_WEI} wei cap per transaction")
-    gp = rpc.gas_price_gwei()
-    if gp > MAX_GAS_PRICE_GWEI:
-        raise Abort(f"gas price {gp:.1f} gwei exceeds the {MAX_GAS_PRICE_GWEI} gwei cap: wait")
+    fee = fees(rpc)
+    if fee["max_fee"] / 1e9 > MAX_GAS_PRICE_GWEI:
+        raise Abort(f"max fee {fee['max_fee'] / 1e9:.3f} gwei exceeds the {MAX_GAS_PRICE_GWEI} gwei cap: wait")
     est = estimate_gas(rpc, wallet, to, data, value, create)
     limit = int(est * 1.3) + 1000
     if limit > gas_cap:
         raise Abort(f"the gas estimate {est} (limit {limit}) exceeds the cap {gas_cap}; nothing was sent")
-    cmd = [tool("cast"), "send", "--keystore", str(wallet.keystore), "--password-file", str(wallet.password_file), "--rpc-url", rpc.url, "--gas-limit", str(limit), "--value", str(value), "--json"]
+    cmd = [tool("cast"), "send", "--keystore", str(wallet.keystore), "--password-file", str(wallet.password_file), "--rpc-url", rpc.url, "--gas-limit", str(limit), "--gas-price", str(fee["max_fee"]), "--priority-gas-price", str(fee["tip"]), "--value", str(value), "--json"]
     cmd += ["--create", data] if create else ([to, data] if data else [to])
     r = run(cmd)
     if r.returncode:
@@ -236,7 +245,7 @@ def send(rpc, wallet, to, data, value=0, gas_cap=1_500_000, create=False, broadc
     for _ in range(300):
         rc = rpc.call("eth_getTransactionReceipt", h)
         if rc:
-            rc["_hash"] = h
+            rc["_hash"], rc["_estimate"], rc["_limit"] = h, est, limit
             if rc.get("status") != "0x1":
                 raise Abort(f"transaction {h} was mined with status 0 (gas used {int(rc['gasUsed'], 16)} of {limit})")
             return rc

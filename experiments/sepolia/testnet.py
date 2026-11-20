@@ -9,6 +9,8 @@ environment variable or a log line.
 
 Subcommands
   plan                      print the transaction plan and its cost estimate (no node, no key)
+  node-preflight            read-only checks of the NODE alone (no wallet, no key): chain, genesis, fork, fees, gas estimates, limits, cost
+  check-wallets             offline: the keystore layout, permissions and three distinct addresses (prints addresses only)
   preflight                 read-only checks of the node, the wallets, the balances and the repo
   fund                      client sends gas money to provider and verifier        (sends 2 tx)
   deploy                    build with Fe 26.6.0 and deploy Settlane                (sends 1 tx)
@@ -32,7 +34,7 @@ import verify_deployment  # noqa: E402
 
 L = lib
 AMOUNT_DEFAULT = 10**15  # 0.001 ETH per test agreement
-GAS = {"deploy": 3_000_000, "create": 1_000_000, "other": 600_000}  # CAPS: the real limit is the node's estimate + 30%
+GAS = {"deploy": 14_000_000, "create": 2_600_000, "other": 1_200_000, "fund": 400_000}  # CAPS (above the real Sepolia estimates x 1.3, below the 16,777,216 EIP-7825 cap): the real limit is the node's estimate + 30%
 MAX_WALLET_WEI = 5 * L.ETH  # a Sepolia test wallet holding more than this is not a dedicated one
 SECRET_PATTERNS = [
     r"-----BEGIN [A-Z ]*PR" + r"IVATE KEY",
@@ -85,15 +87,36 @@ def ignored(path):
 
 
 # ------------------------------------------------------------------ checks
-BUDGET = {"deploy": 2_000_000, "create": 500_000, "other": 250_000}  # realistic gas per transaction, for balance planning
+# Gas per transaction on the post-Osaka (Glamsterdam-generation) rules Sepolia runs now. deploy, create and the
+# transfer to a new account are the REAL nodes' eth_estimateGas (publicnode, thirdweb and tenderly agreed);
+# submit, approve, claim and refund need contract state, so they are the estimates of the same plan run on a
+# local fork of Sepolia (docs/TESTNET.md). The two sources agree to within 1% where they overlap.
+GAS_TABLE = {"deploy": 9_649_454, "create": 1_482_393, "fund": 207_391, "submit": 266_257, "approve": 50_864, "claim": 196_037, "refund": 196_215}
+HEADROOM = 1.3  # the gas limit is the estimate x 1.3 (lib.send); the fee paid is for the gas actually used
 
 
-def needs(gas_price_wei, amount, with_a3, deploy=True):
-    """Balance each wallet needs: the budgeted gas at 2 x the current price (headroom for a price
-    rise), plus, for the client, the value it locks."""
-    k = 3 if with_a3 else 2
-    gas = {"client": (BUDGET["deploy"] if deploy else 0) + k * BUDGET["create"] + k * BUDGET["other"], "provider": (3 if with_a3 else 2) * BUDGET["other"], "verifier": BUDGET["other"]}
-    return {r: int(2 * gas_price_wei * g) + (k * amount if r == "client" else 0) for r, g in gas.items()}
+def cost_model(price_wei, max_fee_wei, amount, with_a3, deploy=True):
+    """Per wallet: ETH to HOLD to complete the run (fees at `price_wei` for all the gas, the largest single
+    upfront reservation limit x max_fee, and the value the client locks), and the expected fees alone."""
+    k = 3 if with_a3 else 2  # agreements
+    g = GAS_TABLE
+    txs = {
+        "client": ([g["deploy"]] if deploy else []) + [g["create"]] * k + [g["refund"]] * (k - 1),
+        "provider": [g["submit"], g["claim"]] + ([g["submit"]] if with_a3 else []),
+        "verifier": [g["approve"]],
+    }
+    out = {}
+    for r, lst in txs.items():
+        fees_total = int(sum(lst) * price_wei)
+        reserve = int(max(lst) * HEADROOM * max_fee_wei)
+        locked = k * amount if r == "client" else 0
+        out[r] = {"fees": fees_total, "hold": fees_total + reserve + locked, "gas": sum(lst)}
+    return out
+
+
+def needs(max_fee_wei, amount, with_a3, deploy=True, price_wei=None):
+    m = cost_model(price_wei or max_fee_wei, max_fee_wei, amount, with_a3, deploy)
+    return {r: int(1.5 * v["hold"]) for r, v in m.items()}  # a 50% safety margin on top
 
 
 def preflight(rpc, wallets, address=None, need_balance=True, say=log, amount=AMOUNT_DEFAULT, with_a3=True, deploy=True):
@@ -107,13 +130,13 @@ def preflight(rpc, wallets, address=None, need_balance=True, say=log, amount=AMO
     cid = rpc.chain_id()
     check("the node is Ethereum Sepolia (chain id 11155111)", cid == L.SEPOLIA, f"chain id {cid}")
     check("the node is local (rehearsal) or the confirmation variable is set", L.is_loopback(rpc.url) or __import__("os").environ.get(L.CONFIRM_VAR) == L.CONFIRM_VALUE, "local" if L.is_loopback(rpc.url) else "remote")
-    gp = rpc.gas_price_gwei()
-    check(f"the gas price is at most {L.MAX_GAS_PRICE_GWEI} gwei", gp <= L.MAX_GAS_PRICE_GWEI, f"{gp:.3f} gwei")
+    fee = L.fees(rpc)
+    check(f"the max fee we would set (2 x base fee + tip) is at most {L.MAX_GAS_PRICE_GWEI} gwei", fee["max_fee"] / 1e9 <= L.MAX_GAS_PRICE_GWEI, f"base {fee['base']} wei, tip {fee['tip']} wei, max fee {fee['max_fee']} wei")
     check("the state and wallet directory is outside the repository", not L.inside_repo(L.STATE_DIR), str(L.STATE_DIR))
     bad = scan_repo_for_secrets()
     check("no key material in the repository's tracked or unignored files", not bad, ", ".join(bad))
     check("the secret locations are git-ignored as a second line of defence", all(ignored(p) for p in (".env", "keystores/x", "x.pw", "mnemonic.txt")))
-    need = needs(int(gp * 10**9), amount, with_a3, deploy)
+    need = needs(fee["max_fee"], amount, with_a3, deploy, fee["base"] + fee["tip"])
     for role, w in wallets.items():
         bal = rpc.balance(w.address)
         ok = (not need_balance or bal >= need[role]) and bal <= MAX_WALLET_WEI
@@ -126,8 +149,8 @@ def preflight(rpc, wallets, address=None, need_balance=True, say=log, amount=AMO
             est = None
             check("the node's gas estimate for deploying Settlane is available", False, str(e)[:120])
         if est is not None:
-            cost = est * int(gp * 10**9)
-            check(f"the node's own gas estimate for the deployment is within the {GAS['deploy']} cap", int(est * 1.3) + 1000 <= GAS["deploy"], f"{est} gas, about {cost / L.ETH:.6f} ETH at {gp:.3f} gwei (a node on a fork that prices contract creation higher shows it here)")
+            cost = est * (fee["base"] + fee["tip"])
+            check(f"the node's own gas estimate for the deployment is within the {GAS['deploy']} cap", int(est * 1.3) + 1000 <= GAS["deploy"], f"{est} gas, about {cost / L.ETH:.8f} ETH at base+tip {(fee["base"] + fee["tip"]) / 1e9:.9f} gwei (a node on a fork that prices contract creation higher shows it here)")
     if address:
         _, _, runtime, _ = L.build_artifacts()
         check("the contract at --address has the runtime code of this checkout", rpc.call("eth_getCode", address, "latest") == "0x" + runtime)
@@ -173,7 +196,7 @@ see docs/TESTNET.md for the rehearsal's measured gas)."""
 class Runner:
     def __init__(self, rpc, wallets, address, a):
         self.rpc, self.w, self.addr, self.a = rpc, wallets, address, a
-        self.gas_used = []
+        self.gas_used, self.estimates = [], []
 
     def sim(self, wallet, data, value=0):
         tx = {"from": wallet.address, "to": self.addr, "data": data}
@@ -193,7 +216,8 @@ class Runner:
         rc = L.send(self.rpc, wallet, self.addr, data, value, GAS[gas], broadcast=self.a.broadcast)
         used = int(rc["gasUsed"], 16)
         self.gas_used.append((label, used))
-        log(f"  ok   {label}  tx {rc['_hash']}  block {int(rc['blockNumber'], 16)}  gas {used}")
+        log(f"  ok   {label}  tx {rc['_hash']}  block {int(rc['blockNumber'], 16)}  gas used {used} (estimate {rc['_estimate']})")
+        self.estimates.append((label, rc["_estimate"]))
         for sig, count in (events or {}).items():
             got = sum(1 for lg in rc["logs"] if lg["topics"][0] == L.keccak(sig))
             if got != count:
@@ -291,7 +315,7 @@ def cmd_fund(a):
     L.require_send_allowed(rpc, a.broadcast)
     w = L.load_wallets()
     for role in ("provider", "verifier"):
-        rc = L.send(rpc, w["client"], w[role].address, None, a.fund_wei, 100_000 * 3, broadcast=a.broadcast)
+        rc = L.send(rpc, w["client"], w[role].address, None, a.fund_wei, GAS["fund"], broadcast=a.broadcast)
         log(f"  ok   funded {role} {w[role].address} with {a.fund_wei} wei  tx {rc['_hash']}")
     return 0
 
@@ -334,7 +358,9 @@ def cmd_run(a):
     if a.with_submitted_refund:
         r.a3(amount)
     log("\ngas used per transaction: " + ", ".join(f"{k.split()[0]}={v}" for k, v in r.gas_used))
+    log("gas ESTIMATED per transaction: " + ", ".join(f"{k.split()[0]}={v}" for k, v in r.estimates))
     st["gas_used"] = dict(r.gas_used)
+    st["gas_estimate"] = dict(r.estimates)
     save_state(L.SEPOLIA, st)
     log("\nverifying the deployment (read-only):")
     return 0 if verify_deployment.verify(rpc, address, L.SEPOLIA, st.get("deploy_block", 0), say=log) else 1
@@ -349,23 +375,147 @@ def cmd_verify(a):
     return 0 if verify_deployment.verify(rpc, address, L.SEPOLIA, st.get("deploy_block", 0), say=log) else 1
 
 
+
+SEPOLIA_GENESIS = "0x25a5cc106eea7138acab33231d7160d69cb777ee0c2c553fcddf5138993e6dd9"
+DUMMY = "0x00000000000000000000000000000000000dEaD1"  # an address nobody controls: estimation only, never a signer
+TX_GAS_CAP = 16_777_216  # EIP-7825
+
+
+def cmd_node_preflight(a):
+    """Read-only checks of the NODE alone: no wallet, no key, no transaction."""
+    import time
+    rpc = L.Rpc(a.rpc_url)
+    results = []
+
+    def check(label, ok, detail=""):
+        results.append(bool(ok))
+        log(("ok    " if ok else "FAIL  ") + label + (f"  [{detail}]" if detail else ""))
+        return bool(ok)
+
+    cid = rpc.chain_id()
+    check("the node is Ethereum Sepolia (chain id 11155111)", cid == L.SEPOLIA, f"chain id {cid}")
+    if cid != L.SEPOLIA:
+        raise L.Abort("not Sepolia: stopping")
+    check("block 0 is the Sepolia genesis block", rpc.call("eth_getBlockByNumber", "0x0", False)["hash"] == SEPOLIA_GENESIS)
+    try:
+        log(f"      client {rpc.call('web3_clientVersion')}")
+    except L.RpcError:
+        pass
+    head = rpc.call("eth_getBlockByNumber", "latest", False)
+    age = int(time.time()) - int(head["timestamp"], 16)
+    check("the head block is fresh (within 90 s) and the node is not syncing", age <= 90 and rpc.call("eth_syncing") is False, f"block {int(head['number'], 16)}, {age} s old")
+    # the fork
+    try:
+        cfg = rpc.call("eth_config")
+        cur = cfg["current"]
+        log(f"      eth_config: forkId {cur.get('forkId')}, active since timestamp {cur.get('activationTime')}, next fork: {'none scheduled' if not cfg.get('next') else cfg['next'].get('activationTime')}")
+    except L.RpcError:
+        log("      eth_config is not offered by this node")
+    fields = sorted(k for k in head if k in ("blobGasUsed", "requestsHash", "blockAccessListHash", "slotNumber"))
+    amsterdam = "blockAccessListHash" in head and "slotNumber" in head
+    check("the chain is on the post-Osaka (Glamsterdam-generation) rules that the runner's gas caps were set for", amsterdam, f"header fields {fields}: {'block access list and slot number present' if amsterdam else 'NOT present: an older fork, re-measure gas'}")
+    # fees
+    fee = L.fees(rpc)
+    try:
+        sug = int(rpc.call("eth_maxPriorityFeePerGas"), 16)
+        fh = rpc.call("eth_feeHistory", hex(20), "latest", [50])
+        tips = sorted(int(x[0], 16) for x in fh["reward"])
+        log(f"      base fee {fee['base']} wei; eth_gasPrice {fee['gas_price']} wei; node's suggested tip {sug} wei; median tip paid in the last 20 blocks {tips[len(tips) // 2]} wei; our tip {fee['tip']} wei; our max fee {fee['max_fee']} wei")
+    except L.RpcError as e:
+        log(f"      fee history unavailable: {str(e)[:80]}")
+    check(f"the max fee we would set is at most {L.MAX_GAS_PRICE_GWEI} gwei", fee["max_fee"] / 1e9 <= L.MAX_GAS_PRICE_GWEI)
+    # gas estimates on the real node
+    o, init, runtime, _ = L.build_artifacts()
+    est = {}
+    base_ov = {DUMMY: {"balance": hex(10**18)}}
+    try:
+        est["deploy"] = int(rpc.call("eth_estimateGas", {"from": DUMMY, "data": "0x" + init}), 16)
+        now = rpc.ts()
+        S, P, V = "0x00000000000000000000000000000000000dEaD5", "0x00000000000000000000000000000000000dEaD2", "0x00000000000000000000000000000000000dEaD3"
+        data = L.calldata("create(address,address,uint256,uint8,uint256[3],uint256[3],uint256[3])", P, V, 3600, 1, f"[{a.amount_wei},0,0]", f"[{now + 900},0,0]", "[81,0,0]")
+        est["create"] = int(rpc.call("eth_estimateGas", {"from": DUMMY, "to": S, "data": data, "value": hex(a.amount_wei)}, "latest", {**base_ov, S: {"code": "0x" + runtime}}), 16)
+        est["fund"] = int(rpc.call("eth_estimateGas", {"from": DUMMY, "to": "0x00000000000000000000000000000000000abc77", "value": hex(a.fund_wei)}, "latest", base_ov), 16)
+        views = L.words(rpc.call("eth_call", {"to": S, "data": L.calldata("totalOutstanding()")}, "latest", {S: {"code": "0x" + runtime}}))
+        check("eth_call and eth_estimateGas accept state overrides (the verifier and this estimate rely on them)", views == [0])
+    except (L.RpcError, L.Abort) as e:
+        check("gas estimates and state overrides work on this node", False, str(e)[:120])
+    for k, v in est.items():
+        limit = int(v * HEADROOM) + 1000
+        cap = GAS[k]
+        check(f"real-node estimate for {k}: {v} gas, limit {limit} fits the runner cap {cap} and the {TX_GAS_CAP} protocol cap", limit <= cap and limit <= TX_GAS_CAP, f"table value {GAS_TABLE[k]} ({(v - GAS_TABLE[k]) / GAS_TABLE[k] * 100:+.2f}%)")
+        check(f"the {k} estimate is within 5% of the table the cost model uses", abs(v - GAS_TABLE[k]) <= 0.05 * GAS_TABLE[k])
+    # log range limit
+    best = 0
+    for span in (1_000, 10_000, 50_000, 100_000):
+        try:
+            rpc.call("eth_getLogs", {"address": DUMMY, "fromBlock": hex(max(int(head["number"], 16) - span, 0)), "toBlock": "latest"})
+            best = span
+        except L.RpcError:
+            break
+    check("eth_getLogs answers for an address filter over at least 1,000 blocks (the verifier halves a refused range)", best >= 1000, f"largest range accepted: {best} blocks")
+    # burst
+    t0, errs = time.time(), 0
+    for _ in range(20):
+        try:
+            rpc.call("eth_blockNumber")
+        except Exception:
+            errs += 1
+    check("20 calls in a row without a rate-limit error", errs == 0, f"{(time.time() - t0) / 20 * 1000:.0f} ms per call")
+    # cost
+    bad = scan_repo_for_secrets()
+    check("no key material in the repository's tracked or unignored files", not bad, ", ".join(bad))
+    log("\ncost model (gas from GAS_TABLE; fees = gas used x price; hold = fees + the largest upfront reservation + the value locked):")
+    scen = [("expected now (our tip)", fee["base"] + fee["tip"], fee["max_fee"]), ("stress: tip 1 gwei, as many wallets pay", fee["base"] + 10**9, 2 * fee["base"] + 10**9), ("spike: tip 10 gwei", fee["base"] + 10 * 10**9, 2 * fee["base"] + 10 * 10**9)]
+    for with_a3 in (False, True):
+        log(f"  plan {'A1+A2+A3' if with_a3 else 'A1+A2'}:")
+        for name, price, mx in scen:
+            m = cost_model(price, mx, a.amount_wei, with_a3)
+            log(f"    {name:42s} fees {sum(v['fees'] for v in m.values()) / L.ETH:.8f} ETH   hold  " + "  ".join(f"{r} {v['hold'] / L.ETH:.6f}" for r, v in m.items()))
+    now_need = needs(fee["max_fee"], a.amount_wei, True, True, fee["base"] + fee["tip"])
+    log("bare minimum at OUR tip (expected scenario x 1.5 margin, plan A1+A2+A3): " + ", ".join(f"{r} {v / L.ETH:.5f}" for r, v in now_need.items()) + f"  (total {sum(now_need.values()) / L.ETH:.5f} ETH)")
+    rec = needs(2 * fee["base"] + 10**9, a.amount_wei, True, True, fee["base"] + 10**9)
+    log("\nrecommended minimum test ETH (stress scenario x 1.5 safety margin, plan A1+A2+A3): " + ", ".join(f"{r} {v / L.ETH:.4f}" for r, v in rec.items()) + f"  (total {sum(rec.values()) / L.ETH:.4f} ETH)")
+    failed = results.count(False)
+    log(f"\nnode-preflight: {len(results) - failed} ok, {failed} failed ({len(results)} checks); no transaction was sent, no wallet was used")
+    return 0 if not failed else 1
+
+
+def cmd_check_wallets(a):
+    """Offline: the three keystores and password files exist, sit outside the repo, are protected, and are three different addresses."""
+    import stat as st
+    w = L.load_wallets()
+    for role, wl in w.items():
+        log(f"  ok   {role:9s} {wl.address}   keystore {wl.keystore}   password file mode {oct(st.S_IMODE(wl.password_file.stat().st_mode))}")
+    for role, wl in w.items():
+        if wl.keystore.stat().st_mode & 0o077:
+            log(f"  WARN the {role} keystore file is readable by others (it is encrypted, but): chmod 600 {wl.keystore}")
+    d = L.STATE_DIR.stat().st_mode & 0o077
+    log(("  ok   " if not d else "  WARN ") + f"{L.STATE_DIR} " + ("is private to you" if not d else "is accessible to others: chmod 700 it"))
+    log("check-wallets: ok (offline: no network, no balance, nothing printed but addresses and paths)")
+    return 0
+
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", choices=["plan", "preflight", "fund", "deploy", "run", "verify"])
+    ap.add_argument("cmd", choices=["plan", "node-preflight", "check-wallets", "preflight", "fund", "deploy", "run", "verify"])
     ap.add_argument("--rpc-url")
     ap.add_argument("--broadcast", action="store_true", help="actually send transactions (default: refuse)")
     ap.add_argument("--address")
     ap.add_argument("--amount-wei", type=int, default=AMOUNT_DEFAULT)
     ap.add_argument("--fund-wei", type=int, default=4 * 10**15)
+    ap.add_argument("--tip-wei", type=int, default=L.TIP_WEI, help="priority fee we offer per gas (default 0.01 gwei)")
     ap.add_argument("--a1-window", type=int, default=900)
     ap.add_argument("--a2-window", type=int, default=180)
     ap.add_argument("--with-submitted-refund", action="store_true")
     ap.add_argument("--rehearsal-warp", action="store_true", help="local rehearsal only: fast-forward the node's clock instead of waiting")
     a = ap.parse_args(argv)
-    if a.cmd != "plan" and not a.rpc_url:
+    ap_tip = a.tip_wei
+    L.TIP_WEI = ap_tip
+    if a.cmd not in ("plan", "check-wallets") and not a.rpc_url:
         ap.error("--rpc-url is required")
     try:
-        return {"plan": cmd_plan, "preflight": cmd_preflight, "fund": cmd_fund, "deploy": cmd_deploy, "run": cmd_run, "verify": cmd_verify}[a.cmd](a)
+        return {"plan": cmd_plan, "node-preflight": cmd_node_preflight, "check-wallets": cmd_check_wallets, "preflight": cmd_preflight, "fund": cmd_fund, "deploy": cmd_deploy, "run": cmd_run, "verify": cmd_verify}[a.cmd](a)
     except L.Abort as e:
         log(f"ABORT: {e}")
         return 2
