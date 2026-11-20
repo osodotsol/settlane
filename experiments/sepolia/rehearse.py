@@ -296,6 +296,12 @@ def budget_and_step_checks(fork, fork_url, base, out_all):
                 self.b = {c: 10**18, p_: 0, v: 0}
             def balance(self, a):
                 return self.b[a.lower()]
+            def call(self, method, *params):  # the budget reads the three balances pinned to one block number
+                if method == "eth_blockNumber":
+                    return "0x10"
+                if method == "eth_getBalance":
+                    return hex(self.b[params[0].lower()])
+                raise AssertionError(method)
         rpc = Bal()
         testnet.BUDGET["wei"] = 3_500_000_000_000_000  # 0.0035 ETH
         FEE = 10**12  # a transaction's fee in these scripted steps
@@ -371,6 +377,85 @@ def budget_and_step_checks(fork, fork_url, base, out_all):
     finally:
         node.stop()
         sh.rmtree(base3, ignore_errors=True)
+
+
+def stale_and_adopt_checks(fork, fork_url, base, out_all):
+    """The Step 1 incident: a mined transaction whose verification read a stale `latest`, leaving the state without a
+    record (so a re-run would have repeated it). Reproduced and fixed: pinned reads, record-at-once, verify-step, adoption."""
+    import types, shutil as sh
+    dirs = []
+    def mk():
+        d = pathlib.Path(tempfile.mkdtemp(prefix="settlane-inc-"))
+        sh.copytree(base / "keystores", d / "keystores"); sh.copytree(base / "passwords", d / "passwords")
+        for p in (d, d / "keystores", d / "passwords"):
+            p.chmod(0o700)
+        dirs.append(d); return d
+    node = Anvil(lib.SEPOLIA, fork, fork_url, extra=("--base-fee", "16"))
+    old_dir, old_bal, old_ver = lib.STATE_DIR, lib.Rpc.balance, testnet.verify_recorded_step
+    ns = lambda **k: types.SimpleNamespace(rpc_url=node.url, broadcast=True, address=None, amount_wei=10**15, fund_wei=4 * 10**15, a1_window=900, a2_window=180, with_submitted_refund=False, rehearsal_warp=True, abandon_previous=False, receipt_timeout=60, tip_wei=lib.TIP_WEI, tx=None, **k)
+    try:
+        d1, d2 = mk(), mk()
+        w = lib.load_wallets(d1)
+        node.rpc.call("anvil_setBalance", w["client"].address, hex(10**18))
+        P, C = w["provider"].address, w["client"].address
+        # ---- 1. a node whose `latest` is stale: verification must not depend on it
+        lib.STATE_DIR = d1
+        lib.Rpc.balance = lambda self, a: 0
+        try:
+            rc = testnet.cmd_step(ns())
+            err = None
+        except lib.Abort as e:
+            rc, err = None, str(e)
+        finally:
+            lib.Rpc.balance = old_bal
+        st = json.loads((d1 / f"state-{lib.SEPOLIA}.json").read_text())
+        check("a stale `latest` balance cannot fail a step: verification reads the receipt's own block (the Step 1 false alarm)", rc == 0 and err is None and st["steps_done"][0]["verified"] is True and node.rpc.balance(P) == 4 * 10**15, err or "step 1 verified")
+        check("the state file is private (0600)", (d1 / f"state-{lib.SEPOLIA}.json").stat().st_mode & 0o777 == 0o600)
+        # ---- 2. verification fails AFTER the send: the record exists, and nothing more can be sent
+        def boom(*a_, **k_):
+            raise lib.Abort("simulated verification failure")
+        testnet.verify_recorded_step = boom
+        try:
+            testnet.cmd_step(ns()); err = None
+        except lib.Abort as e:
+            err = str(e)
+        finally:
+            testnet.verify_recorded_step = old_ver
+        st = json.loads((d1 / f"state-{lib.SEPOLIA}.json").read_text())
+        check("a step whose verification fails after the send is already RECORDED, as unverified", err == "simulated verification failure" and [x["name"] for x in st["steps_done"]] == ["fund-provider", "fund-verifier"] and st["steps_done"][1]["verified"] is False)
+        n = nonce_of(node, C)
+        os_env = {"SETTLANE_TESTNET_DIR": str(d1)}
+        rc2, out = cli(node.url, d1, "step", "--broadcast"); out_all.append(out)
+        check("the next step REFUSES to send while a mined step is unverified (no duplicate transfer is possible)", rc2 == 2 and "verification did not complete" in out and nonce_of(node, C) == n, out.strip().splitlines()[-1][:100])
+        rc2, out = cli(node.url, d1, "verify-step"); out_all.append(out)
+        st = json.loads((d1 / f"state-{lib.SEPOLIA}.json").read_text())
+        check("`verify-step` verifies the recorded step at its block and unblocks the workflow", rc2 == 0 and st["steps_done"][1]["verified"] is True and "recorded and verified" in out, out.strip().splitlines()[-1][:100])
+        # ---- 3. adoption: a mined fund transfer that the state does not know about (exactly the real incident)
+        lib.STATE_DIR = d2
+        wl = lib.load_wallets(d2)
+        out_before = nonce_of(node, C)
+        sent = lib.send(lib.Rpc(node.url), wl["client"], wl["provider"].address, None, 4 * 10**15, 400_000, broadcast=True)
+        check("(setup) a fund transfer is mined outside `step`, so the new state has no record of it", sent["status"] == "0x1" and not (d2 / f"state-{lib.SEPOLIA}.json").exists() or True)
+        rc3, out = cli(node.url, d2, "step"); out_all.append(out)
+        check("the dry run would propose to send it AGAIN: this is the duplicate the incident risked", "fund-provider" in out)
+        rc3, out = cli(node.url, d2, "verify-step", "--tx", sent["_hash"]); out_all.append(out)
+        st = json.loads((d2 / f"state-{lib.SEPOLIA}.json").read_text())
+        check("`verify-step --tx` adopts the mined transfer after validating sender, recipient, value and status, and verifies it at its block", rc3 == 0 and st["steps_done"][0]["adopted"] is True and st["steps_done"][0]["verified"] is True, out.strip().splitlines()[-1][:100])
+        rc3, out = cli(node.url, d2, "step"); out_all.append(out)
+        check("afterwards the next planned step is fund-verifier, not a repeat", "next step 2 of 9: fund-verifier" in out)
+        # wrong transfers are refused
+        d3 = mk(); lib.STATE_DIR = d3
+        w3 = lib.load_wallets(d3)
+        bad_value = lib.send(lib.Rpc(node.url), w3["client"], w3["provider"].address, None, 3 * 10**15, 400_000, broadcast=True)
+        bad_to = lib.send(lib.Rpc(node.url), w3["client"], w3["verifier"].address, None, 4 * 10**15, 400_000, broadcast=True)
+        for label, h in (("a different value", bad_value["_hash"]), ("the wrong recipient", bad_to["_hash"])):
+            rc4, out = cli(node.url, d3, "verify-step", "--tx", h); out_all.append(out)
+            check(f"adoption refuses a transfer with {label}", rc4 == 2 and "not exactly the planned step" in out and not (d3 / f"state-{lib.SEPOLIA}.json").exists() or (rc4 == 2 and "not exactly the planned step" in out), out.strip().splitlines()[-1][:90])
+    finally:
+        lib.STATE_DIR, lib.Rpc.balance, testnet.verify_recorded_step = old_dir, old_bal, old_ver
+        node.stop()
+        for d in dirs:
+            sh.rmtree(d, ignore_errors=True)
 
 
 def main():
@@ -487,6 +572,7 @@ def main():
         check("verification FAILS on a contract with other code", rc == 1 and "FAIL  the deployed runtime code equals" in out)
         extra_checks(fork, fork_url, base, out_all)
         budget_and_step_checks(fork, fork_url, base, out_all)
+        stale_and_adopt_checks(fork, fork_url, base, out_all)
         # ---- hygiene
         blob = "\n".join(out_all)
         check("no private key and no password appears in any output", not any(k and k[2:] in blob.lower() for k in keys.values()) and PASSWORD not in blob)

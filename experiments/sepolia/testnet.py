@@ -16,6 +16,7 @@ Subcommands
   deploy                    build with Fe 26.6.0 and deploy Settlane                (sends 1 tx)
   run                       Create, Submit, Approve, Claim; Create and Refund; [Submitted refund]
   verify                    read-only verification of the deployment (bytecode, ABI, events, accounting)
+  verify-step               verify the last mined step at its own block, or adopt a mined fund transaction (--tx)
   step                      ONE transaction of the first-run plan (dry run without --broadcast), verified, recorded, then stop
   budget                    read-only: worst-case and expected cost of every transaction at the live fee, against the budget
   artifact                  show or check (--write: re-pin) the production build against experiments/sepolia/artifact.json
@@ -66,6 +67,7 @@ def load_state(chain):
 def save_state(chain, st):
     L.STATE_DIR.mkdir(parents=True, exist_ok=True)
     state_path(chain).write_text(json.dumps(st, indent=2))
+    state_path(chain).chmod(0o600)
 
 
 def pending_add(label, h):
@@ -98,7 +100,9 @@ BUDGET = {"wei": BUDGET_WEI}
 
 
 def wallets_total(rpc):
-    return sum(rpc.balance(w.address) for w in L.load_wallets().values())
+    """The three balances read at ONE block number, so a load-balanced node cannot mix two heads in a single total."""
+    bn = int(rpc.call("eth_blockNumber"), 16)
+    return sum(int(rpc.call("eth_getBalance", w.address, hex(bn)), 16) for w in L.load_wallets().values())
 
 
 def at_risk_value(to, value):
@@ -305,8 +309,8 @@ class Runner:
                 raise L.Abort(f"step '{label}': expected {count} x {sig}, saw {got}")
         return rc
 
-    def view(self, sig, *args):
-        return L.words(self.rpc.call("eth_call", {"to": self.addr, "data": L.calldata(sig, *args)}, "latest"))
+    def view(self, sig, *args, block=None):
+        return L.words(self.rpc.call("eth_call", {"to": self.addr, "data": L.calldata(sig, *args)}, hex(block) if block else "latest"))
 
     def create(self, label, deliver_by, review, amount):
         w = self.w
@@ -314,17 +318,17 @@ class Runner:
         rc = self.tx(label, w["client"], data, amount, "create", {"AgreementCreated(uint256,address,address,address,uint256,uint8)": 1})
         return int(next(lg for lg in rc["logs"] if lg["topics"][0] == L.keccak("AgreementCreated(uint256,address,address,address,uint256,uint8)"))["topics"][1], 16)
 
-    def expect_state(self, i, state, label):
-        got = self.view("getMilestone(uint256,uint8)", i, 0)[0]
+    def expect_state(self, i, state, label, block=None):
+        got = self.view("getMilestone(uint256,uint8)", i, 0, block=block)[0]
         if got != state:
             raise L.Abort(f"{label}: milestone {i} is in state {got}, expected {state}")
 
-    def expect_payout(self, kind, i, amount, before_bal):
+    def expect_payout(self, kind, i, amount, before_bal, block=None):
         sig = {"claim": "MilestoneClaimed(uint256,uint8,address,uint256)", "refund": "MilestoneRefunded(uint256,uint8,address,uint256)"}[kind]
-        after = self.rpc.balance(self.addr)
+        after = int(self.rpc.call("eth_getBalance", self.addr, hex(block) if block else "latest"), 16)
         if after != before_bal - amount:
             raise L.Abort(f"{kind}: the contract balance fell by {before_bal - after}, expected exactly {amount}")
-        acc = self.view("getAccounting(uint256)", i)
+        acc = self.view("getAccounting(uint256)", i, block=block)
         want = [amount, amount, 0, 0] if kind == "claim" else [amount, 0, amount, 0]
         if acc != want:
             raise L.Abort(f"{kind}: accounting {acc}, expected {want}")
@@ -680,6 +684,9 @@ def cmd_step(a):
     st = load_state(L.SEPOLIA)
     if st.get("progress"):
         raise L.Abort("`run` has already been used in this state: finish or inspect it; `step` and `run` are not mixed")
+    unverified = [x["name"] for x in st.get("steps_done", []) if not x.get("verified")]
+    if unverified:
+        raise L.Abort(f"the step '{unverified[0]}' was sent and mined but its verification did not complete: nothing more will be sent until `verify-step` verifies it")
     done = [x["name"] for x in st.get("steps_done", [])]
     nxt = next((x for x in STEPS if x not in done), None)
     if nxt is None:
@@ -736,47 +743,121 @@ def cmd_step(a):
     if not a.broadcast:
         log("  dry run: nothing was sent (add --broadcast to send exactly this one transaction)")
         return 0
-    # ---- send exactly one transaction and verify it
-    before_c = {"contract": rpc.balance(address) if address else 0, "to": rpc.balance(to) if to else 0}
+    # ---- send exactly one transaction, RECORD it at once as unverified, then verify it at its own block
     rc = tsend(rpc, sender, to, data, value, cap, nxt, create=create, broadcast=True)
     used = int(rc["gasUsed"], 16)
-    rec = {"name": nxt, "tx": rc["_hash"], "block": int(rc["blockNumber"], 16), "gas_used": used, "gas_estimate": est}
-    log(f"  ok  tx {rc['_hash']}  block {rec['block']}  gas used {used} (estimate {est})  status 1")
+    rec = {"name": nxt, "tx": rc["_hash"], "block": int(rc["blockNumber"], 16), "gas_used": used, "gas_estimate": est, "from": sender.address, "to": (to or rc.get("contractAddress", "")).lower(), "value": value, "verified": False}
+    if nxt in ("a1-create", "a2-create"):
+        rec["deliver_by"] = deliver_by
+    st = load_state(L.SEPOLIA)
+    st["steps_done"] = st.get("steps_done", []) + [rec]
+    save_state(L.SEPOLIA, st)  # from here on a re-run can never repeat this transaction
+    log(f"  mined: tx {rc['_hash']}  block {rec['block']}  gas used {used} (estimate {est})  status 1  [recorded, verification follows]")
+    verify_recorded_step(rpc, w, a, rec, rc, predicted if nxt == "deploy" else None, runtime if nxt == "deploy" else None)
+    return 0
+
+
+def bal_at(rpc, addr, block):
+    return int(rpc.call("eth_getBalance", addr, hex(block)), 16)
+
+
+def verify_recorded_step(rpc, w, a, rec, rc, predicted=None, runtime=None):
+    """Verify a mined step against the plan, reading state AT THE RECEIPT'S BLOCK (never `latest`: a load-balanced node can
+    answer from a lagging backend). Marks the record verified and prints the spend; any difference aborts and leaves the
+    record unverified, which blocks every later step."""
+    nxt, bn, amount = rec["name"], rec["block"], a.amount_wei
+    c, p, v = w["client"], w["provider"], w["verifier"]
+    st = load_state(L.SEPOLIA)
+    address = st.get("address")
+    if rc.get("status") != "0x1":
+        raise L.Abort(f"UNEXPECTED: {rec['tx']} has status {rc.get('status')}")
+    if int(rc["blockNumber"], 16) != bn or rc["transactionHash"].lower() != rec["tx"].lower():
+        raise L.Abort("UNEXPECTED: the receipt does not match the record")
     if nxt.startswith("fund"):
-        if rpc.balance(to) - before_c["to"] != value:
-            raise L.Abort(f"UNEXPECTED: the recipient's balance changed by {rpc.balance(to) - before_c['to']}, not {value}")
+        tgt = p if nxt == "fund-provider" else v
+        got = bal_at(rpc, tgt.address, bn) - bal_at(rpc, tgt.address, bn - 1)
+        sent = bal_at(rpc, c.address, bn - 1) - bal_at(rpc, c.address, bn)
+        fee = int(rc["gasUsed"], 16) * int(rc["effectiveGasPrice"], 16)
+        tx = rpc.call("eth_getTransactionByHash", rec["tx"])
+        if tx["to"].lower() != tgt.address.lower() or tx["from"].lower() != c.address.lower() or int(tx["value"], 16) != a.fund_wei or int(tx["chainId"], 16) != L.SEPOLIA:
+            raise L.Abort("UNEXPECTED: the transaction's sender, recipient, value or chain id differ from the plan")
+        if got != a.fund_wei or sent != a.fund_wei + fee:
+            raise L.Abort(f"UNEXPECTED at block {bn}: the recipient gained {got} (expected {a.fund_wei}); the client lost {sent} (expected {a.fund_wei + fee})")
+        log(f"  verified at block {bn}: recipient +{got} wei exactly; client -{sent} wei = value + fee {fee}; sender, recipient, value and chain id equal the plan")
     elif nxt == "deploy":
-        code = rpc.call("eth_getCode", rc["contractAddress"], "latest")
+        code = rpc.call("eth_getCode", rc["contractAddress"], hex(bn))
         if code != "0x" + runtime or rc["contractAddress"].lower() != predicted:
             raise L.Abort(f"UNEXPECTED: the deployed code or address is not the pinned artifact's ({rc['contractAddress']} vs predicted {predicted})")
-        st = load_state(L.SEPOLIA)
-        st.update({"address": rc["contractAddress"].lower(), "deploy_tx": rc["_hash"], "deploy_block": rec["block"], "deployer": c.address, "runtime_sha256": L.sha256_hex(runtime)})
-        save_state(L.SEPOLIA, st)
-        log(f"  deployed at {rc['contractAddress']}; code equals the pinned runtime ({L.sha256_hex(runtime)[:16]}...)")
+        st.update({"address": rc["contractAddress"].lower(), "deploy_tx": rec["tx"], "deploy_block": bn, "deployer": c.address, "runtime_sha256": L.sha256_hex(runtime)})
+        log(f"  verified at block {bn}: deployed at {rc['contractAddress']}; code equals the pinned runtime ({L.sha256_hex(runtime)[:16]}...)")
     else:
         r = Runner(rpc, w, address, a)
-        st = load_state(L.SEPOLIA)
         if nxt in ("a1-create", "a2-create"):
             sig = "AgreementCreated(uint256,address,address,address,uint256,uint8)"
             logs = [lg for lg in rc["logs"] if lg["topics"][0] == L.keccak(sig)]
             want = 1 if nxt == "a1-create" else 2
             i = int(logs[0]["topics"][1], 16) if len(logs) == 1 else None
-            if i != want or r.view("getMilestone(uint256,uint8)", i, 0)[0] != 1 or rpc.balance(address) - before_c["contract"] != amount:
+            if i != want or r.view("getMilestone(uint256,uint8)", i, 0, block=bn)[0] != 1 or bal_at(rpc, address, bn) - bal_at(rpc, address, bn - 1) != amount:
                 raise L.Abort(f"UNEXPECTED: create did not produce agreement {want} in state Funded holding {amount} wei")
             st["a1_id" if nxt == "a1-create" else "a2_id"] = i
-            st["a1_deliver_by" if nxt == "a1-create" else "a2_deliver_by"] = deliver_by
+            st["a1_deliver_by" if nxt == "a1-create" else "a2_deliver_by"] = rec["deliver_by"]
         else:
             i = st["a1_id"] if nxt.startswith("a1") else st["a2_id"]
             want_state = {"a1-submit": 2, "a1-approve": 3, "a1-claim": 4, "a2-refund": 5}[nxt]
             ev = {"a1-submit": "MilestoneSubmitted(uint256,uint8,uint256,uint256)", "a1-approve": "MilestoneApproved(uint256,uint8,uint256,uint256)", "a1-claim": "MilestoneClaimed(uint256,uint8,address,uint256)", "a2-refund": "MilestoneRefunded(uint256,uint8,address,uint256)"}[nxt]
-            if sum(1 for lg in rc["logs"] if lg["topics"][0] == L.keccak(ev)) != 1 or r.view("getMilestone(uint256,uint8)", i, 0)[0] != want_state:
+            if sum(1 for lg in rc["logs"] if lg["topics"][0] == L.keccak(ev)) != 1 or r.view("getMilestone(uint256,uint8)", i, 0, block=bn)[0] != want_state:
                 raise L.Abort(f"UNEXPECTED: {nxt} did not leave milestone {i} in state {want_state} with exactly one {ev.split('(')[0]}")
             if nxt in ("a1-claim", "a2-refund"):
-                r.expect_payout("claim" if nxt == "a1-claim" else "refund", i, amount, before_c["contract"])
-    st["steps_done"] = st.get("steps_done", []) + [rec]
+                r.expect_payout("claim" if nxt == "a1-claim" else "refund", i, amount, bal_at(rpc, address, bn - 1), block=bn)
+        log(f"  verified at block {bn}: state, events and balances equal the plan")
+    for x in st["steps_done"]:
+        if x["tx"] == rec["tx"]:
+            x["verified"] = True
     save_state(L.SEPOLIA, st)
     total_now = wallets_total(rpc)
-    log(f"  recorded. Spent so far (combined balance of the three wallets vs the start): {(st.get('budget_start_total_wei', total_now) - total_now) / L.ETH:.9f} ETH of the {BUDGET['wei'] / L.ETH:.4f} ETH budget. {len(STEPS) - len(st['steps_done'])} step(s) remain. STOPPED: run `step` again to continue.")
+    log(f"  recorded and verified. Spent so far (combined balance of the three wallets vs the start): {(st.get('budget_start_total_wei', total_now) - total_now) / L.ETH:.9f} ETH of the {BUDGET['wei'] / L.ETH:.4f} ETH budget. {len(STEPS) - len(st['steps_done'])} step(s) remain. STOPPED: run `step` again to continue.")
+
+
+def cmd_verify_step(a):
+    """Verify the last recorded-but-unverified step, or ADOPT an already mined transaction (--tx) that is the next planned
+    step. Read-only on the network; it only completes the local record. Adoption supports the fund steps only."""
+    rpc = L.Rpc(a.rpc_url)
+    L.require_chain(rpc)
+    w = L.load_wallets()
+    st = load_state(L.SEPOLIA)
+    bad = [x for x in st.get("steps_done", []) if not x.get("verified")]
+    if a.tx:
+        if bad or any(x["tx"].lower() == a.tx.lower() for x in st.get("steps_done", [])):
+            raise L.Abort("that transaction is already recorded, or another record is unverified: use `verify-step` without --tx")
+        done = [x["name"] for x in st.get("steps_done", [])]
+        nxt = next((x for x in STEPS if x not in done), None)
+        if nxt not in ("fund-provider", "fund-verifier"):
+            raise L.Abort(f"adoption supports the fund steps only; the next planned step is {nxt}: inspect it by hand")
+        rc = rpc.call("eth_getTransactionReceipt", a.tx)
+        tx = rpc.call("eth_getTransactionByHash", a.tx)
+        if not rc or not tx:
+            raise L.Abort("the transaction or its receipt was not found")
+        tgt = w["provider"] if nxt == "fund-provider" else w["verifier"]
+        if rc["status"] != "0x1" or tx["from"].lower() != w["client"].address.lower() or tx["to"].lower() != tgt.address.lower() or int(tx["value"], 16) != a.fund_wei:
+            raise L.Abort("that transaction is not exactly the planned step (sender, recipient, value or status differ): nothing was recorded")
+        rec = {"name": nxt, "tx": a.tx, "block": int(rc["blockNumber"], 16), "gas_used": int(rc["gasUsed"], 16), "gas_estimate": None, "from": tx["from"].lower(), "to": tx["to"].lower(), "value": int(tx["value"], 16), "verified": False, "adopted": True}
+        st["steps_done"] = st.get("steps_done", []) + [rec]
+        save_state(L.SEPOLIA, st)
+        log(f"adopted {nxt}: tx {a.tx} in block {rec['block']}")
+    else:
+        if not bad:
+            log("every recorded step is verified")
+            return 0
+        rec = bad[0]
+        rc = rpc.call("eth_getTransactionReceipt", rec["tx"])
+        if not rc:
+            raise L.Abort("no receipt for the unverified step: use `resolve-pending` thinking, not `verify-step`")
+    runtime = None
+    predicted = None
+    if rec["name"] == "deploy":
+        _, _, runtime, _ = L.build_artifacts()
+        predicted = rc["contractAddress"].lower()
+    verify_recorded_step(rpc, w, a, rec, rc, predicted, runtime)
     return 0
 
 
@@ -795,7 +876,7 @@ def cmd_check_wallets(a):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", choices=["plan", "node-preflight", "check-wallets", "artifact", "budget", "step", "preflight", "fund", "deploy", "run", "resolve-pending", "verify"])
+    ap.add_argument("cmd", choices=["plan", "node-preflight", "check-wallets", "artifact", "budget", "step", "verify-step", "preflight", "fund", "deploy", "run", "resolve-pending", "verify"])
     ap.add_argument("--rpc-url")
     ap.add_argument("--broadcast", action="store_true", help="actually send transactions (default: refuse)")
     ap.add_argument("--address")
@@ -806,6 +887,7 @@ def main(argv=None):
     ap.add_argument("--a1-window", type=int, default=900)
     ap.add_argument("--a2-window", type=int, default=180)
     ap.add_argument("--with-submitted-refund", action="store_true")
+    ap.add_argument("--tx", help="verify-step: adopt this already mined transaction if it is exactly the next planned fund step")
     ap.add_argument("--write", action="store_true", help="artifact: re-pin the build (after reviewing a contract change)")
     ap.add_argument("--abandon-previous", action="store_true", help="run: start a new run although the previous one did not complete")
     ap.add_argument("--receipt-timeout", type=int, default=600, help="seconds to wait for a receipt before stopping with a pending marker")
@@ -817,7 +899,7 @@ def main(argv=None):
     if a.cmd not in ("plan", "check-wallets", "artifact") and not a.rpc_url:
         ap.error("--rpc-url is required")
     try:
-        return {"plan": cmd_plan, "node-preflight": cmd_node_preflight, "check-wallets": cmd_check_wallets, "artifact": cmd_artifact, "budget": cmd_budget, "step": cmd_step, "resolve-pending": cmd_resolve_pending, "preflight": cmd_preflight, "fund": cmd_fund, "deploy": cmd_deploy, "run": cmd_run, "verify": cmd_verify}[a.cmd](a)
+        return {"plan": cmd_plan, "node-preflight": cmd_node_preflight, "check-wallets": cmd_check_wallets, "artifact": cmd_artifact, "budget": cmd_budget, "step": cmd_step, "verify-step": cmd_verify_step, "resolve-pending": cmd_resolve_pending, "preflight": cmd_preflight, "fund": cmd_fund, "deploy": cmd_deploy, "run": cmd_run, "verify": cmd_verify}[a.cmd](a)
     except L.Abort as e:
         log(f"ABORT: {e}")
         return 2
