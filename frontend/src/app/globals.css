@@ -1,16 +1,16 @@
 @import "tailwindcss";
 
-/* Settlane design tokens: frontend/DESIGN.md §2 (every text pair measured for WCAG 2.2 AA). */
+/* Settlane design tokens: frontend/DESIGN.md §2 and §12. Every text pair is measured for WCAG 2.2 AA. */
 :root {
   color-scheme: light dark;
-  --paper: #f5f3ee;
+  --paper: #f7f6f3;
   --surface: #ffffff;
-  --sunken: #ece9e2;
-  --line: #ddd8ce;
+  --sunken: #efede8;
+  --line: #e2dfd8;
   --line-control: #8a8375;
-  --ink: #15171b;
-  --ink-2: #454b54;
-  --ink-3: #60666f;
+  --ink: #111214;
+  --ink-2: #464b53;
+  --ink-3: #5f656e;
   --cobalt: #2e47c9;
   --danger: #b42318;
   --danger-tint: #fbe7e5;
@@ -26,10 +26,10 @@
   --state-refunded: #9a3d1c;
   --state-refunded-tint: #f4e1d8;
 
-  --shadow-pop: 0 8px 24px -8px rgb(21 23 27 / 0.18);
-  --shadow-lift: 0 1px 0 rgb(21 23 27 / 0.04), 0 10px 28px -14px rgb(21 23 27 / 0.28);
+  --shadow-pop: 0 8px 24px -8px rgb(17 18 20 / 0.18);
+  --shadow-lift: 0 1px 0 rgb(17 18 20 / 0.03), 0 12px 32px -18px rgb(17 18 20 / 0.3);
 
-  /* Motion tokens (DESIGN.md §7; UI/UX Pro Max "motion-consistency"): one vocabulary, used everywhere. */
+  /* Motion tokens (DESIGN.md §7, UI/UX Pro Max "motion-consistency"): one vocabulary, used everywhere. */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --dur-press: 120ms;
   --dur-hover: 180ms;
@@ -37,34 +37,33 @@
   --dur-reveal: 420ms;
 }
 
-/* The dark palette, applied by the system preference and by `.stage` (a dark panel inside the light page). */
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #0f1115;
-    --surface: #161920;
-    --sunken: #0b0d10;
-    --line: #262a33;
-    --line-control: #6b7280;
-    --ink: #ecedef;
-    --ink-2: #b6bac2;
-    --ink-3: #8c919b;
-    --cobalt: #93a5ff;
+    --paper: #0b0c0e;
+    --surface: #131519;
+    --sunken: #0f1013;
+    --line: #24272d;
+    --line-control: #60666f;
+    --ink: #f2f3f5;
+    --ink-2: #b7bcc4;
+    --ink-3: #8f959e;
+    --cobalt: #9db0ff;
     --danger: #f97066;
     --danger-tint: #3a1715;
 
     --state-funded: #a7b0bf;
-    --state-funded-tint: #1e232c;
+    --state-funded-tint: #1c2029;
     --state-submitted: #e2a54a;
-    --state-submitted-tint: #2e2414;
+    --state-submitted-tint: #2c2213;
     --state-approved: #4ec0af;
-    --state-approved-tint: #12302c;
+    --state-approved-tint: #112d29;
     --state-paid: #5dc17a;
-    --state-paid-tint: #15301d;
+    --state-paid-tint: #132d1b;
     --state-refunded: #e8906a;
-    --state-refunded-tint: #33201a;
+    --state-refunded-tint: #311e18;
 
-    --shadow-pop: 0 8px 24px -8px rgb(0 0 0 / 0.5);
-    --shadow-lift: 0 1px 0 rgb(255 255 255 / 0.03), 0 10px 28px -14px rgb(0 0 0 / 0.7);
+    --shadow-pop: 0 8px 24px -8px rgb(0 0 0 / 0.6);
+    --shadow-lift: 0 1px 0 rgb(255 255 255 / 0.03), 0 12px 32px -18px rgb(0 0 0 / 0.8);
   }
 }
 
@@ -91,7 +90,7 @@
   --color-refunded: var(--state-refunded);
   --color-refunded-tint: var(--state-refunded-tint);
 
-  --font-display: var(--font-newsreader), Georgia, serif;
+  --font-display: var(--font-plex-sans), system-ui, sans-serif;
   --font-sans: var(--font-plex-sans), system-ui, sans-serif;
   --font-mono: var(--font-plex-mono), ui-monospace, monospace;
 
@@ -100,58 +99,63 @@
   --ease-out: var(--ease-out);
 }
 
-/* Type scale: DESIGN.md §3 */
+/* Type scale: one sans family, hierarchy from size and weight (DESIGN.md §12). */
 @utility text-display-2xl {
   font-family: var(--font-display);
-  font-size: clamp(2.75rem, 3.6vw + 1rem, 4.5rem);
-  line-height: 0.98;
-  font-weight: 450;
-  letter-spacing: -0.035em;
+  font-size: clamp(2.6rem, 5.4vw + 0.6rem, 5.25rem);
+  line-height: 1.02;
+  font-weight: 700;
+  letter-spacing: -0.045em;
   text-wrap: balance;
-  font-variant-numeric: lining-nums;
 }
 @utility text-display-xl {
   font-family: var(--font-display);
-  font-size: clamp(2.75rem, 5vw + 1rem, 4.75rem);
-  line-height: 1.02;
-  font-weight: 500;
-  letter-spacing: -0.03em;
+  font-size: clamp(2.25rem, 3.6vw + 1rem, 3.75rem);
+  line-height: 1.05;
+  font-weight: 700;
+  letter-spacing: -0.04em;
   text-wrap: balance;
 }
 @utility text-display {
   font-family: var(--font-display);
-  font-size: clamp(2rem, 2.5vw + 1rem, 3rem);
-  line-height: 1.08;
-  font-weight: 500;
-  letter-spacing: -0.02em;
+  font-size: clamp(1.875rem, 2.4vw + 1rem, 2.75rem);
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: -0.035em;
   text-wrap: balance;
 }
 @utility text-title {
   font-family: var(--font-display);
-  font-size: 1.5rem;
+  font-size: 1.375rem;
   line-height: 1.25;
-  font-weight: 500;
-  letter-spacing: -0.01em;
+  font-weight: 650;
+  letter-spacing: -0.02em;
   text-wrap: balance;
 }
 @utility text-numeral {
   font-family: var(--font-display);
-  font-size: clamp(2rem, 2vw + 1.25rem, 3rem);
+  font-size: clamp(1.875rem, 1.6vw + 1.25rem, 2.5rem);
   line-height: 1;
-  font-weight: 450;
-  letter-spacing: -0.02em;
-  font-variant-numeric: lining-nums tabular-nums;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
 }
 @utility text-heading {
-  font-size: 1.125rem;
+  font-size: 1.0625rem;
   line-height: 1.4;
   font-weight: 600;
+  letter-spacing: -0.01em;
 }
 @utility text-micro {
   font-size: 0.8125rem;
   line-height: 1.4;
   font-weight: 500;
-  letter-spacing: 0.01em;
+}
+@utility text-label {
+  font-size: 0.875rem;
+  line-height: 1.4;
+  font-weight: 500;
+  color: var(--ink-3);
 }
 @utility text-data {
   font-family: var(--font-mono);
@@ -171,7 +175,7 @@
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
     scroll-behavior: smooth;
-    /* WCAG 2.2 "focus not obscured": the sticky header (and its compact nav row) must never cover a focused control. */
+    /* WCAG 2.2 "focus not obscured": the sticky header (and its compact nav row) never covers a focused control. */
     scroll-padding-top: 7.5rem;
   }
   body {
@@ -180,13 +184,13 @@
     line-height: 1.6;
   }
   ::selection {
-    background: color-mix(in srgb, var(--cobalt) 22%, transparent);
+    background: color-mix(in srgb, var(--cobalt) 25%, transparent);
     color: var(--ink);
   }
   :focus-visible {
     outline: 2px solid var(--cobalt);
     outline-offset: 2px;
-    border-radius: 4px;
+    border-radius: 6px;
   }
   a {
     text-underline-offset: 3px;
@@ -207,50 +211,40 @@
   }
 }
 
-/* A dark panel that stays dark in the light theme: the hero and verification "stages". It redefines the
-   semantic tokens, so every component inside renders correctly without knowing it is on a stage. */
 @layer components {
-  .stage {
-    --paper: #0f1115;
-    --surface: #161920;
-    --sunken: #0b0d10;
-    --line: #2a2f3a;
-    --line-control: #6b7280;
-    --ink: #ecedef;
-    --ink-2: #b6bac2;
-    --ink-3: #8c919b;
-    --cobalt: #93a5ff;
-    --state-funded: #a7b0bf;
-    --state-funded-tint: #1e232c;
-    --state-submitted: #e2a54a;
-    --state-submitted-tint: #2e2414;
-    --state-approved: #4ec0af;
-    --state-approved-tint: #12302c;
-    --state-paid: #5dc17a;
-    --state-paid-tint: #15301d;
-    --state-refunded: #e8906a;
-    --state-refunded-tint: #33201a;
-    background: #12151b;
-    color: var(--ink);
-    border: 1px solid #262a33;
-    color-scheme: dark;
+  /* The one container style: a surface with a hairline border. */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 1.25rem;
   }
 
-  /* Ledger-paper ruling: faint horizontal rules that fade out downwards. Purely decorative. */
-  .ledger-rules::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background-image: repeating-linear-gradient(
-      to bottom,
-      transparent 0,
-      transparent 47px,
-      color-mix(in srgb, var(--ink) 4.5%, transparent) 47px,
-      color-mix(in srgb, var(--ink) 4.5%, transparent) 48px
-    );
-    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 18%, transparent 80%);
-    mask-image: linear-gradient(to bottom, transparent 0%, #000 18%, transparent 80%);
+  /* A small rounded label with an optional status dot. */
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 0.375rem 0.875rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--ink-2);
+    background: var(--surface);
+  }
+
+  /* Code and shell panels stay dark in both themes (the only fixed-dark surface). */
+  .code-panel {
+    --line: #2a2e35;
+    --ink: #eceef1;
+    --ink-2: #b7bcc4;
+    --ink-3: #8f959e;
+    --sunken: #0d0e11;
+    --surface: #16181d;
+    background: #111317;
+    color: var(--ink);
+    border: 1px solid #23262c;
+    color-scheme: dark;
   }
 
   /* Interaction primitives. Hover only on devices that hover; press feedback everywhere. */
@@ -260,7 +254,8 @@
       background-color var(--dur-hover) var(--ease-out),
       border-color var(--dur-hover) var(--ease-out),
       box-shadow var(--dur-hover) var(--ease-out),
-      color var(--dur-hover) var(--ease-out);
+      color var(--dur-hover) var(--ease-out),
+      opacity var(--dur-hover) var(--ease-out);
   }
   .press:active:not(:disabled) {
     transform: scale(0.98);
@@ -273,9 +268,21 @@
     .lift:active {
       transform: translateY(0) scale(0.98);
     }
+    /* Cards that lead somewhere: a quiet border and lift on hover. */
+    .card-hover {
+      transition:
+        border-color var(--dur-hover) var(--ease-out),
+        transform var(--dur-panel) var(--ease-out),
+        box-shadow var(--dur-panel) var(--ease-out);
+    }
+    .card-hover:hover {
+      border-color: var(--line-control);
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-lift);
+    }
   }
 
-    /* Hidden unless scroll-driven animations are available (see the motion section below). */
+  /* Hidden unless scroll-driven animations are available (see the motion section below). */
   .scroll-progress {
     display: none;
   }
@@ -301,8 +308,8 @@
 }
 
 /* ------------------------------------------------------------------------------------------------
-   Motion. Everything below is progressive enhancement on top of a complete static page:
-   - nothing is hidden by default (no-JS and unsupported browsers see the final state);
+   Motion. Progressive enhancement on top of a complete static page:
+   - nothing is hidden by default (no-JS, unsupported browsers and print see the final state);
    - scroll-driven effects use CSS `animation-timeline` (no scripts) and only where supported;
    - all of it is removed under prefers-reduced-motion, which shows the final state immediately.
    ------------------------------------------------------------------------------------------------ */
@@ -335,30 +342,6 @@
     transform: none;
   }
 }
-@keyframes sweep {
-  from {
-    transform: translateX(0);
-    opacity: 0;
-  }
-  6% {
-    opacity: 1;
-  }
-  94% {
-    opacity: 1;
-  }
-  to {
-    transform: translateX(calc(var(--to, 100) * 1cqw));
-    opacity: 0;
-  }
-}
-@keyframes lit {
-  from {
-    opacity: 0.32;
-  }
-  to {
-    opacity: 1;
-  }
-}
 @keyframes draw-ring {
   from {
     stroke-dashoffset: 1;
@@ -375,6 +358,14 @@
     transform: scaleX(1);
   }
 }
+@keyframes step-in {
+  from {
+    transform: translateY(6px) scale(0.985);
+  }
+  to {
+    transform: none;
+  }
+}
 
 @media (prefers-reduced-motion: no-preference) {
   /* Page-load entrance: played once, staggered with --d (milliseconds). */
@@ -382,33 +373,14 @@
     animation: rise 700ms var(--ease-out) both;
     animation-delay: calc(var(--d, 0) * 1ms);
   }
-  /* Hero lane replay: bars draw, a cursor sweeps (constant-rate, so linear), marks pop as it passes. */
-  .draw-x {
-    transform-origin: left center;
-    animation: grow-x 700ms var(--ease-out) both;
-    animation-delay: calc(var(--d, 0) * 1ms);
-  }
-  .mark-pop {
-    animation: pop 420ms var(--ease-out) both;
-    animation-delay: calc(var(--d, 0) * 1ms);
-  }
-  .replay-cursor {
-    animation: sweep var(--dur, 2600ms) linear both;
-    animation-delay: calc(var(--d, 0) * 1ms);
-  }
-  .lit {
-    animation: lit 500ms var(--ease-out) both;
-    animation-delay: calc(var(--d, 0) * 1ms);
-  }
   .draw-ring {
     stroke-dasharray: 1;
     animation: draw-ring 900ms var(--ease-out) both;
     animation-delay: calc(var(--d, 0) * 1ms);
   }
-}
-@media (prefers-reduced-motion: reduce) {
-  .replay-cursor {
-    display: none;
+  /* The replay panel's step that just became current. */
+  .step-in {
+    animation: step-in 360ms var(--ease-out) both;
   }
 }
 
@@ -466,14 +438,11 @@
   .grow-x,
   .pop-in,
   .enter,
-  .draw-x,
-  .mark-pop,
-  .lit {
+  .step-in {
     animation: none !important;
     opacity: 1 !important;
     transform: none !important;
   }
-  .replay-cursor,
   .scroll-progress {
     display: none !important;
   }

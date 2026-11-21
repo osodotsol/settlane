@@ -52,6 +52,8 @@ Rules: a state is never conveyed by colour alone. It always pairs with a label a
 
 ## 3. Typography
 
+> **Superseded in part by §12:** headings now use IBM Plex Sans (600 to 700); Newsreader has been removed. The scale's roles below still apply.
+
 All three faces are open-licensed (SIL OFL) and **self-hosted at build time** with `next/font`, so there is no runtime request to a font CDN and no layout shift.
 
 | Role | Face | Use |
@@ -176,7 +178,7 @@ Don't:
 
 - Paper `#F5F3EE`, ink `#15171B`, accent cobalt `#2E47C9`.
 - State hues: funded slate, submitted ochre, approved teal, paid green, refunded rust. Outlined = open, solid = final.
-- Newsreader for titles, Plex Sans for UI, Plex Mono for data.
+- Plex Sans bold for headings and Plex Sans for UI (§12), Plex Mono for data.
 - Signature visuals: the settlement lane and the ledger strip.
 - Every write passes through simulate → wallet → pending → confirmed or reverted.
 - Never hide that the verifier is trusted and that this is Sepolia test ETH.
@@ -201,3 +203,18 @@ Rules: nothing is hidden by default (no JavaScript, unsupported browsers and pri
 **Components added.** `HeroStage`, `StoryStepper` (the only client-side story logic: an IntersectionObserver picks the step; the card is aria-hidden and hidden on phones), `MilestoneTrack` (Funded, In review, Approved, Paid; or Funded, Expired, Refunded), `Avatar` (deterministic identicon, decorative), timeline `ActivityList`, richer `SettlementLane` (time axis, window labels at the bottom of segments, marks in the upper half so they never collide), `LedgerStrip` (large figure, shares), `VerificationSeal`, `CommandBlock`, `CodeBlock` (hand-highlighted, no highlighter shipped), `ExplorerTable` mini bars, a four-column footer.
 
 **Responsive.** The full navigation needs 1024 px (at 768 the logo, four links, network pill and wallet did not fit: found on the production build); below it the compact row shows Explorer, Contract and How it settles, and Limitations moves to the footer. Parties stack until 1024 px. Grid children that hold code or wide content carry `min-w-0` (a grid item otherwise cannot shrink below its content: the cause of a 666 px landing page on phones before the fix). Lane tooltips are width-bounded so a hidden tooltip can never widen the page.
+
+---
+
+## 12. Revision: simplification (2026-11-21, supersedes parts of §3 and §11)
+
+The owner reviewed the premium pass in Chrome, liked it, and asked for a plainer, more professional look that does not read as machine-made, pointing to a minimal dark product site as the reference for *simplicity* (its branding, copy, colours and components are not used). Settlane's content and features are unchanged.
+
+- **One family.** IBM Plex Sans for headings (600 to 700, tracking -0.035 to -0.045 em) and UI, IBM Plex Mono for data. Newsreader and its italic are removed (about 280 KB less). Emphasis in the hero is colour (cobalt), never italic.
+- **Composition.** A centred hero: a status pill, one bold headline, a short lead, two pill buttons, one line of reassurance, then the replay panel. Sections open with a small grey label, a bold heading and a lead (this deliberately replaces the earlier "no eyebrow labels" rule, at the owner's direction).
+- **One container.** `.card`: surface, hairline border, 1.25 rem radius. Cards that lead somewhere lift by 2 px with a stronger border on hover. No dark "stage" panels inside the light theme and no ruled background; the only fixed-dark surface is `.code-panel` (code and shell commands).
+- **Buttons.** Pills: primary is ink on paper (white on black in dark mode), secondary is outlined.
+- **Dark theme.** Deeper and calmer: paper `#0b0c0e`, surface `#131519`, hairline `#24272d`, text `#f2f3f5` / `#b7bcc4` / `#8f959e`, cobalt `#9db0ff`. Every text pair at least 5.02:1 in both themes (measured).
+- **Replay panel (landing hero).** Both real agreements, replayed as step cards: done (check), current (cobalt outline, a small step-in motion), next (dashed). Tabs switch Paid and Refunded through a sliding indicator; Replay restarts. A refund is preceded by the deadline that allowed it, from the stored `deliver_by` or `decide_by`. It renders complete on the server, plays once when it scrolls into view (under 5 s, so no pause control is required), and under reduced motion shows the final state with nothing advancing on its own.
+- **Outcomes.** Three cards (Paid, Refunded, In progress), each stating where the money is.
+- **Inner pages.** Agreement and contract sections are cards; the explorer list sits in a card, and its filter uses the same sliding pill as the replay tabs.

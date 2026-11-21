@@ -66,10 +66,20 @@ export function ExplorerTable({ rows }: { rows: ExplorerRow[] }) {
   return (
     <>
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <fieldset className="flex gap-1 rounded-lg border border-line bg-surface p-1">
+        <fieldset className="relative flex rounded-full border border-line bg-surface p-1">
           <legend className="sr-only">Show agreements</legend>
+          <span
+            aria-hidden
+            className="absolute inset-y-1 left-1 rounded-full bg-ink transition-transform duration-[var(--dur-panel)] ease-[var(--ease-out)]"
+            style={{ width: "calc((100% - 0.5rem) / 3)", transform: `translateX(${["all", "open", "closed"].indexOf(filter) * 100}%)` }}
+          />
           {(["all", "open", "closed"] as const).map((f) => (
-            <label key={f} className={`press cursor-pointer rounded-md px-4 py-2 text-sm has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-cobalt ${filter === f ? "bg-ink text-paper" : "text-ink-2 hover:bg-sunken hover:text-ink"}`}>
+            <label
+              key={f}
+              className={`press relative z-10 min-w-20 cursor-pointer rounded-full px-4 py-2 text-center text-sm font-semibold has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-cobalt ${
+                filter === f ? "text-paper" : "text-ink-2 hover:text-ink"
+              }`}
+            >
               <input type="radio" name="explorer-filter" value={f} checked={filter === f} onChange={() => setFilter(f)} className="sr-only" />
               {f === "all" ? "All" : f === "open" ? "Open" : "Closed"}
             </label>
@@ -83,7 +93,7 @@ export function ExplorerTable({ rows }: { rows: ExplorerRow[] }) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="e.g. 2 or 0x4fa3…"
-            className="h-11 w-full rounded-lg border border-line-control bg-surface px-3 text-sm placeholder:text-ink-3 sm:w-80"
+            className="h-11 w-full rounded-full border border-line-control bg-surface px-4 text-sm placeholder:text-ink-3 sm:w-80"
           />
         </div>
       </div>
@@ -91,24 +101,24 @@ export function ExplorerTable({ rows }: { rows: ExplorerRow[] }) {
       <p className="sr-only" role="status" aria-live="polite">{`${visible.length} of ${rows.length} agreements shown`}</p>
 
       {visible.length === 0 ? (
-        <p className="border-y border-line py-8 text-ink-2">No agreement matches. Clear the search or choose “All”.</p>
+        <p className="card p-8 text-ink-2">No agreement matches. Clear the search or choose “All”.</p>
       ) : (
         <>
-          <table className="hidden w-full text-left text-sm lg:table">
-            <thead className="border-b border-line-control text-ink-3">
+          <div className="card hidden overflow-hidden lg:block"><table className="w-full text-left text-sm">
+            <thead className="border-b border-line bg-sunken/60 text-ink-3">
               <tr>
-                <th scope="col" className="py-3 pl-3 pr-4 font-medium">Agreement</th>
+                <th scope="col" className="py-3 pl-5 pr-4 font-medium">Agreement</th>
                 <th scope="col" className="py-3 pr-4 font-medium">Milestones</th>
                 <th scope="col" className="py-3 pr-4 font-medium">Parties</th>
                 <th scope="col" className="py-3 pr-4 font-medium">Next</th>
                 <th scope="col" className="py-3 pr-4 text-right font-medium">Deposited</th>
-                <th scope="col" className="py-3 pr-3 text-right font-medium">Outstanding</th>
+                <th scope="col" className="py-3 pr-5 text-right font-medium">Outstanding</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
               {visible.map((r) => (
                 <tr key={r.id} className="group align-top transition-colors duration-[var(--dur-hover)] hover:bg-surface">
-                  <th scope="row" className="py-4 pl-3 pr-4 font-medium">
+                  <th scope="row" className="py-4 pl-5 pr-4 font-medium">
                     <Link href={`/agreements/${r.id}`} className="inline-flex items-center gap-1.5 text-ink">
                       <span className="draw-link">#{r.id}</span>
                       <ArrowRight aria-hidden size={15} className="-translate-x-1 text-cobalt opacity-0 transition-[opacity,transform] duration-[var(--dur-hover)] ease-out group-hover:translate-x-0 group-hover:opacity-100 group-focus-within:translate-x-0 group-focus-within:opacity-100" />
@@ -129,12 +139,12 @@ export function ExplorerTable({ rows }: { rows: ExplorerRow[] }) {
                   </td>
                   <td className="py-4 pr-4 text-ink-2">{r.next}</td>
                   <td className="py-4 pr-4 text-right"><Amount wei={BigInt(r.deposited)} /></td>
-                  <td className="py-4 pr-3 text-right"><Amount wei={BigInt(r.outstanding)} /></td>
+                  <td className="py-4 pr-5 text-right"><Amount wei={BigInt(r.outstanding)} /></td>
                 </tr>
               ))}
             </tbody>
-          </table>
-          <ul className="divide-y divide-line border-y border-line lg:hidden">
+          </table></div>
+          <ul className="card divide-y divide-line px-5 lg:hidden">
             {visible.map((r) => (
               <li key={r.id} className="py-5">
                 <div className="flex items-baseline justify-between gap-3">

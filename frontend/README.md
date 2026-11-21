@@ -28,7 +28,7 @@ Only public values, all optional (defaults are the verified Sepolia deployment):
 
 ## Notes
 - `.npmrc` sets `legacy-peer-deps`: npm 10.9 crashes while resolving vitest 5's optional peers. Every peer the app needs is listed explicitly (including `vite` for vitest).
-- Fonts are self-hosted SIL OFL files in `src/fonts/` (Newsreader, IBM Plex Sans, IBM Plex Mono), loaded with `next/font/local`.
+- Fonts are self-hosted SIL OFL files in `src/fonts/` (IBM Plex Sans and IBM Plex Mono), loaded with `next/font/local`.
 - Explorer, agreement and contract pages render per request through `src/contract/cache.ts` (10 s TTL, one request per key, last good data on RPC failure); event history is scanned in 10,000-block chunks, incrementally, re-scanning the last 64 blocks so reorged logs are replaced.
 - `src/proxy.ts` returns a real HTTP 404 for agreements that do not exist, before rendering; `htmlLimitedBots: /.*/` keeps pages complete without JavaScript.
 - `spikes/evm-demo/` is the isolated F0 feasibility spike (in-browser EVM), not part of the app.

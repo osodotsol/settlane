@@ -22,7 +22,7 @@ function share(p: LedgerPart): string {
 export function LedgerStrip({ ledger }: { ledger: Ledger }) {
   const ok = ledger.identityHolds && ledger.matchesMilestones;
   return (
-    <section aria-labelledby="ledger-title" className="rounded-2xl border border-line bg-surface p-6 sm:p-8">
+    <section aria-labelledby="ledger-title" className="card p-6 sm:p-8">
       <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
         <div>
           <h2 id="ledger-title" className="text-title">Accounting</h2>

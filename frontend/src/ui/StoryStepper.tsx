@@ -56,8 +56,8 @@ export function StoryStepper({ steps }: { steps: Step[] }) {
               refs.current[i] = el;
             }}
             data-step={i}
-            className={`reveal grid gap-3 py-7 transition-[background-color,border-color] duration-[var(--dur-panel)] md:grid-cols-[10.5rem_1fr] md:gap-8 lg:min-h-[34vh] lg:items-center lg:rounded-2xl lg:border lg:px-7 lg:py-8 ${
-              i === active ? "lg:border-line lg:bg-surface/70" : "lg:border-transparent"
+            className={`reveal grid gap-3 py-7 transition-[background-color,border-color] duration-[var(--dur-panel)] md:grid-cols-[10.5rem_1fr] md:gap-8 lg:min-h-[32vh] lg:items-center lg:rounded-2xl lg:border lg:px-7 lg:py-8 ${
+              i === active ? "lg:border-line lg:bg-surface" : "lg:border-transparent"
             }`}
           >
             <div>
@@ -73,7 +73,7 @@ export function StoryStepper({ steps }: { steps: Step[] }) {
 
       <div aria-hidden className="relative hidden lg:block">
         <div className="sticky top-32">
-          <div className="stage rounded-2xl p-7 shadow-[0_30px_80px_-40px_rgb(0_0_0/0.6)]">
+          <div data-story-card className="card p-7 shadow-lift">
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm text-ink-3">Milestone 1 · illustration</p>
               <StateChip state={step.state} />

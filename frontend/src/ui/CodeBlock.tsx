@@ -8,7 +8,7 @@ const COLOR: Record<Tok[0], string> = { k: "text-[#93a5ff]", t: "text-[#7fd0c0]"
 
 export function CodeBlock({ lines, label, footer }: { lines: Tok[][]; label: string; footer?: ReactNode }) {
   return (
-    <figure className="stage m-0 min-w-0 overflow-hidden rounded-2xl shadow-[0_30px_80px_-40px_rgb(0_0_0/0.6)]">
+    <figure className="code-panel m-0 min-w-0 overflow-hidden rounded-2xl">
       <figcaption className="flex items-center justify-between border-b border-line px-5 py-3 text-micro text-ink-3">
         <span>{label}</span>
         <span aria-hidden className="flex gap-1.5">

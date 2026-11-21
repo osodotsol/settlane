@@ -1,16 +1,8 @@
 import localFont from "next/font/local";
 
-// Self-hosted, SIL OFL fonts (src/fonts/OFL-*.txt). No request to a font CDN, at build or at runtime.
-export const newsreader = localFont({
-  src: [
-    { path: "../fonts/newsreader-latin-opsz-wght.woff2", weight: "200 800", style: "normal" },
-    // The true italic (used for emphasis in display headings), not a synthesized slant.
-    { path: "../fonts/newsreader-latin-opsz-italic-wght.woff2", weight: "200 800", style: "italic" },
-  ],
-  variable: "--font-newsreader",
-  display: "swap",
-});
-
+// Self-hosted, SIL OFL fonts (src/fonts/OFL-IBM-Plex.txt). No request to a font CDN, at build or at runtime.
+// One family does everything: IBM Plex Sans (headings at 600-700 with tight tracking, UI text at 400-500)
+// and IBM Plex Mono for data. Fewer faces, less weight, a plainer and more professional voice.
 export const plexSans = localFont({
   src: "../fonts/ibm-plex-sans-latin-wght.woff2",
   variable: "--font-plex-sans",

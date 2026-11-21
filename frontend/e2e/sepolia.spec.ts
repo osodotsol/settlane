@@ -134,15 +134,26 @@ test.describe("with motion enabled", () => {
     }
   });
 
-  test("the hero replays the real agreement, then rests with every event and the outcome visible", async ({ page }) => {
+  test("the hero replays the real agreement step by step, and the tabs switch to the refunded one", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByText("A real agreement, replayed from Sepolia")).toBeVisible();
-    await page.waitForTimeout(4200); // entrance + the 2.6 s sweep + the outcome
-    const rows = page.locator(".stage ol .lit");
-    await expect(rows).toHaveCount(4);
-    for (let i = 0; i < 4; i++) expect(Number(await rows.nth(i).evaluate((el) => getComputedStyle(el).opacity))).toBeGreaterThan(0.99);
-    expect(Number(await page.locator(".replay-cursor").evaluate((el) => getComputedStyle(el).opacity))).toBe(0); // the cursor has left
-    await expect(page.getByText("Provider claimed 0.001 ETH")).toBeVisible();
+    const panel = page.locator("[data-replay]");
+    await panel.scrollIntoViewIfNeeded();
+    await expect(panel.getByText("Replayed from Sepolia")).toBeVisible();
+    await expect(panel.getByText("Agreement #1", { exact: true })).toBeVisible();
+    // mid-play: a current step exists, and not every step is done yet
+    await page.waitForTimeout(1300);
+    await expect(panel.locator('li[aria-current="step"]')).toHaveCount(1);
+    // after the run: the last step is current and the outcome is stated
+    await expect(panel.getByText("0.001 ETH paid to the provider.")).toBeVisible({ timeout: 8000 });
+    await expect(panel.locator("li").last()).toHaveAttribute("aria-current", "step");
+    await expect(panel.locator("li")).toHaveCount(4);
+    // the refunded agreement: a deadline step from the stored deliver_by, then the refund
+    await panel.getByRole("button", { name: "Refunded" }).click();
+    await expect(panel.getByRole("button", { name: "Refunded" })).toHaveAttribute("aria-pressed", "true");
+    await expect(panel.getByText("Agreement #2", { exact: true })).toBeVisible();
+    await expect(panel.getByText("Deadline passed")).toBeVisible();
+    await expect(panel.getByText("0.001 ETH refunded to the client.")).toBeVisible({ timeout: 8000 });
+    await expect(panel.getByRole("link", { name: /Open agreement #2/ })).toHaveAttribute("href", "/agreements/2");
   });
 
   test("scrolling the story changes the milestone card", async ({ page }) => {
@@ -151,10 +162,10 @@ test.describe("with motion enabled", () => {
     await expect(steps).toHaveCount(5);
     await steps.nth(2).scrollIntoViewIfNeeded();
     await steps.nth(2).evaluate((el) => el.scrollIntoView({ block: "center", behavior: "instant" }));
-    await expect(page.locator("#how-it-settles .stage").getByText("Verifier (trusted)")).toBeVisible();
+    await expect(page.locator("#how-it-settles [data-story-card]").getByText("Verifier (trusted)")).toBeVisible();
     await steps.nth(4).evaluate((el) => el.scrollIntoView({ block: "center", behavior: "instant" }));
-    await expect(page.locator("#how-it-settles .stage").getByText("Refunded to the client")).toBeVisible();
-    await expect(page.locator("#how-it-settles .stage").getByText("Expired").first()).toBeVisible();
+    await expect(page.locator("#how-it-settles [data-story-card]").getByText("Refunded to the client")).toBeVisible();
+    await expect(page.locator("#how-it-settles [data-story-card]").getByText("Expired").first()).toBeVisible();
   });
 
   test("the header gains depth once the page scrolls and the progress line follows", async ({ page }) => {
@@ -182,14 +193,18 @@ test.describe("with motion enabled", () => {
 
 test.describe("reduced motion", () => {
   test.use({ reducedMotion: "reduce", viewport: { width: 1440, height: 900 } });
-  test("shows every final state at once: no cursor, all events visible, nothing animating", async ({ page }) => {
+  test("shows every final state at once: the replay is complete and nothing animates", async ({ page }) => {
     await page.goto("/");
-    await expect(page.locator(".replay-cursor")).toBeHidden();
-    for (const t of ["Agreement created, 0.001 ETH locked", "Provider submitted evidence", "Verifier approved the work", "Provider claimed 0.001 ETH"]) {
-      await expect(page.getByText(t)).toBeVisible();
-    }
-    const animated = await page.evaluate(() => document.getAnimations().length);
-    expect(animated).toBe(0);
+    const panel = page.locator("[data-replay]");
+    await panel.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(600);
+    for (const t of ["Agreement created", "Evidence submitted", "Approved", "Claimed"]) await expect(panel.getByText(t, { exact: true })).toBeVisible();
+    await expect(panel.getByText("0.001 ETH paid to the provider.")).toBeVisible();
+    await expect(panel.locator("li").last()).toHaveAttribute("aria-current", "step");
+    // switching tabs jumps straight to the final state too
+    await panel.getByRole("button", { name: "Refunded" }).click();
+    await expect(panel.getByText("0.001 ETH refunded to the client.")).toBeVisible();
+    expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
   });
 });
 
@@ -203,7 +218,7 @@ test.describe("phone layout", () => {
       expect(box!.x + box!.width, name).toBeLessThanOrEqual(390);
       expect(box!.height, name).toBeGreaterThanOrEqual(40);
     }
-    await expect(page.locator("#how-it-settles .stage")).toBeHidden();
+    await expect(page.locator("#how-it-settles [data-story-card]")).toBeHidden();
     await expect(page.locator("#how-it-settles ol > li")).toHaveCount(5);
   });
 });

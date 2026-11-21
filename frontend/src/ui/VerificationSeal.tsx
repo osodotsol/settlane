@@ -8,7 +8,7 @@ type Props = { status: "match" | "mismatch" | "unknown"; pinned: string; live: s
 export function VerificationSeal({ status, pinned, live, bytes }: Props) {
   const tone = status === "match" ? "text-paid" : status === "mismatch" ? "text-danger" : "text-ink-3";
   return (
-    <div className="stage rounded-2xl p-6 shadow-[0_30px_80px_-40px_rgb(0_0_0/0.6)] sm:p-8">
+    <div className="card p-6 sm:p-8">
       <div className="flex items-center gap-5">
         <div className={`relative grid size-20 shrink-0 place-items-center ${tone}`} aria-hidden>
           {status === "match" ? (

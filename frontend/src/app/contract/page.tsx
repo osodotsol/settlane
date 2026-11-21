@@ -81,17 +81,17 @@ export default async function ContractPage() {
 
       <section aria-labelledby="deployment" className="mt-20">
         <h2 id="deployment" className="text-title reveal">Deployment</h2>
-        <dl className="reveal-stagger mt-6 grid gap-x-10 gap-y-0 border-t border-line md:grid-cols-2">
-          <div style={idx(0)} className="border-b border-line py-5"><dt className="text-sm text-ink-3">Network</dt><dd className="mt-1">Ethereum Sepolia testnet (chain id 11155111), test ETH only</dd></div>
-          <div style={idx(1)} className="border-b border-line py-5"><dt className="text-sm text-ink-3">Contract</dt><dd className="mt-1"><Address address={SETTLANE_ADDRESS} /></dd></div>
-          <div style={idx(2)} className="border-b border-line py-5">
+        <dl className="card reveal-stagger mt-6 grid gap-x-10 px-6 md:grid-cols-2 sm:px-8">
+          <div style={idx(0)} className="border-b border-line py-5 [&:nth-last-child(-n+2)]:md:border-b-0 last:border-b-0"><dt className="text-sm text-ink-3">Network</dt><dd className="mt-1">Ethereum Sepolia testnet (chain id 11155111), test ETH only</dd></div>
+          <div style={idx(1)} className="border-b border-line py-5 [&:nth-last-child(-n+2)]:md:border-b-0 last:border-b-0"><dt className="text-sm text-ink-3">Contract</dt><dd className="mt-1"><Address address={SETTLANE_ADDRESS} /></dd></div>
+          <div style={idx(2)} className="border-b border-line py-5 [&:nth-last-child(-n+2)]:md:border-b-0 last:border-b-0">
             <dt className="text-sm text-ink-3">Deployment transaction</dt>
             <dd className="mt-1">
               <a href={txUrl(DEPLOY_TX)} target="_blank" rel="noreferrer" className="draw-link text-data">{shortHex(DEPLOY_TX, 10, 8)}</a>{" "}
               <span className="text-sm text-ink-3">block {DEPLOY_BLOCK.toString()}</span>
             </dd>
           </div>
-          <div style={idx(3)} className="border-b border-line py-5"><dt className="text-sm text-ink-3">Compiler</dt><dd className="mt-1 text-data">{FE_VERSION}</dd></div>
+          <div style={idx(3)} className="border-b border-line py-5 [&:nth-last-child(-n+2)]:md:border-b-0 last:border-b-0"><dt className="text-sm text-ink-3">Compiler</dt><dd className="mt-1 text-data">{FE_VERSION}</dd></div>
         </dl>
       </section>
 
@@ -111,7 +111,7 @@ export default async function ContractPage() {
             ],
           ].map(([what, cmd], i) => (
             <li key={cmd} style={idx(i)} className="grid gap-3 md:grid-cols-[2.5rem_1fr] md:gap-5">
-              <span aria-hidden className="grid size-10 place-items-center rounded-full border-2 border-ink font-display text-lg">{i + 1}</span>
+              <span aria-hidden className="grid size-10 place-items-center rounded-full border border-line text-sm font-semibold text-ink-2">{i + 1}</span>
               <div>
                 <p className="mb-2 font-medium">{what}</p>
                 <CommandBlock command={cmd as string} label={`command: ${what}`} />
@@ -127,8 +127,8 @@ export default async function ContractPage() {
         {activity.status === "rejected" ? (
           <div className="mt-4"><Banner title="The event history could not be read right now">Reload to try again.</Banner></div>
         ) : (
-          <ol className="mt-6 divide-y divide-line border-y border-line text-sm">
-            <li className="grid gap-1 py-3.5 transition-colors hover:bg-surface sm:grid-cols-[9rem_1fr_auto] sm:items-center sm:gap-4 sm:px-3">
+          <ol className="card mt-6 divide-y divide-line overflow-hidden text-sm">
+            <li className="grid gap-1 px-5 py-3.5 transition-colors hover:bg-sunken sm:grid-cols-[9rem_1fr_auto] sm:items-center sm:gap-4 sm:px-6">
               <span className="text-data text-ink-3">{DEPLOY_BLOCK.toString()}</span>
               <span>Contract deployed</span>
               <a href={txUrl(DEPLOY_TX)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-data text-ink-2 hover:text-ink">
@@ -136,7 +136,7 @@ export default async function ContractPage() {
               </a>
             </li>
             {[...txs.entries()].map(([hash, acts]) => (
-              <li key={hash} className="grid gap-1 py-3.5 transition-colors hover:bg-surface sm:grid-cols-[9rem_1fr_auto] sm:items-center sm:gap-4 sm:px-3">
+              <li key={hash} className="grid gap-1 px-5 py-3.5 transition-colors hover:bg-sunken sm:grid-cols-[9rem_1fr_auto] sm:items-center sm:gap-4 sm:px-6">
                 <span className="text-data text-ink-3">{acts[0]!.blockNumber.toString()}</span>
                 <span>
                   {acts.map((a) => EVENT_LABEL[a.kind]).join(", ")} ·{" "}
@@ -155,7 +155,7 @@ export default async function ContractPage() {
       <section aria-labelledby="interface" className="mt-20">
         <h2 id="interface" className="text-title reveal">Interface</h2>
         <p className="reveal mt-1 text-sm text-ink-3">The ABI produced by the Fe build, locked by the repository&apos;s policy lint. Six writes and four reads.</p>
-        <div className="mt-6 grid gap-10 lg:grid-cols-[1.4fr_1fr]">
+        <div className="card mt-6 grid gap-10 p-6 sm:p-8 lg:grid-cols-[1.4fr_1fr]">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <caption className="mb-3 text-left font-medium">Writes: these change state</caption>
@@ -164,7 +164,7 @@ export default async function ContractPage() {
               </thead>
               <tbody className="divide-y divide-line">
                 {writes.map((f) => (
-                  <tr key={f.name} className="transition-colors hover:bg-surface">
+                  <tr key={f.name} className="transition-colors hover:bg-sunken">
                     <td className="py-2.5 pr-4 text-data [overflow-wrap:anywhere]">{signature(f)}{f.stateMutability === "payable" && <span className="ml-2 rounded-full bg-sunken px-2 py-0.5 font-sans text-micro text-ink-2">takes ETH</span>}</td>
                     <td className="whitespace-nowrap py-2.5"><span className="rounded-full border border-line-control px-2.5 py-0.5 text-micro">{CALLER[f.name]}</span></td>
                   </tr>
@@ -180,7 +180,7 @@ export default async function ContractPage() {
               </thead>
               <tbody className="divide-y divide-line">
                 {reads.map((f) => (
-                  <tr key={f.name} className="transition-colors hover:bg-surface"><td className="py-2.5 text-data [overflow-wrap:anywhere]">{signature(f)}</td></tr>
+                  <tr key={f.name} className="transition-colors hover:bg-sunken"><td className="py-2.5 text-data [overflow-wrap:anywhere]">{signature(f)}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -193,10 +193,10 @@ export default async function ContractPage() {
 
       <section aria-labelledby="limits" className="mt-20">
         <h2 id="limits" className="text-title reveal">Verified limitations</h2>
-        <ol className="reveal-stagger mt-6 divide-y divide-line border-y border-line">
+        <ol className="card reveal-stagger mt-6 divide-y divide-line px-6 sm:px-8">
           {LIMITS.map((t, i) => (
             <li key={t} style={idx(i)} className="grid gap-3 py-5 sm:grid-cols-[3rem_1fr]">
-              <span aria-hidden className="font-display text-2xl text-ink-3">{i + 1}</span>
+              <span aria-hidden className="grid size-8 place-items-center rounded-full border border-line text-sm font-semibold text-ink-2">{i + 1}</span>
               <p className="measure">{t}</p>
             </li>
           ))}

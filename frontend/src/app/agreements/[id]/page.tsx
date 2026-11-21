@@ -70,7 +70,7 @@ function MilestoneBlock({ m, now }: { m: Milestone; now: bigint }) {
   const state = displayState(m.state, now, m.deliverBy, m.decideBy);
   const hex = (v: bigint) => toHex(v, { size: 32 });
   return (
-    <li className="reveal grid gap-6 py-9 md:grid-cols-[14rem_1fr] md:gap-10">
+    <li className="reveal grid gap-6 py-8 last:pb-0 md:grid-cols-[14rem_1fr] md:gap-10">
       <div className="space-y-3">
         <h3 className="text-heading">Milestone {m.index + 1}</h3>
         <StateChip state={state} />
@@ -174,39 +174,39 @@ export default async function AgreementPage({ params }: Params) {
 
       <section aria-labelledby="parties" className="enter mt-10" style={{ "--d": 160 } as React.CSSProperties}>
         <h2 id="parties" className="sr-only">Parties</h2>
-        <ul className="grid gap-x-8 gap-y-5 lg:grid-cols-3">
+        <ul className="card grid divide-y divide-line lg:grid-cols-3 lg:divide-x lg:divide-y-0">
           {roles.map(([role, address]) => (
-            <li key={role} className="flex items-center gap-3.5 border-t border-line pt-4">
+            <li key={role} className="flex items-center gap-3.5 p-5">
               <Avatar address={address} size={44} />
               <Address address={address} role={role} />
             </li>
           ))}
         </ul>
-        <p className="mt-5 measure text-sm text-ink-3">
+        <p className="mt-4 measure text-sm text-ink-3">
           The verifier is a trusted party: its approval or revision request is final on-chain, and Settlane cannot check the work itself. Each review
           deadline is the delivery deadline plus {agreement.reviewPeriod.toString()} s.
         </p>
       </section>
 
-      <div className="reveal mt-12">
+      <div className="reveal mt-6">
         <LedgerStrip ledger={buildLedger(agreement)} />
       </div>
 
-      <section className="reveal mt-14">
+      <section className="card reveal mt-6 p-6 sm:p-8">
         <SettlementLane chart={chart} creationKnown={created !== undefined} />
         <p className="mt-3 text-sm text-ink-3">States and windows are judged at Sepolia block time {formatUtc(now)}.</p>
       </section>
 
-      <section aria-labelledby="milestones" className="mt-16">
+      <section aria-labelledby="milestones" className="card mt-6 p-6 sm:p-8">
         <h2 id="milestones" className="text-title">Milestones</h2>
-        <ol className="mt-2 divide-y divide-line border-b border-line">
+        <ol className="mt-2 divide-y divide-line">
           {agreement.milestones.map((m) => (
             <MilestoneBlock key={m.index} m={m} now={now} />
           ))}
         </ol>
       </section>
 
-      <section aria-labelledby="history" className="mt-16">
+      <section aria-labelledby="history" className="card mt-6 p-6 sm:p-8">
         <h2 id="history" className="text-title">History</h2>
         <p className="mb-6 mt-1 text-sm text-ink-3">Decoded from the contract&apos;s events on Sepolia, in chain order.</p>
         {history === null ? (
