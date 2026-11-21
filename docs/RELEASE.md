@@ -1,6 +1,6 @@
 # GitHub release: readiness, manual steps and what is still unverified
 
-Status (2026-11-21, after D-029): **the public repository has not been created and nothing has been pushed.** This environment has no GitHub authentication: the GitHub CLI `gh` is not installed, git has no credential helper, and SSH to GitHub is refused (`Permission denied (publickey)`). So the owner publishes, with the commands below. The production contract is frozen (D-029 approved).
+Status (2026-11-21): **published** by the owner at https://github.com/osodotsol/settlane (public, default branch `settlane/dev`, commit `22cf736`). The first hosted CI run [44854564457](https://github.com/osodotsol/settlane/actions/runs/44854564457) **succeeded**: `test` (all steps, including the pinned Fe install), `anvil (production bytecode)` and `release-gate (test and anvil)`. The push guard on `origin` is in place. The sections below are the preparation record.
 
 ## Readiness audit (2026-11-21)
 | Check | Result |
