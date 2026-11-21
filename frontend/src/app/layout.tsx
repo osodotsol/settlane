@@ -1,8 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import { Providers } from "@/ui/Providers";
-import { SiteFooter } from "@/ui/SiteFooter";
-import { SiteHeader } from "@/ui/SiteHeader";
 import { plexMono, plexSans } from "./fonts";
 import "./globals.css";
 
@@ -30,11 +28,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           Skip to content
         </a>
         <Providers>
-          <SiteHeader />
-          <main id="main" className="flex-1">
-            {children}
-          </main>
-          <SiteFooter />
+          {children}
         </Providers>
       </body>
     </html>

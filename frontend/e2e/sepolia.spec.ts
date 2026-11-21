@@ -8,7 +8,19 @@ import path from "node:path";
 const SHOTS = path.resolve("e2e/screenshots") + "/";
 mkdirSync(SHOTS, { recursive: true });
 
-const PAGES = ["/", "/explorer", "/agreements/1", "/agreements/2", "/contract"];
+const APP_PAGES = ["/app", "/app/agreements", "/app/create", "/app/work", "/app/verifications", "/app/payments", "/app/activity", "/app/agreements/1"];
+const PAGES = ["/", "/explorer", "/agreements/1", "/agreements/2", "/contract", ...APP_PAGES];
+
+/** Application pages read the chain in the browser: wait until their loading states are gone. */
+async function visit(page: import("@playwright/test").Page, path: string) {
+  await page.goto(path);
+  if (path.startsWith("/app")) {
+    // the data arrives from Sepolia after hydration: wait until no loading placeholder is left, then let layout settle
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(page.locator('[role="status"][aria-label="Loading from Sepolia"]')).toHaveCount(0, { timeout: 30_000 });
+    await page.waitForTimeout(300);
+  }
+}
 const WIDTHS = [360, 390, 768, 1024, 1440];
 
 test("agreement 1: paid in full, exact wei, history in chain order", async ({ page }) => {
@@ -87,18 +99,21 @@ for (const scheme of ["light", "dark"] as const) {
   test.describe(`${scheme} theme`, () => {
     test.use({ colorScheme: scheme, reducedMotion: "reduce" });
     test(`accessibility (axe, WCAG 2.2 AA) on every page`, async ({ page }) => {
+      test.setTimeout(480_000);
       for (const path of PAGES) {
-        await page.goto(path);
+        await visit(page, path);
         const result = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
         const serious = result.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
         expect(serious.map((v) => `${path}: ${v.id} (${v.nodes.length}) ${v.help}`)).toEqual([]);
       }
     });
     test(`no horizontal overflow, and screenshots at ${WIDTHS.join("/")}`, async ({ page }) => {
+      test.setTimeout(600_000);
       for (const width of WIDTHS) {
         await page.setViewportSize({ width, height: 900 });
-        for (const path of PAGES) {
-          await page.goto(path);
+        // application pages read the chain in the browser (slower): three representative widths
+        for (const path of PAGES.filter((p) => !p.startsWith("/app") || [360, 768, 1440].includes(width))) {
+          await visit(page, path);
           const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
           expect(overflow, `${path} at ${width}px`).toBeLessThanOrEqual(0);
           if ([390, 1440].includes(width)) {
@@ -216,6 +231,8 @@ test.describe("reduced motion", () => {
     // switching tabs jumps straight to the final state too
     await panel.getByRole("button", { name: "Refunded" }).click();
     await expect(panel.getByText("0.001 ETH refunded to the client.")).toBeVisible();
+    // a 0.01 ms transition (reduced motion) is gone after the next frame; wait two so a loaded machine cannot flake
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
   });
 });
@@ -232,5 +249,90 @@ test.describe("phone layout", () => {
     }
     await expect(page.locator("#how-it-settles [data-story-card]")).toBeHidden();
     await expect(page.locator("#how-it-settles ol > li")).toHaveCount(5);
+  });
+});
+
+// ---- The application (/app): read-only against the real deployment, no wallet ----
+test.describe("application, no wallet", () => {
+  test.use({ reducedMotion: "reduce", viewport: { width: 1440, height: 900 } });
+
+  test("Open App is in the landing header and hero and leads to the dashboard", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("header").getByRole("link", { name: "Open App" })).toHaveAttribute("href", "/app");
+    await page.locator("main").getByRole("link", { name: "Open App" }).first().click();
+    await expect(page).toHaveURL(/\/app$/);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Dashboard");
+  });
+
+  test("the dashboard shows the real totals and agreements without a wallet", async ({ page }) => {
+    await visit(page, "/app");
+    await expect(page.getByText("You are browsing read-only")).toBeVisible();
+    const funds = page.locator('section[aria-labelledby="funds"]');
+    await expect(funds.getByText("All agreements on Sepolia")).toBeVisible();
+    await expect(funds.locator('[title="1000000000000000 wei"]')).toHaveCount(2); // paid 0.001 and refunded 0.001
+    await expect(funds.getByText("Deposited equals paid plus refunded plus held")).toBeVisible();
+    await expect(page.getByText("Connect a wallet to see what is waiting for you")).toBeVisible();
+    const list = page.locator('section[aria-labelledby="mine"]');
+    await expect(list.getByRole("link", { name: /#1/ })).toBeVisible();
+    await expect(list.getByRole("link", { name: /#2/ })).toBeVisible();
+    await expect(page.locator('section[aria-labelledby="recent"]')).toContainText("Agreement #2");
+  });
+
+  test("every section is reachable from the sidebar and asks for a wallet only where it is personal", async ({ page }) => {
+    await visit(page, "/app");
+    const nav = page.getByRole("navigation", { name: "Application", exact: true });
+    const sections: [string, string, RegExp | null][] = [
+      ["My Agreements", "My Agreements", /Connect a wallet to list your agreements/],
+      ["Create Agreement", "Create Agreement", /Connect a wallet to create an agreement/],
+      ["My Work", "My Work", /Connect a wallet to see your work/],
+      ["Verifications", "Verifications", /Connect a wallet to see your verifications/],
+      ["Payments", "Payments", /Connect a wallet to see your payments/],
+      ["Activity", "Activity", null],
+    ];
+    for (const [link, heading, gate] of sections) {
+      await nav.getByRole("link", { name: link }).click();
+      await expect(page.getByRole("heading", { level: 1 })).toHaveText(heading);
+      await expect(nav.getByRole("link", { name: link })).toHaveAttribute("aria-current", "page");
+      if (gate) await expect(page.getByText(gate)).toBeVisible();
+    }
+    // Activity is public: every real event, newest first, filterable
+    await visit(page, "/app/activity");
+    await expect(page.locator("ol > li")).toHaveCount(6);
+    await expect(page.locator("ol > li").first()).toContainText("Agreement #2");
+    await page.getByRole("group", { name: "Kind of event" }).getByRole("button", { name: "Claimed" }).click();
+    await expect(page.locator("ol > li")).toHaveCount(1);
+    await expect(page.locator("ol > li").first()).toContainText("Provider claimed 0.001 ETH");
+  });
+
+  test("the agreement workspace shows parties, accounting, milestones and history from the chain", async ({ page }) => {
+    await visit(page, "/app/agreements/1");
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Agreement #1");
+    await expect(page.getByText("Closed: every milestone is settled")).toBeVisible();
+    await expect(page.getByText("0.001 = 0.001 + 0 + 0")).toBeVisible();
+    await expect(page.getByText("Settled. No further action is possible.")).toBeVisible();
+    await expect(page.locator("#history").locator("..").getByRole("listitem")).toHaveCount(4);
+    await visit(page, "/app/agreements/999");
+    await expect(page.getByText("There is no agreement #999")).toBeVisible();
+  });
+
+  test("the create form checks every rule before anything could be signed", async ({ page }) => {
+    // Without a wallet the form is behind the gate; the rules themselves are unit-tested (tests/create-form.test.ts).
+    await visit(page, "/app/create");
+    await expect(page.getByRole("button", { name: "Connect wallet" }).first()).toBeVisible();
+    await expect(page.getByLabel("Provider")).toHaveCount(0);
+  });
+});
+
+test.describe("application on a phone", () => {
+  test.use({ reducedMotion: "reduce", viewport: { width: 390, height: 844 } });
+  test("every section is one tap away in the compact navigation", async ({ page }) => {
+    await visit(page, "/app");
+    const nav = page.getByRole("navigation", { name: "Application (compact)" });
+    for (const name of ["Dashboard", "My Agreements", "Create Agreement", "My Work", "Verifications", "Payments", "Activity"]) {
+      await expect(nav.getByRole("link", { name })).toHaveCount(1);
+    }
+    await nav.getByRole("link", { name: "Activity" }).scrollIntoViewIfNeeded();
+    await nav.getByRole("link", { name: "Activity" }).click();
+    await expect(page).toHaveURL(/\/app\/activity$/);
   });
 });

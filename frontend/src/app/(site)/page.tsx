@@ -193,15 +193,15 @@ export default async function Home() {
             provider claims what was approved, and the client takes back what expired.
           </p>
           <div className="enter mt-9 flex flex-wrap justify-center gap-3" style={delay(240)}>
-            <ButtonLink href="/explorer">
-              Explore live agreements <ArrowRight aria-hidden size={18} />
+            <ButtonLink href="/app">
+              Open App <ArrowRight aria-hidden size={18} />
             </ButtonLink>
-            <ButtonLink href="#how-it-settles" variant="secondary">
-              How a milestone settles
+            <ButtonLink href="/explorer" variant="secondary">
+              Explore live agreements
             </ButtonLink>
           </div>
           <p className="enter mt-6 text-sm text-ink-3" style={delay(300)}>
-            No wallet needed to explore. Open source, Apache-2.0.
+            No wallet needed to explore. Open source, Apache-2.0. <a href="#how-it-settles" className="draw-link text-ink-2 hover:text-ink">How a milestone settles</a>
           </p>
           <div className="enter mt-14 sm:mt-16" style={delay(360)}>
             <ReplayPanel stories={stories} />

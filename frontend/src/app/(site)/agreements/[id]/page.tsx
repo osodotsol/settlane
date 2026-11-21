@@ -1,24 +1,20 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { toHex } from "viem";
 import { getActivity, getAgreement } from "@/contract/data";
 import type { Activity } from "@/contract/events";
-import type { Milestone } from "@/contract/read";
-import { formatEth, formatRelative, formatUtc, shortHex } from "@/domain/format";
+import { formatUtc } from "@/domain/format";
 import { buildLaneChart } from "@/domain/lane";
 import { buildLedger } from "@/domain/ledger";
 import { displayState, isFinal } from "@/domain/lifecycle";
-import { nextStep } from "@/domain/next-step";
 import { ActivityList } from "@/ui/ActivityList";
 import { Address } from "@/ui/Address";
 import { Avatar } from "@/ui/Avatar";
 import { Banner } from "@/ui/Banner";
 import { Container } from "@/ui/Container";
 import { LedgerStrip } from "@/ui/LedgerStrip";
-import { MilestoneTrack } from "@/ui/MilestoneTrack";
+import { MilestoneDetail } from "@/ui/MilestoneDetail";
 import { SettlementLane } from "@/ui/SettlementLane";
-import { StateChip } from "@/ui/StateChip";
 
 // Rendered per request from a short-lived server cache (src/contract/cache.ts): a new event or agreement
 // shows up within seconds, and an RPC outage serves the last good data with a notice instead of an error.
@@ -35,71 +31,6 @@ function parseId(raw: string): bigint | null {
 export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const { id } = await params;
   return { title: `Agreement #${id}` };
-}
-
-function NextStepText({ m, now }: { m: Milestone; now: bigint }) {
-  const n = nextStep(m, now);
-  switch (n.kind) {
-    case "deliver":
-      return <>The provider can submit evidence until {formatUtc(n.by)} ({formatRelative(n.by, now)}).</>;
-    case "review":
-      return <>The verifier can approve or request a revision until {formatUtc(n.by)} ({formatRelative(n.by, now)}).</>;
-    case "claim":
-      return <>Approved. The provider can claim the amount at any time; an approval never expires.</>;
-    case "refund":
-      return <>Expired since {formatUtc(n.since)}. The client can refund the amount.</>;
-    case "settled":
-      return <>Settled. No further action is possible.</>;
-  }
-}
-
-function Deadline({ label, at, now }: { label: string; at: bigint; now: bigint }) {
-  return (
-    <div>
-      <dt className="text-sm text-ink-3">{label}</dt>
-      <dd className="mt-0.5">
-        <span className="text-data">{formatUtc(at)}</span>
-        <span className="ml-2 text-sm text-ink-3">{formatRelative(at, now)}</span>
-      </dd>
-    </div>
-  );
-}
-
-function MilestoneBlock({ m, now }: { m: Milestone; now: bigint }) {
-  const state = displayState(m.state, now, m.deliverBy, m.decideBy);
-  const hex = (v: bigint) => toHex(v, { size: 32 });
-  return (
-    <li className="reveal grid gap-6 py-8 last:pb-0 md:grid-cols-[14rem_1fr] md:gap-10">
-      <div className="space-y-3">
-        <h3 className="text-heading">Milestone {m.index + 1}</h3>
-        <StateChip state={state} />
-        <p className="text-numeral" title={`${m.amount.toString()} wei`}>
-          {formatEth(m.amount)} <span className="font-sans text-base font-medium text-ink-3">ETH</span>
-        </p>
-      </div>
-      <div>
-        <MilestoneTrack state={state} />
-        <p className="mt-6 measure text-ink-2"><NextStepText m={m} now={now} /></p>
-        <dl className="mt-5 grid gap-x-8 gap-y-5 sm:grid-cols-2">
-          <Deadline label="Delivery deadline" at={m.deliverBy} now={now} />
-          <Deadline label="Review deadline" at={m.decideBy} now={now} />
-          <div>
-            <dt className="text-sm text-ink-3">Specification hash</dt>
-            <dd className="mt-0.5 text-data break-all" title={hex(m.spec)}>{shortHex(hex(m.spec), 10, 8)}</dd>
-          </div>
-          <div>
-            <dt className="text-sm text-ink-3">Current evidence</dt>
-            <dd className="mt-0.5">
-              {m.evidence === 0n ? <span className="text-ink-3">None</span> : <span className="text-data" title={hex(m.evidence)}>{shortHex(hex(m.evidence), 10, 8)}</span>}
-              <span className="ml-2 text-sm text-ink-3">
-                revision {m.revision.toString()} · {m.rejections.toString()} revision request{m.rejections === 1n ? "" : "s"}
-              </span>
-            </dd>
-          </div>
-        </dl>
-      </div>
-    </li>
-  );
 }
 
 export default async function AgreementPage({ params }: Params) {
@@ -198,7 +129,7 @@ export default async function AgreementPage({ params }: Params) {
         <h2 id="milestones" className="text-title">Milestones</h2>
         <ol className="mt-2 divide-y divide-line">
           {agreement.milestones.map((m) => (
-            <MilestoneBlock key={m.index} m={m} now={now} />
+            <MilestoneDetail key={m.index} m={m} now={now} />
           ))}
         </ol>
       </section>

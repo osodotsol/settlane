@@ -1,3 +1,4 @@
+import { ButtonLink } from "./Button";
 import { Container } from "./Container";
 import { HeaderShell } from "./HeaderShell";
 import { NavLinks } from "./NavLinks";
@@ -17,7 +18,8 @@ export function SiteHeader() {
             <span aria-hidden className="size-1.5 rounded-full bg-paid" />
             Sepolia · test ETH
           </span>
-          <WalletControl />
+          <span className="hidden sm:block"><WalletControl /></span>
+          <ButtonLink href="/app" size="sm">Open App</ButtonLink>
         </div>
       </Container>
       <nav aria-label="Main (compact)" className="border-t border-line lg:hidden">

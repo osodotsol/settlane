@@ -34,8 +34,8 @@ function describe(a: Activity): string {
   }
 }
 
-export function ActivityList({ items }: { items: readonly Activity[] }) {
-  if (items.length === 0) return <p className="text-ink-2">No events recorded for this agreement yet.</p>;
+export function ActivityList({ items, showAgreement = false, empty = "No events recorded for this agreement yet." }: { items: readonly Activity[]; showAgreement?: boolean; empty?: string }) {
+  if (items.length === 0) return <p className="text-ink-2">{empty}</p>;
   return (
     <ol className="reveal-stagger relative">
       {items.map((a, i) => {
@@ -51,7 +51,7 @@ export function ActivityList({ items }: { items: readonly Activity[] }) {
             </span>
             <div className="min-w-0 pt-0.5">
               <p className="text-data text-[0.8125rem] text-ink-3">{formatUtc(a.timestamp)}</p>
-              <p className="mt-0.5">{describe(a)}</p>
+              <p className="mt-0.5">{showAgreement && <span className="font-semibold">Agreement #{a.id.toString()} · </span>}{describe(a)}</p>
             </div>
             <a
               href={txUrl(a.txHash)}
