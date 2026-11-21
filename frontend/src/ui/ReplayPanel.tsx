@@ -1,17 +1,18 @@
 "use client";
 
-import { ArrowRight, Check, RotateCcw } from "lucide-react";
+import { ArrowRight, Check, Pause, Play } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ReplayStory, StepTone } from "@/domain/replay";
 
-// The landing hero: real agreements from Sepolia, replayed step by step. It renders complete on the server
-// (every step done, so it is correct without JavaScript), then, the first time it scrolls into view, plays
-// the steps in order (about 1.1 s each, under 5 s in total, so no pause control is required). The tabs
-// switch between the paid and the refunded agreement; Replay plays it again. Under reduced motion the
-// final state is shown and nothing advances on its own.
+// The landing hero: the real agreements from Sepolia, played step by step, continuously: the paid one,
+// then the refunded one, then again. It renders complete on the server (correct without JavaScript).
+// Because it moves on its own for more than five seconds, it has a Pause button (WCAG 2.2.2); it also stops
+// while off screen. A tab jumps to that agreement and keeps playing. Under reduced motion it shows the final
+// state and only plays when the visitor presses Play.
 
-const STEP_MS = 1100;
+const STEP_MS = 1300; // time on each step
+const HOLD_MS = 2600; // time on the outcome before the next agreement
 const DOT: Record<StepTone, string> = {
   created: "bg-ink",
   submitted: "bg-submitted",
@@ -23,58 +24,99 @@ const DOT: Record<StepTone, string> = {
 };
 const OUTCOME_LABEL = { paid: "Paid", refunded: "Refunded", open: "Open" } as const;
 
-const prefersReducedMotion = () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const reducedQuery = "(prefers-reduced-motion: reduce)";
+const subscribeReduced = (notify: () => void) => {
+  const mq = window.matchMedia(reducedQuery);
+  mq.addEventListener("change", notify);
+  return () => mq.removeEventListener("change", notify);
+};
+const useReducedMotion = () =>
+  useSyncExternalStore(
+    subscribeReduced,
+    () => window.matchMedia(reducedQuery).matches,
+    () => false,
+  );
 
 export function ReplayPanel({ stories }: { stories: ReplayStory[] }) {
   const [storyIdx, setStoryIdx] = useState(0);
   const story = stories[storyIdx] ?? stories[0]!;
   const last = story.steps.length - 1;
-  const [step, setStep] = useState(last);
-  const [run, setRun] = useState(0); // 0 = not playing (final state); each start bumps it
+  const [step, setStep] = useState(last); // the server renders the finished story
+  const [started, setStarted] = useState(false);
+  const [visible, setVisible] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [userPlay, setUserPlay] = useState(false);
+  const reduced = useReducedMotion();
   const ref = useRef<HTMLDivElement>(null);
 
-  const play = (idx: number) => {
-    setStoryIdx(idx);
-    if (prefersReducedMotion()) {
-      setStep((stories[idx] ?? stories[0]!).steps.length - 1);
-      return;
-    }
-    setStep(0);
-    setRun((r) => r + 1);
-  };
+  const auto = !reduced || userPlay;
+  const playing = started && visible && !paused && auto;
 
-  // Start once, when the panel first becomes visible.
+  // Start on first sight; afterwards only track whether it is on screen.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     const io = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          io.disconnect();
-          if (!prefersReducedMotion()) {
-            setStep(0);
-            setRun((r) => r + 1);
-          }
+      ([e]) => {
+        if (!e) return;
+        setVisible(e.isIntersecting);
+        if (e.isIntersecting) {
+          setStarted((was) => {
+            if (!was && !window.matchMedia(reducedQuery).matches) setStep(0);
+            return true;
+          });
         }
       },
-      { threshold: 0.35 },
+      { threshold: 0.3 },
     );
     io.observe(el);
     return () => io.disconnect();
   }, []);
 
-  // Advance one step at a time while a run is in progress.
+  // One tick: the next step, or after the outcome the next agreement (looping).
   useEffect(() => {
-    if (run === 0 || step >= last) return;
-    const t = setTimeout(() => setStep((s) => Math.min(s + 1, last)), STEP_MS);
+    if (!playing) return;
+    const t = setTimeout(
+      () => {
+        if (step < last) setStep(step + 1);
+        else {
+          setStoryIdx((i) => (i + 1) % stories.length);
+          setStep(0);
+        }
+      },
+      step < last ? STEP_MS : HOLD_MS,
+    );
     return () => clearTimeout(t);
-  }, [run, step, last]);
+  }, [playing, step, last, stories.length]);
+
+  const choose = (i: number) => {
+    setStoryIdx(i);
+    setStep(auto ? 0 : (stories[i] ?? stories[0]!).steps.length - 1);
+  };
+
+  const toggle = () => {
+    if (playing) {
+      setPaused(true);
+      return;
+    }
+    if (!auto) {
+      setUserPlay(true);
+      setStep(0);
+    }
+    setStarted(true);
+    setVisible(true);
+    setPaused(false);
+  };
 
   const n = story.steps.length;
   const pad = (i: number) => String(i).padStart(2, "0");
 
   return (
-    <div ref={ref} data-replay className="card p-5 text-left sm:p-7">
+    <div
+      ref={ref}
+      data-replay
+      className="card p-5 text-left transition-[border-color] duration-[var(--dur-hover)] hover:border-line-control sm:p-7"
+    >
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-3">
           <span className="pill">
@@ -99,7 +141,7 @@ export function ReplayPanel({ stories }: { stories: ReplayStory[] }) {
                   key={s.id}
                   type="button"
                   aria-pressed={i === storyIdx}
-                  onClick={() => play(i)}
+                  onClick={() => choose(i)}
                   className={`press relative z-10 min-w-24 rounded-full px-4 py-1.5 text-sm font-semibold ${i === storyIdx ? "text-ink" : "text-ink-3 hover:text-ink"}`}
                 >
                   {OUTCOME_LABEL[s.outcome]}
@@ -109,11 +151,12 @@ export function ReplayPanel({ stories }: { stories: ReplayStory[] }) {
           )}
           <button
             type="button"
-            onClick={() => play(storyIdx)}
-            className="press inline-flex h-10 items-center gap-2 rounded-full border border-line px-4 text-sm font-semibold hover:border-line-control"
+            onClick={toggle}
+            data-replay-toggle
+            className="press inline-flex h-10 min-w-24 items-center justify-center gap-2 rounded-full border border-line px-4 text-sm font-semibold hover:border-line-control"
           >
-            <RotateCcw aria-hidden size={15} />
-            Replay
+            {playing ? <Pause aria-hidden size={15} /> : <Play aria-hidden size={15} />}
+            {playing ? "Pause" : "Play"}
           </button>
         </div>
       </div>
@@ -123,7 +166,7 @@ export function ReplayPanel({ stories }: { stories: ReplayStory[] }) {
           const status = i < step ? "done" : i === step ? "current" : "next";
           return (
             <li
-              key={`${story.id}-${i}-${status === "current" ? run : "s"}`}
+              key={`${story.id}-${i}-${status === "current" ? "c" : "s"}`}
               className={`relative flex flex-col rounded-2xl border p-4 transition-[border-color,background-color] duration-[var(--dur-panel)] ${
                 status === "current"
                   ? "step-in border-cobalt/60 bg-surface shadow-lift"

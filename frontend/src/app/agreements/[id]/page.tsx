@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { CircleCheck, CircleDot } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { toHex } from "viem";
@@ -155,11 +154,9 @@ export default async function AgreementPage({ params }: Params) {
       <div className="enter mt-5 flex flex-wrap items-end justify-between gap-x-8 gap-y-4" style={{ "--d": 80 } as React.CSSProperties}>
         <h1 className="text-display-xl">Agreement #{agreement.id.toString()}</h1>
         <span
-          className={`inline-flex items-center gap-2 rounded-full border px-4 py-1.5 text-sm font-medium ${
-            open ? "border-cobalt/50 bg-surface text-cobalt" : "border-paid/50 bg-paid-tint text-paid"
-          }`}
+          className="inline-flex items-center gap-2 rounded-full border border-line bg-surface px-4 py-1.5 text-sm font-semibold text-ink"
         >
-          {open ? <CircleDot aria-hidden size={16} /> : <CircleCheck aria-hidden size={16} />}
+          <span aria-hidden className={`size-2 rounded-full ${open ? "bg-cobalt" : "bg-paid"}`} />
           {open ? "Open" : "Closed: every milestone is settled"}
         </span>
       </div>

@@ -74,9 +74,39 @@ const OUTCOMES = [
 ];
 
 const ROLES = [
-  { name: "Client", line: "Funds the work and takes back what expires.", can: "Create and fund · Refund an expired milestone · Choose where a refund goes" },
-  { name: "Provider", line: "Delivers the work and claims what is approved.", can: "Submit and resubmit evidence · Claim an approved milestone · Choose where a payout goes" },
-  { name: "Verifier", line: "Decides whether the work is accepted. Trusted.", can: "Approve or ask for a revision · Cannot move funds or change the parties" },
+  {
+    name: "Client",
+    accent: "var(--state-funded)",
+    line: "Funds the work and takes back what expires.",
+    can: ["Creates and funds the agreement", "Refunds a milestone whose deadline passed"],
+  },
+  {
+    name: "Provider",
+    accent: "var(--state-paid)",
+    line: "Delivers the work and claims what is approved.",
+    can: ["Submits evidence of the work", "Claims an approved milestone"],
+  },
+  {
+    name: "Verifier",
+    accent: "var(--state-approved)",
+    line: "Decides whether the work is accepted. Trusted.",
+    can: ["Approves or asks for a revision", "Never touches the money"],
+  },
+];
+
+const PROBLEMS = [
+  {
+    who: "For the client",
+    accent: "var(--state-funded)",
+    pain: "Money sent before delivery is hard to get back when the work never arrives.",
+    fix: "The money waits in the contract and comes back if the deadline passes.",
+  },
+  {
+    who: "For the provider",
+    accent: "var(--state-paid)",
+    pain: "Work delivered before payment is hard to collect when the client goes quiet.",
+    fix: "The money is locked before work starts. Approved work is yours to claim.",
+  },
 ];
 
 const LIMITS: [string, string][] = [
@@ -184,14 +214,20 @@ export default async function Home() {
         <Container className="py-20 md:py-28">
           <SectionHead id="problem" label="The problem" title="Today, one side always goes first." lead="Settlane holds the money in between and releases each milestone on its own, by deadlines and rules both sides can read before they start." />
           <div className="reveal-stagger mt-12 grid gap-4 md:grid-cols-2">
-            <div style={idx(0)} className="card p-7">
-              <h3 className="text-title">For the client</h3>
-              <p className="mt-3 text-ink-2">Money sent before delivery is hard to get back when the work never arrives.</p>
-            </div>
-            <div style={idx(1)} className="card p-7">
-              <h3 className="text-title">For the provider</h3>
-              <p className="mt-3 text-ink-2">Work delivered before payment is hard to collect when the client goes quiet.</p>
-            </div>
+            {PROBLEMS.map((p, i) => (
+              <div key={p.who} style={{ ...idx(i), "--accent": p.accent } as React.CSSProperties} className="card card-hover relative flex flex-col overflow-hidden p-7">
+                <span aria-hidden className="accent-bar" />
+                <h3 className="text-title">{p.who}</h3>
+                <p className="mb-6 mt-3 text-ink-2">{p.pain}</p>
+                <p className="mt-auto flex items-start gap-3 border-t border-line pt-5 text-sm">
+                  <span aria-hidden className="accent-dot mt-1.5 size-2 shrink-0 rounded-full" style={{ background: p.accent }} />
+                  <span>
+                    <span className="font-semibold">With Settlane: </span>
+                    <span className="text-ink-2">{p.fix}</span>
+                  </span>
+                </p>
+              </div>
+            ))}
           </div>
         </Container>
       </section>
@@ -202,7 +238,8 @@ export default async function Home() {
           <SectionHead id="outcomes" label="Outcomes" title="Paid or refunded. Never both." lead="Every milestone ends exactly one way, and the money follows the state." />
           <div className="reveal-stagger mt-12 grid gap-4 md:grid-cols-3">
             {OUTCOMES.map((o, i) => (
-              <div key={o.state} style={idx(i)} className="card card-hover flex flex-col p-7">
+              <div key={o.state} style={{ ...idx(i), "--accent": `var(--state-${o.state})` } as React.CSSProperties} className="card card-hover relative flex flex-col overflow-hidden p-7">
+                <span aria-hidden className="accent-bar" />
                 <div><StateChip state={o.state} /></div>
                 <h3 className="text-title mt-5">{o.title}</h3>
                 <p className="mb-8 mt-3 text-ink-2">{o.body}</p>
@@ -234,12 +271,23 @@ export default async function Home() {
       <section aria-labelledby="roles" className="border-b border-line">
         <Container className="py-20 md:py-28">
           <SectionHead id="roles" label="Roles" title="Three parties, three jobs" />
-          <div className="card reveal mt-12 divide-y divide-line">
-            {ROLES.map((r) => (
-              <div key={r.name} className="grid gap-3 p-7 md:grid-cols-[12rem_1fr_1.4fr] md:items-baseline md:gap-8">
-                <h3 className="text-title">{r.name}</h3>
-                <p className="text-ink-2">{r.line}</p>
-                <p className="text-sm text-ink-3">{r.can}</p>
+          <div className="reveal-stagger mt-12 grid gap-4 md:grid-cols-3">
+            {ROLES.map((r, i) => (
+              <div key={r.name} style={{ ...idx(i), "--accent": r.accent } as React.CSSProperties} className="card card-hover relative flex flex-col overflow-hidden p-7">
+                <span aria-hidden className="accent-bar" />
+                <h3 className="flex items-center gap-3 text-title">
+                  <span aria-hidden className="accent-dot size-2.5 rounded-full" style={{ background: r.accent }} />
+                  {r.name}
+                </h3>
+                <p className="mb-6 mt-3 text-ink-2">{r.line}</p>
+                <ul className="mt-auto space-y-2 border-t border-line pt-5 text-sm text-ink-2">
+                  {r.can.map((c) => (
+                    <li key={c} className="flex gap-2.5">
+                      <span aria-hidden className="mt-2 h-px w-3 shrink-0 bg-line-control" />
+                      {c}
+                    </li>
+                  ))}
+                </ul>
               </div>
             ))}
           </div>
@@ -262,15 +310,15 @@ export default async function Home() {
                 <ButtonLink href="/contract" variant="secondary">Contract evidence</ButtonLink>
               </div>
             </div>
-            <ol className="space-y-6">
+            <ol className="space-y-2">
               {[
                 ["The bytecode.", "The deployed code hashes to the open-source Fe 26.6.0 build, byte for byte."],
                 ["The transactions.", "Every agreement and every event links to its transaction on Sepolia."],
                 ["The accounting.", "Deposited equals paid plus refunded plus outstanding, checked against each milestone."],
                 ["The tests.", "90 Fe tests, a local-chain suite on the real bytecode, and CI on every push."],
               ].map(([lead, text], i) => (
-                <li key={lead} className="flex gap-4">
-                  <span aria-hidden className="grid size-8 shrink-0 place-items-center rounded-full border border-line text-sm font-semibold text-ink-2">{i + 1}</span>
+                <li key={lead} className="group -mx-3 flex gap-4 rounded-xl px-3 py-2 transition-colors duration-[var(--dur-hover)] hover:bg-sunken/70">
+                  <span aria-hidden className="grid size-8 shrink-0 place-items-center rounded-full border border-line text-sm font-semibold text-ink-2 transition-colors duration-[var(--dur-hover)] group-hover:border-cobalt group-hover:text-cobalt">{i + 1}</span>
                   <p className="pt-0.5"><span className="font-semibold">{lead}</span> <span className="text-ink-2">{text}</span></p>
                 </li>
               ))}
@@ -329,7 +377,8 @@ export default async function Home() {
           <SectionHead id="limits" label="Limitations" title="What Settlane does not do" />
           <ul className="reveal-stagger mt-12 grid gap-4 md:grid-cols-2">
             {LIMITS.map(([t, d], i) => (
-              <li key={t} style={idx(i)} className="card p-7">
+              <li key={t} style={idx(i)} className="card card-hover relative overflow-hidden p-7">
+                <span aria-hidden className="accent-bar" />
                 <p className="text-heading">{t}</p>
                 <p className="mt-2 text-ink-2">{d}</p>
               </li>

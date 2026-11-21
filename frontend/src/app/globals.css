@@ -268,18 +268,40 @@
     .lift:active {
       transform: translateY(0) scale(0.98);
     }
-    /* Cards that lead somewhere: a quiet border and lift on hover. */
+    /* Cards react to the pointer: a quiet border and a 2px lift. It uses `translate`, not `transform`, so it
+       composes with the scroll reveals (whose fill would otherwise override a hover transform). */
     .card-hover {
       transition:
         border-color var(--dur-hover) var(--ease-out),
-        transform var(--dur-panel) var(--ease-out),
+        translate var(--dur-panel) var(--ease-out),
         box-shadow var(--dur-panel) var(--ease-out);
     }
-    .card-hover:hover {
+    .card-hover:hover,
+    .card-hover:focus-within {
       border-color: var(--line-control);
-      transform: translateY(-2px);
+      translate: 0 -2px;
       box-shadow: var(--shadow-lift);
     }
+    .card-hover:hover .accent-bar,
+    .card-hover:focus-within .accent-bar {
+      scale: 1 1;
+    }
+    .card-hover:hover .accent-dot {
+      scale: 1.35;
+    }
+  }
+  /* A card's colour line along its top edge: a short stub at rest that runs the full width on hover. */
+  .accent-bar {
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 3px;
+    background: var(--accent, var(--line-control));
+    transform-origin: left center;
+    scale: 0.12 1;
+    transition: scale var(--dur-reveal) var(--ease-out);
+  }
+  .accent-dot {
+    transition: scale var(--dur-panel) var(--ease-out);
   }
 
   /* Hidden unless scroll-driven animations are available (see the motion section below). */

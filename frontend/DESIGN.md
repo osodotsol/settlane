@@ -218,3 +218,15 @@ The owner reviewed the premium pass in Chrome, liked it, and asked for a plainer
 - **Replay panel (landing hero).** Both real agreements, replayed as step cards: done (check), current (cobalt outline, a small step-in motion), next (dashed). Tabs switch Paid and Refunded through a sliding indicator; Replay restarts. A refund is preceded by the deadline that allowed it, from the stored `deliver_by` or `decide_by`. It renders complete on the server, plays once when it scrolls into view (under 5 s, so no pause control is required), and under reduced motion shows the final state with nothing advancing on its own.
 - **Outcomes.** Three cards (Paid, Refunded, In progress), each stating where the money is.
 - **Inner pages.** Agreement and contract sections are cards; the explorer list sits in a card, and its filter uses the same sliding pill as the replay tabs.
+
+---
+
+## 13. Revision: first-glance clarity (2026-11-21, refines §12)
+
+The owner's goal for this pass: a judge should understand the page at first glance. Anything complex is made simple and direct.
+
+- **States are colour dots, not icons.** Every state chip is a neutral pill with a coloured dot and the state's name (the label always says it in words, so colour is never the only signal). The same applies to the event timeline (a dot in a small ring per event kind) and to the agreement's Open / Closed badge. Check marks stay only where they mean "this step is done" in a progress track.
+- **Simple sections react to the pointer.** Problem, outcome, role and limitation cards share `.card-hover`: a stronger border, a 2 px lift and a coloured line that runs along the top edge (a short stub at rest; the colour is the party's or the state's: client grey, provider green, verifier teal). The lift uses the `translate` property, so it composes with the scroll reveals. Proof list rows highlight and their number turns cobalt. Keyboard focus inside a card has the same effect.
+- **Roles** are three cards (Client, Provider, Verifier), each with one line and two concrete actions, instead of a dense three-column table.
+- **The problem cards** each end with a "With Settlane:" line, so the problem and the answer are read together.
+- **The replay never stops.** The hero plays agreement #1 to its outcome, holds about 2.6 s, then plays agreement #2, and loops. It has a Pause / Play button (WCAG 2.2.2, because it moves for more than 5 s) and stops while it is off screen. A tab jumps to that agreement from its first step and keeps playing. Under reduced motion it shows the final state and only plays when the visitor presses Play.

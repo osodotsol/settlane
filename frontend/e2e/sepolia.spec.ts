@@ -134,26 +134,34 @@ test.describe("with motion enabled", () => {
     }
   });
 
-  test("the hero replays the real agreement step by step, and the tabs switch to the refunded one", async ({ page }) => {
+  test("the hero plays both real agreements in a continuous loop, and Pause stops it", async ({ page }) => {
     await page.goto("/");
     const panel = page.locator("[data-replay]");
     await panel.scrollIntoViewIfNeeded();
     await expect(panel.getByText("Replayed from Sepolia")).toBeVisible();
     await expect(panel.getByText("Agreement #1", { exact: true })).toBeVisible();
-    // mid-play: a current step exists, and not every step is done yet
-    await page.waitForTimeout(1300);
     await expect(panel.locator('li[aria-current="step"]')).toHaveCount(1);
-    // after the run: the last step is current and the outcome is stated
-    await expect(panel.getByText("0.001 ETH paid to the provider.")).toBeVisible({ timeout: 8000 });
-    await expect(panel.locator("li").last()).toHaveAttribute("aria-current", "step");
     await expect(panel.locator("li")).toHaveCount(4);
-    // the refunded agreement: a deadline step from the stored deliver_by, then the refund
-    await panel.getByRole("button", { name: "Refunded" }).click();
-    await expect(panel.getByRole("button", { name: "Refunded" })).toHaveAttribute("aria-pressed", "true");
+    // agreement #1 runs to its outcome, then the loop moves on to agreement #2 by itself
+    await expect(panel.getByText("0.001 ETH paid to the provider.")).toBeVisible({ timeout: 8000 });
+    await expect(panel.getByRole("button", { name: "Refunded" })).toHaveAttribute("aria-pressed", "true", { timeout: 6000 });
     await expect(panel.getByText("Agreement #2", { exact: true })).toBeVisible();
     await expect(panel.getByText("Deadline passed")).toBeVisible();
     await expect(panel.getByText("0.001 ETH refunded to the client.")).toBeVisible({ timeout: 8000 });
     await expect(panel.getByRole("link", { name: /Open agreement #2/ })).toHaveAttribute("href", "/agreements/2");
+    // ... and back to agreement #1: it never stops on its own
+    await expect(panel.getByRole("button", { name: "Paid" })).toHaveAttribute("aria-pressed", "true", { timeout: 6000 });
+    // a tab jumps to that agreement from its first step and keeps playing
+    await panel.getByRole("button", { name: "Refunded" }).click();
+    await expect(panel.getByLabel("Step 1 of 3")).toBeVisible();
+    await expect(panel.getByLabel("Step 2 of 3")).toBeVisible({ timeout: 3000 });
+    // Pause holds the current step (WCAG 2.2.2); Play resumes
+    await panel.getByRole("button", { name: "Pause" }).click();
+    const held = await panel.locator('[aria-label^="Step "]').getAttribute("aria-label");
+    await page.waitForTimeout(3200);
+    await expect(panel.locator('[aria-label^="Step "]')).toHaveAttribute("aria-label", held!);
+    await panel.getByRole("button", { name: "Play" }).click();
+    await expect(panel.locator('[aria-label^="Step "]')).not.toHaveAttribute("aria-label", held!, { timeout: 4000 });
   });
 
   test("scrolling the story changes the milestone card", async ({ page }) => {
@@ -201,6 +209,10 @@ test.describe("reduced motion", () => {
     for (const t of ["Agreement created", "Evidence submitted", "Approved", "Claimed"]) await expect(panel.getByText(t, { exact: true })).toBeVisible();
     await expect(panel.getByText("0.001 ETH paid to the provider.")).toBeVisible();
     await expect(panel.locator("li").last()).toHaveAttribute("aria-current", "step");
+    // nothing advances on its own: the button offers Play, not Pause
+    await expect(panel.getByRole("button", { name: "Play" })).toBeVisible();
+    await page.waitForTimeout(1600);
+    await expect(panel.getByLabel("Step 4 of 4")).toBeVisible();
     // switching tabs jumps straight to the final state too
     await panel.getByRole("button", { name: "Refunded" }).click();
     await expect(panel.getByText("0.001 ETH refunded to the client.")).toBeVisible();
