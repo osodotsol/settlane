@@ -132,7 +132,7 @@ The verifier only reads from the node. It checks the bytecode against a fresh bu
 
 ## Declaration
 
-- **Pre-existing work:** the project started from the Fe Builders Challenge starter repository (`fe-lang/builders-challenge-starter`), whose example contract was replaced. Everything under `ingots/`, `scripts/`, `experiments/` and `docs/` was written during the contest. *(Owner to confirm, and to link the starting commit.)*
+- **Pre-existing work:** the project started from the Fe Builders Challenge starter repository at commit [`f9d9aa9`](https://github.com/fe-lang/builders-challenge-starter/commit/f9d9aa92a03af82c2bbb0dc2e0810244eb13e686) (2026-10-27), whose example contract was replaced. Every later commit (2026-11-18 onwards, inside the build window) is the project's own work: everything under `ingots/`, `scripts/`, `experiments/` and `docs/`, the CI workflow and this README.
 - **Third-party code:** none in the contract. Development and test tools: Fe, Foundry (Anvil and cast, local and CI only) and Python 3 with PyYAML for the negative controls.
 - **AI assistance:** written with AI coding assistants (Claude Code), with the human owner approving every specification decision and every testnet transaction (`docs/DECISIONS.md`). *(Owner to confirm the wording.)*
 

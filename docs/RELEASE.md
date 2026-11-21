@@ -1,54 +1,55 @@
-# GitHub release: audit, manual steps and what is still unverified
+# GitHub release: readiness, manual steps and what is still unverified
 
-Status at commit time: **the public repository has not been created and nothing has been pushed.** This environment has no GitHub authentication (the GitHub CLI `gh` is not installed, and there is no token, credential helper or SSH key), so creating a repository or pushing is not possible from here. Everything that can be prepared and checked offline was. The steps below are exact and take a few minutes.
+Status (2026-11-21, after D-029): **the public repository has not been created and nothing has been pushed.** This environment has no GitHub authentication: the GitHub CLI `gh` is not installed, git has no credential helper, and SSH to GitHub is refused (`Permission denied (publickey)`). So the owner publishes, with the commands below. The production contract is frozen (D-029 approved).
 
-## Audit of the tree and the history (done, 2026-11-20)
+## Readiness audit (2026-11-21)
 | Check | Result |
 | --- | --- |
-| Secrets, keys, tokens | `git grep` over the file contents of HEAD and **every commit** for GitHub, AWS, Slack and OpenAI token shapes, PEM private keys, and the owner's personal email address and its mail domain: **none in any file** (commit metadata holds only the no-reply address and the starter author's). The only 64-hex strings are `0xff..ff` constants and Keccak test vectors. No `.env`, key, log or `settings.local.json` file is tracked. |
-| Generated files | None tracked (`out/` and `__pycache__/` are in `.gitignore`; no `.bin`, `.pyc` or binary blob in history; the largest blob is a 136 KB test file). |
-| Registration or submission identifiers | None of ours. `README.md` still contains the **organizers'** public registration form link from the starter (see "Remaining blockers"). |
-| License | `LICENSE` is the unmodified Apache License 2.0 text from the starter (OSI approved, as the challenge requires). No source file carries a license header and there is no `NOTICE`; none is required by Apache-2.0 for this repository. |
-| Authors in history | 17 commits by `osodotsol <283860466+osodotsol@users.noreply.github.com>` (a no-reply address) and 3 starter commits by the organizers' author, whose own email is already public in the starter repository. History is preserved as it is: pushing `settlane/dev` publishes all 20. |
-| Third-party code | None vendored. Foundry is downloaded by the installer at CI time and is not in the repository. |
-| `origin` | Still `https://github.com/fe-lang/builders-challenge-starter` (the organizers' repository), fetch and push. **Never push to it.** |
-| Name | `https://api.github.com/repos/osodotsol/settlane` returned 404, so the name was free when checked. The account `osodotsol` exists (user, 6 public repositories). |
-| Workflow pre-flight | The URLs the workflow depends on answer 200: the Fe installer script, the Fe `v26.6.0` release, the pinned Foundry v1.10.0 tarball, `actions/checkout` v5. The workflow parses as YAML, `test` is byte-identical to the one validated locally, and `release-gate` needs `test` and `anvil`. A dedicated workflow linter (`actionlint`) was **not** run: downloading it was refused by this environment's permission classifier. |
+| Working tree | Clean on `settlane/dev`; the release commit is the one that adds this file (see `git log -1`). |
+| Secrets, keys, tokens | `git grep` over HEAD and **every commit** for GitHub, AWS, Slack and OpenAI token shapes, PEM private keys, keystore JSON (`"crypto"`, `ciphertext`) and the owner's personal email address: **none**. The 64-hex strings in HEAD are the seven public Sepolia transaction hashes, the Sepolia genesis hash, an event-topic hash and test vectors. No `.env`, key, keystore, log or `settings.local.json` file is tracked (`experiments/sepolia/make_wallets.sh` is a generator script and contains no key). |
+| Registration or submission identifiers | None in HEAD. Older commits of `README.md` contain the **organizers'** public registration and submission form links from the starter (they are already public in the starter repository); none of ours appears anywhere. |
+| Generated files | None tracked (`out/`, `__pycache__/` ignored). Largest blob: a 155 KB test file. |
+| License | `LICENSE` is the unmodified Apache License 2.0 (OSI approved). No `NOTICE` is required. |
+| Authors in history | 34 project commits by `osodotsol <283860466+osodotsol@users.noreply.github.com>` (no-reply address), dated 2026-11-18 to 2026-11-21, on top of 3 starter commits by the organizers' author (base `f9d9aa9`). Pushing `settlane/dev` publishes all of them. |
+| README | Settlane documentation (D-029): pitch, transition table, Fe highlight, architecture, build and test, Sepolia transaction table (each hash verified on-chain), limitations, declaration. Two owner placeholders remain: **Team** and confirmation of the **AI assistance** wording. |
+| `origin` | `https://github.com/fe-lang/builders-challenge-starter` (the organizers' repository). **Never push to it.** |
+| Target name | `https://api.github.com/repos/osodotsol/settlane` returned **404** on 2026-11-21 (free, or private). The account `osodotsol` exists (8 public repositories). |
+| Workflow pre-flight | Parses as YAML; jobs `test`, `anvil`, `release-gate` (`needs: [test, anvil]`). The URLs it depends on resolve: the Fe v26.6.0 release asset (302 to GitHub's asset host), the Foundry v1.10.0 tarball (302), `actions/checkout` v5. Both installs check a SHA-256 pinned in the repository and install nothing on a mismatch. `actionlint` was not run. |
+| Local gate on this tree | fmt, check, 90/90 tests, events, build, lint and self-tests, review reproductions, artifact pin, Anvil 52/52 + 8/8, CI negative controls 142/142 (`docs/PROGRESS.md`). |
 
-## Manual steps
-Run these yourself; none needs the assistant to see a credential.
-
-1. **Create the empty public repository** (owner `osodotsol`, name `settlane`). Either in the browser (github.com/new: Public, and do **not** add a README, license or .gitignore), or with the GitHub CLI after `gh auth login`:
+## Publish (run these yourself; no credential is ever shown to the assistant)
+1. **Create the empty public repository** `osodotsol/settlane`: in the browser at https://github.com/new (owner `osodotsol`, name `settlane`, **Public**, and **no** README, license or .gitignore), or after `gh auth login`:
    ```sh
    gh repo create osodotsol/settlane --public --description "Settlane: milestone settlement of digital-service agreements in Fe (Fe Builders Challenge 2026)"
    ```
-   (no `--source` and no `--push`: the push below is the only push.)
-2. **Push the branch to that repository only**, from this checkout:
+2. **Push `settlane/dev` to that repository only** (from this checkout; no `--force`):
    ```sh
    cd /home/user/hackathons/feguard
+   git status --short                              # must print nothing
    git remote -v                                   # origin must still be the starter
-   git remote set-url --push origin DISABLED       # optional guard: a push to origin now fails
+   git remote set-url --push origin DISABLED       # guard: any push to origin now fails
    git remote add public https://github.com/osodotsol/settlane.git
-   git push -u public settlane/dev                 # no --force
+   git push -u public settlane/dev
    ```
-   Authenticate with your own credential: `gh auth setup-git`, or a fine-grained personal access token limited to this one repository with "Contents: write", or an SSH key. Do not paste it into a chat or a file.
-3. **Default branch.** The first push makes `settlane/dev` the default branch. Check Settings > Branches. (The workflow runs on `push` to any branch and on pull requests.)
-4. **Watch the run** (Actions tab, or `gh run watch` and `gh run view --log-failed`). Three jobs should appear: `test`, `anvil (production bytecode)` and `release-gate (test and anvil)`. Send me the run URL or the failing log and I fix confirmed workflow problems without touching contract behavior.
-5. **Require the gate** (the part a workflow file cannot do). Settings > Branches > Add branch protection rule (or a ruleset) for `settlane/dev`: tick "Require status checks to pass before merging" and add **`release-gate (test and anvil)`**; tick "Do not allow force pushes" and "Do not allow deletions". The check name only appears in the search box **after it has run once**, so do this after step 4. Do not tick "Require a pull request" unless you want to stop pushing directly. Selecting `release-gate` is enough: it fails unless both `test` and `anvil` succeeded, and a skipped or cancelled job counts as a failure.
+   Authenticate with your own credential (`gh auth setup-git`, a fine-grained token limited to this repository with "Contents: write", or an SSH key with `git@github.com:osodotsol/settlane.git` as the remote URL). Never paste it into a chat or a file.
+3. **Default branch.** The first push makes `settlane/dev` the default branch, so the README shows on the repository page. Confirm in Settings > General.
+4. **Watch the first run** in the Actions tab (or `gh run watch`). Three jobs must appear: `test`, `anvil (production bytecode)` and `release-gate (test and anvil)`. Then send the assistant the run URL (a public repository's runs can be read without a token), or the log of a failing job.
+5. **Require the gate** after it has run once: Settings > Branches (or Rules > Rulesets) for `settlane/dev`: "Require status checks to pass" with **`release-gate (test and anvil)`**, plus "Do not allow force pushes" and "Do not allow deletions".
 
-## What is verified and what is not
+## Verified and unverified
 | Item | State |
 | --- | --- |
-| Full Fe CI steps (`test` job) | **Verified locally** (all 14 runnable steps, 84 tests). Not run on GitHub. |
-| `anvil` job | **Emulated locally** from a clean home directory: 52 of 52 checks and 8 of 8 mutations. The Foundry download was replaced by a stand-in for the network only (the live download timed out here at the installer's 600 s cap). **Not run on GitHub**, so the live download there, Anvil on the runner image and the 30-minute timeout are unverified. |
-| `release-gate` | Script tested locally for all 16 combinations of results. The GitHub expression syntax (`needs`, `if: always()`, `needs.<job>.result`) is **unverified until a hosted run**. |
-| Branch protection | **Not set** (a repository setting). |
-| Foundry release attestation | Not verified (the SHA-256 pinned in the repository proves the bytes, not who built them). |
+| `test` job | Every runnable step verified locally on this tree. The pinned Fe install step was emulated from the workflow file (correct hash installs `fe 26.6.0 (5b3f96a)`, a corrupted hash installs nothing), with the asset served from a local mirror because the 56 MB download did not finish here in 15 minutes. **Not run on GitHub.** |
+| `anvil` job | Suite 52/52 and mutations 8/8 locally; Foundry download emulated (it timed out here). **Not run on GitHub**: the live downloads, Anvil on the runner image and the 30-minute timeout are unverified. |
+| `release-gate` | Script tested locally for all 16 result combinations; the `needs` / `if: always()` expression semantics are **unverified until a hosted run**. |
+| Branch protection | Not set (repository setting). |
+| Release attestations | The pinned SHA-256 values prove the bytes, not who built them; sigstore attestations not verified. |
 
-## Remaining release blockers (known, none caused by the contract)
-1. **No hosted CI run yet.** Nothing in `.github/workflows/ci.yml` has ever run on GitHub (D-007 noted this for the `test` job too).
-2. **The README is still the organizers' starter README** (including their registration form link). It must be rewritten (problem, approach, architecture, limitations, disclosures) before the repository is submitted: that is Phase 7 of `docs/PROGRESS.md`.
-3. **Independent review is incomplete.** R-005 and R-006 were reviewed by Claude only; Codex has run neither.
-4. **Experiments to remove or keep.** `experiments/phase1/` is marked "remove before submission", and `experiments/review/` runs in CI.
-5. **Submission requirements** in `docs/SUBMISSION.md` (clean-clone reproducibility check, pitch, one Fe-specific highlight, disclosures) are not done.
-6. **Never claim the contract is secure or trustless.** The verifier is a trusted party (`docs/SECURITY.md`).
+## Remaining submission blockers (none in the contract)
+1. **Publish** (steps above) and **one green hosted run**.
+2. **README owner fields:** Team; confirm the AI-assistance wording.
+3. **Registration and submission (owner only):** registration confirmation, the private submission link, the full commit SHA to submit (the commit on `settlane/dev` after publishing), by **2026-11-24 23:59 UTC**.
+4. **Clean-clone check** of the build and test instructions from the public repository (`docs/SUBMISSION.md`).
+5. **`experiments/phase1/`** is marked "remove before submission" but runs in CI (`experiments/phase1/run.sh`); keep or remove is the owner's decision (removing it means removing its CI step in the same change).
+6. Open decisions with no recorded owner approval: D-002, D-018, D-028 and the provisional approvals listed at the top of `docs/DECISIONS.md`.
+7. **Never claim the contract is secure or trustless.** The verifier is a trusted party (`docs/SECURITY.md`).
