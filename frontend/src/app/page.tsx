@@ -1,7 +1,7 @@
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
 import { RUNTIME_SHA256, SETTLANE_ADDRESS, REPOSITORY, addressUrl } from "@/config/chain";
-import { readOverview } from "@/contract/read";
+import { getOverview } from "@/contract/data";
 import { shortHex } from "@/domain/format";
 import type { DisplayState } from "@/domain/lifecycle";
 import { Amount } from "@/ui/Amount";
@@ -43,7 +43,7 @@ const STEPS: { state: DisplayState; title: string; rule: string }[] = [
 /** Reads the live figures; null when the public endpoints do not answer (the page still renders). */
 async function readLiveFigures() {
   try {
-    const { agreements, totalOutstanding } = await readOverview();
+    const { agreements, totalOutstanding } = (await getOverview()).value;
     const settled = agreements.flatMap((a) => a.milestones).filter((m) => m.state === "paid" || m.state === "refunded").length;
     return { count: agreements.length, settled, totalOutstanding };
   } catch {

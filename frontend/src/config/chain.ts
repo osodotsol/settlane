@@ -17,6 +17,9 @@ export const DEPLOY_BLOCK = BigInt(process.env.NEXT_PUBLIC_DEPLOY_BLOCK ?? "1217
 /** Deployment transaction (README "Demo" table). */
 export const DEPLOY_TX = "0x4309d7c7fc7b4f68820efe6da17d50381a822e1d656c607a31a58d4384598537" as const;
 
+/** Compiler that built the deployed bytecode (experiments/sepolia/artifact.json "fe"). */
+export const FE_VERSION = "fe 26.6.0 (5b3f96a)";
+
 /** SHA-256 of the deployed runtime code, equal to a clean `fe build` (pinned in experiments/sepolia/artifact.json). */
 export const RUNTIME_SHA256 = "f0965efd4e9d2a0fcfd0eae88d5e6e9c0a938b22c03949b54f015b2600f4b3a8";
 
@@ -30,6 +33,9 @@ export const RPC_URLS: readonly string[] = (
   .filter(Boolean);
 
 export const BLOCK_EXPLORER = "https://sepolia.etherscan.io";
+
+/** Hosted CI (GitHub Actions) for the repository. */
+export const CI_URL = "https://github.com/osodotsol/settlane/actions";
 
 export const REPOSITORY = "https://github.com/osodotsol/settlane";
 

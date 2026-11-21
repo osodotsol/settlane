@@ -36,3 +36,10 @@ describe("deployment config", () => {
     expect(readme).toContain(`--from-block ${DEPLOY_BLOCK}`);
   });
 });
+
+describe("compiler pin", () => {
+  it("FE_VERSION equals the compiler recorded in experiments/sepolia/artifact.json", async () => {
+    const { FE_VERSION } = await import("@/config/chain");
+    expect(FE_VERSION).toBe(JSON.parse(readFileSync(repo("experiments/sepolia/artifact.json"), "utf8")).fe);
+  });
+});

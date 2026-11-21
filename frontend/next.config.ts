@@ -19,6 +19,10 @@ const csp = [
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // The end-to-end runner (e2e/run.mjs) builds one app per backend (Sepolia, local Anvil) side by side.
+  distDir: process.env.SETTLANE_DIST_DIR ?? ".next",
+  // e2e builds use a generated tsconfig (e2e/run.mjs), so Next never rewrites the committed one.
+  typescript: { tsconfigPath: process.env.SETTLANE_DIST_DIR ? "tsconfig.e2e.json" : "tsconfig.json" },
   // Resolve metadata before streaming for every client (not only bots), so a missing agreement gets a
   // real HTTP 404 and pages are complete without JavaScript (Next streams metadata to browsers by default).
   htmlLimitedBots: /.*/,
