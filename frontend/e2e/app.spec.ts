@@ -25,7 +25,6 @@ async function chainSend(account: Address, functionName: string, args: unknown[]
   expect(r.status).toBe("success");
 }
 const milestone = (id: bigint, m = 0) => pub.readContract({ address: SETTLANE, abi: settlaneAbi, functionName: "getMilestone", args: [id, m] });
-const STATE = ["none", "funded", "submitted", "approved", "paid", "refunded"] as const;
 const now = async () => (await pub.getBlock()).timestamp;
 const sentTransactions = async (page: Page) => (await walletCalls(page)).filter((c) => c === "eth_sendTransaction").length;
 
@@ -35,10 +34,11 @@ async function openAs(page: Page, account: Address, path: string, chainId = 1115
   await page.goto(path);
   // A wallet that already exposes an account is restored by wagmi on load; otherwise press the real Connect button.
   const connected = page.getByRole("button", { name: /^Connected as/ });
-  const connect = page.getByRole("button", { name: "Connect wallet" }).first();
+  const connect = page.getByRole("button", { name: "Connect wallet", exact: true }).first();
   const wrong = page.getByRole("button", { name: "Switch to Sepolia" }).first();
-  await expect(connected.or(connect).or(wrong)).toBeVisible({ timeout: 30_000 });
-  if (chainId !== 11155111) return; // a mainnet wallet shows the switch button instead of the account
+  // give wagmi's automatic restore a moment first, so the click never races it
+  await expect(connected.or(wrong)).toBeVisible({ timeout: 8_000 }).catch(() => {});
+  if (chainId !== 11155111) return expect(wrong).toBeVisible(); // a mainnet wallet shows the switch button instead of the account
   if (!(await connected.isVisible())) await connect.click();
   await expect(connected).toBeVisible();
 }
@@ -56,10 +56,12 @@ test("create: the form enforces the contract's rules, then creates and funds an 
   await page.getByLabel("Verifier", { exact: true }).fill(VERIFIER);
   await page.getByLabel("Amount (ETH)").fill("0.01");
   await page.getByLabel("Deliver within").fill("10");
-  await page.getByLabel("Unit").nth(1).selectOption("minutes");
+  await page.getByLabel("Milestone 1 deadline unit").selectOption("minutes");
   await page.getByLabel("Specification").fill("Three logo concepts as a Figma link");
   await page.getByRole("button", { name: "Review and create" }).click();
-  await expect(page.getByText("The provider must be a different account from you, the client.")).toBeVisible();
+  // the field's own error, and the summary that links to it
+  await expect(page.getByText("The provider must be a different account from you, the client.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("alert").filter({ hasText: "Fix 1 field before signing" })).toBeFocused();
   expect(await sentTransactions(page)).toBe(0);
 
   await page.getByLabel("Provider", { exact: true }).fill(PROVIDER);
@@ -265,16 +267,56 @@ test("deadlines: no refund before the deadline, no submission after it, and the 
   await expect(panel(page)).toHaveCount(0); // a second refund cannot be pressed
 });
 
+test("a draft made without a wallet survives connecting, is re-checked against the account, and is blocked on another network", async ({ page }) => {
+  await installWallet(page, { rpc: ANVIL, account: CLIENT, authorized: false });
+  await page.goto("/app/create");
+  await expect(page.getByRole("button", { name: "Connect wallet to sign" })).toBeVisible();
+  await page.getByLabel("Provider", { exact: true }).fill(PROVIDER);
+  await page.getByLabel("Verifier", { exact: true }).fill(VERIFIER);
+  await page.getByLabel("Amount (ETH)").fill("0.04");
+  await page.getByLabel("Deliver within").fill("2");
+  await page.getByLabel("Specification").fill("Kept across connecting");
+  await page.getByRole("button", { name: "Check draft" }).click();
+  await expect(page.getByText("The draft passes every rule the form can check.")).toBeVisible();
+  expect(await sentTransactions(page)).toBe(0);
+
+  // connecting keeps every field
+  await page.getByRole("button", { name: "Connect wallet to sign" }).click();
+  await expect(page.getByRole("button", { name: /^Connected as/ })).toBeVisible();
+  await expect(page.getByLabel("Provider", { exact: true })).toHaveValue(PROVIDER);
+  await expect(page.getByLabel("Specification")).toHaveValue("Kept across connecting");
+  await expect(page.getByRole("button", { name: "Review and create" })).toBeVisible();
+
+  // the roles are re-checked against the connected account: the provider cannot be the client
+  await switchAccount(page, PROVIDER);
+  await page.getByRole("button", { name: "Review and create" }).click();
+  await expect(page.getByText("The provider must be a different account from you, the client.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create and sign" })).toHaveCount(0);
+  await switchAccount(page, CLIENT);
+  await expect(page.getByText("Fix 1 field before signing")).toHaveCount(0);
+
+  // another network: the draft stays, signing is blocked behind the switch
+  await setWalletChain(page, 1);
+  await expect(page.getByText("Signing is blocked until it is on Sepolia.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Review and create" })).toHaveCount(0);
+  await expect(page.getByLabel("Amount (ETH)")).toHaveValue("0.04");
+  await page.getByLabel("Summary").getByRole("button", { name: "Switch to Sepolia" }).click();
+  await expect(page.getByRole("button", { name: "Review and create" })).toBeVisible();
+  expect(await sentTransactions(page)).toBe(0);
+});
+
 test("a wallet on the wrong network cannot transact until it is switched to Sepolia", async ({ page }) => {
   await openAs(page, CLIENT, "/app/create", 1); // an Ethereum mainnet wallet
-  await expect(page.getByRole("button", { name: "Switch to Sepolia" }).first()).toBeVisible();
-  await expect(page.getByText("Your wallet is on another network")).toBeVisible();
-  await expect(page.getByLabel("Provider", { exact: true })).toHaveCount(0); // the form is not even offered
+  await expect(page.getByLabel("Provider", { exact: true })).toBeVisible(); // drafting is allowed
+  await expect(page.getByText("Signing is blocked until it is on Sepolia.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Review and create" })).toHaveCount(0);
+  // personal pages say so in one line, and still show the account's data
+  await page.getByRole("navigation", { name: "Application", exact: true }).getByRole("link", { name: "My Agreements" }).click();
+  await expect(page.getByText("Your wallet is on another network.")).toBeVisible();
   expect(await sentTransactions(page)).toBe(0);
   await page.getByRole("button", { name: "Switch to Sepolia" }).last().click();
-  await expect(page.getByLabel("Provider", { exact: true })).toBeVisible();
-  await setWalletChain(page, 1); // switched away again while the form is open
-  await expect(page.getByText("Your wallet is on another network")).toBeVisible();
+  await expect(page.getByText("Your wallet is on another network.")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Connected as/ })).toBeVisible();
   expect(await sentTransactions(page)).toBe(0);
 });
 

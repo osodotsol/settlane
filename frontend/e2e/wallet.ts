@@ -6,16 +6,17 @@ import type { Page } from "@playwright/test";
 // unchanged against a real EVM executing the production bytecode. It records every RPC method the page
 // called (`window.__calls`) so tests can prove what was, and was not, sent.
 
-export type WalletOptions = { rpc: string; account: string; chainId?: number };
+export type WalletOptions = { rpc: string; account: string; chainId?: number; authorized?: boolean };
 
 export async function installWallet(page: Page, opts: WalletOptions) {
   await page.addInitScript(
-    ({ rpc, account, chainId }) => {
+    ({ rpc, account, chainId, authorized }) => {
       const w = window as unknown as Record<string, unknown>;
       w.__account = account;
       w.__chainId = chainId;
       w.__calls = [] as string[];
       w.__reject = false;
+      w.__authorized = authorized; // false: like a wallet that has not yet approved this site (no account until requested)
       const listeners: Record<string, ((...a: unknown[]) => void)[]> = {};
       const hex = (n: number) => `0x${n.toString(16)}`;
       const forward = async (method: string, params: unknown[]) => {
@@ -30,8 +31,10 @@ export async function installWallet(page: Page, opts: WalletOptions) {
           (w.__calls as string[]).push(method);
           switch (method) {
             case "eth_requestAccounts":
-            case "eth_accounts":
+              w.__authorized = true;
               return [w.__account];
+            case "eth_accounts":
+              return w.__authorized ? [w.__account] : [];
             case "eth_chainId":
               return hex(w.__chainId as number);
             case "net_version":
@@ -61,7 +64,7 @@ export async function installWallet(page: Page, opts: WalletOptions) {
       window.addEventListener("eip6963:requestProvider", announce);
       announce();
     },
-    { rpc: opts.rpc, account: opts.account, chainId: opts.chainId ?? 11155111 },
+    { rpc: opts.rpc, account: opts.account, chainId: opts.chainId ?? 11155111, authorized: opts.authorized ?? true },
   );
 }
 

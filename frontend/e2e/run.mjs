@@ -77,13 +77,10 @@ async function startAnvil() {
   }
   const rpc = (method, params = []) =>
     fetch(ANVIL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) }).then((r) => r.json());
-  // Multicall3 at its canonical address (viem batches reads through it); its code is copied from Sepolia.
+  // Multicall3 at its canonical address (viem batches reads through it). Its public runtime code is bundled
+  // (e2e/multicall3.hex, copied from Sepolia), so the local suites never depend on a network connection.
   const mc = "0xcA11bde05977b3631167028862bE2a173976CA11";
-  const code = await fetch("https://ethereum-sepolia-rpc.publicnode.com", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getCode", params: [mc, "latest"] }),
-  }).then((r) => r.json());
+  const code = { result: readFileSync(path.join(here, "multicall3.hex"), "utf8").trim() };
   await rpc("anvil_setCode", [mc, code.result]);
   const accounts = (await rpc("eth_accounts")).result.slice(0, 6);
   const [CLIENT, PROVIDER, VERIFIER] = accounts;

@@ -35,7 +35,7 @@ export function AgreementWorkspace({ id }: { id: bigint }) {
   if (q.isPending || q.isError || q.data.agreement === null) {
     return (
       <>
-        <h1 className="text-display-xl">Agreement #{id.toString()}</h1>
+        <h1 className="text-page">Agreement #{id.toString()}</h1>
         <div className="mt-8">
           {q.isPending ? (
             <LoadingRows rows={3} />
@@ -64,7 +64,7 @@ export function AgreementWorkspace({ id }: { id: bigint }) {
       </p>
       <div className="mt-4 flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
         <div>
-          <h1 className="text-display-xl">Agreement #{id.toString()}</h1>
+          <h1 className="text-page">Agreement #{id.toString()}</h1>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <span className="inline-flex items-center gap-2 rounded-full border border-line bg-surface px-3.5 py-1 text-sm font-semibold">
               <span aria-hidden className={`size-2 rounded-full ${open ? "bg-cobalt" : "bg-paid"}`} />

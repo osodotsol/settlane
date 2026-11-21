@@ -7,7 +7,7 @@ import { shortHex } from "@/domain/format";
 import { ActivityList } from "../ActivityList";
 import { Amount } from "../Amount";
 import { ButtonLink } from "../Button";
-import { AgreementRow, AttentionRow, EmptyState, Loaded, PageHeader, Section, StatTile, WalletGate, useAppData } from "./parts";
+import { AgreementRow, AttentionRow, ConnectPrompt, EmptyState, Loaded, PageHeader, ScopeTag, Section, StatTile, useAppData } from "./parts";
 
 function FundsBar({ paid, refunded, outstanding }: { paid: bigint; refunded: bigint; outstanding: bigint }) {
   const total = paid + refunded + outstanding;
@@ -35,37 +35,40 @@ export function DashboardView() {
   const queue = attentionFor(mine, address, now);
   const ids = new Set(scope.map((a) => a.id));
   const events = (activity.data ?? []).filter((e) => ids.has(e.id)).slice(-6).reverse();
-  const scopeLabel = address ? "Your agreements" : "All agreements on Sepolia";
+  const tag = <ScopeTag kind={address ? "yours" : "public"} />;
 
   return (
     <>
       <PageHeader
-        title="Dashboard"
+        title={address ? "Dashboard" : "Network overview"}
         lead={
           address ? (
-            <>Signed in as <span className="text-data text-[0.9375rem]">{shortHex(address)}</span>. Everything below is read live from the Settlane contract on Sepolia.</>
+            <>Your agreements, the actions waiting for you and where your funds are, for <span className="text-data text-[0.875rem]">{shortHex(address)}</span>.</>
           ) : (
-            "You are browsing read-only. Everything here is read live from the Settlane contract on Sepolia. Connect a wallet to see your own agreements and act on them."
+            "Live totals and activity for every agreement on the Sepolia deployment."
           )
         }
-        action={<ButtonLink href="/app/create">New agreement</ButtonLink>}
+        action={<ButtonLink href="/app/create" size="sm">New agreement</ButtonLink>}
       />
+      <div className="mt-6">
+        <ConnectPrompt>Connect a wallet to turn this into your dashboard: your agreements, what is waiting for you, and your payouts.</ConnectPrompt>
+      </div>
 
-      <Section title="Funds" id="funds" aside={<p className="text-sm text-ink-3">{scopeLabel}</p>}>
+      <Section title="Funds" id="funds" aside={tag}>
         <Loaded rows={1}>
-          <div className="reveal-stagger grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="reveal-stagger grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <div style={{ "--i": 0 } as React.CSSProperties}><StatTile label="Deposited" value={<Amount wei={totals.deposited} variant="numeral" />} note={`${totals.agreements} agreement${totals.agreements === 1 ? "" : "s"}, ${totals.open} open`} /></div>
             <div style={{ "--i": 1 } as React.CSSProperties}><StatTile tone="paid" label="Paid to providers" value={<Amount wei={totals.paid} variant="numeral" />} note="Claimed after approval" /></div>
             <div style={{ "--i": 2 } as React.CSSProperties}><StatTile tone="refunded" label="Refunded to clients" value={<Amount wei={totals.refunded} variant="numeral" />} note="Returned after a deadline" /></div>
             <div style={{ "--i": 3 } as React.CSSProperties}><StatTile tone="funded" label="Held by the contract" value={<Amount wei={totals.outstanding} variant="numeral" />} note="Not yet claimed or refunded" /></div>
           </div>
           <FundsBar paid={totals.paid} refunded={totals.refunded} outstanding={totals.outstanding} />
-          <p className="mt-3 text-sm text-ink-3">Deposited equals paid plus refunded plus held, for every agreement.</p>
+          <p className="mt-2.5 text-micro text-ink-3">Deposited equals paid plus refunded plus held, for every agreement.</p>
         </Loaded>
       </Section>
 
-      <Section title="Needs your action" id="actions">
-        <WalletGate title="Connect a wallet to see what is waiting for you">
+      {address && (
+        <Section title="Needs your action" id="actions" aside={<ScopeTag kind="yours" />}>
           <Loaded rows={2}>
             {queue.length === 0 ? (
               <EmptyState title="Nothing needs you right now">
@@ -74,18 +77,18 @@ export function DashboardView() {
                   : "Every milestone is waiting on someone else, or is settled. New work appears here the moment it needs you."}
               </EmptyState>
             ) : (
-              <ul className="space-y-3">
+              <ul className="space-y-2.5">
                 {queue.slice(0, 6).map((item) => <AttentionRow key={item.key} item={item} now={now} />)}
               </ul>
             )}
           </Loaded>
-        </WalletGate>
-      </Section>
+        </Section>
+      )}
 
-      <div className="mt-10 grid gap-10 lg:grid-cols-2">
+      <div className="mt-9 grid gap-9 lg:grid-cols-2">
         <section aria-labelledby="mine" className="min-w-0">
-          <div className="mb-4 flex items-end justify-between gap-4">
-            <h2 id="mine" className="text-title">{address ? "Your agreements" : "Latest agreements"}</h2>
+          <div className="mb-3.5 flex items-center justify-between gap-4">
+            <h2 id="mine" className="text-heading">{address ? "Your agreements" : "Latest agreements"}</h2>
             <Link href={address ? "/app/agreements" : "/explorer"} className="draw-link text-sm text-ink-2 hover:text-ink">{address ? "See all" : "Open the explorer"}</Link>
           </div>
           <Loaded rows={3}>
@@ -94,18 +97,18 @@ export function DashboardView() {
                 {address ? "Agreements you create, deliver or verify will be listed here." : "Nothing has been created on this deployment yet."}
               </EmptyState>
             ) : (
-              <ul className="space-y-3">
+              <ul className="space-y-2.5">
                 {scope.slice(0, 5).map((a) => <AgreementRow key={a.id.toString()} a={a} who={address} now={now} />)}
               </ul>
             )}
           </Loaded>
         </section>
         <section aria-labelledby="recent" className="min-w-0">
-          <div className="mb-4 flex items-end justify-between gap-4">
-            <h2 id="recent" className="text-title">Recent activity</h2>
+          <div className="mb-3.5 flex items-center justify-between gap-4">
+            <h2 id="recent" className="text-heading">{address ? "Your recent activity" : "Recent network activity"}</h2>
             <Link href="/app/activity" className="draw-link text-sm text-ink-2 hover:text-ink">See all</Link>
           </div>
-          <div className="card p-6">
+          <div className="card p-5 sm:p-6">
             {activity.isPending ? (
               <p role="status" className="text-ink-2">Reading events from Sepolia…</p>
             ) : activity.isError ? (

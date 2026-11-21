@@ -33,10 +33,10 @@ export function useAppData() {
 
 export function PageHeader({ title, lead, action }: { title: string; lead?: ReactNode; action?: ReactNode }) {
   return (
-    <div className="enter flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
+    <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
       <div className="min-w-0">
-        <h1 className="text-display-xl">{title}</h1>
-        {lead && <div className="mt-3 max-w-2xl text-ink-2">{lead}</div>}
+        <h1 className="text-page">{title}</h1>
+        {lead && <p className="mt-1.5 max-w-2xl text-[0.9375rem] text-ink-2">{lead}</p>}
       </div>
       {action}
     </div>
@@ -45,13 +45,111 @@ export function PageHeader({ title, lead, action }: { title: string; lead?: Reac
 
 export function Section({ title, aside, children, id }: { title: string; aside?: ReactNode; children: ReactNode; id?: string }) {
   return (
-    <section aria-labelledby={id} className="mt-10">
-      <div className="mb-4 flex items-end justify-between gap-4">
-        <h2 id={id} className="text-title">{title}</h2>
+    <section aria-labelledby={id} className="mt-9">
+      <div className="mb-3.5 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <h2 id={id} className="text-heading">{title}</h2>
         {aside}
       </div>
       {children}
     </section>
+  );
+}
+
+/** Says whose data a block shows. Example content is never presented as anyone's real data. */
+export function ScopeTag({ kind }: { kind: "public" | "yours" | "example" }) {
+  const copy = {
+    public: { label: "Public · every agreement on Sepolia", dot: "bg-line-control", box: "border-line" },
+    yours: { label: "Your account", dot: "bg-cobalt", box: "border-line" },
+    example: { label: "Example · not real data", dot: "border border-line-control", box: "border-dashed border-line-control" },
+  }[kind];
+  return (
+    <span className={`inline-flex items-center gap-2 whitespace-nowrap rounded-full border px-2.5 py-0.5 text-micro text-ink-2 ${copy.box}`}>
+      <span aria-hidden className={`size-1.5 rounded-full ${copy.dot}`} />
+      {copy.label}
+    </span>
+  );
+}
+
+/**
+ * A one-line, page-specific wallet prompt. Renders nothing once a Sepolia wallet is connected; on another
+ * network it offers the switch instead. Reading never needs a wallet, so this never hides the page.
+ */
+export function ConnectPrompt({ children }: { children: ReactNode }) {
+  const { ready, address, wrongNetwork } = useWallet();
+  const connectors = useConnectors();
+  const connect = useConnect();
+  const switchChain = useSwitchChain();
+  if (!ready) return <Skeleton className="h-[3.25rem]" />;
+  if (address && !wrongNetwork) return null;
+  const connector = connectors[0];
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 rounded-2xl border border-line bg-surface py-2.5 pl-4 pr-2.5">
+      <p className="flex min-w-0 items-start gap-2.5 text-sm text-ink-2">
+        <span aria-hidden className={`mt-1.5 size-2 shrink-0 rounded-full ${wrongNetwork ? "bg-danger" : "border border-line-control"}`} />
+        <span>
+          {wrongNetwork ? (
+            <>Your wallet is on another network. Switch to Sepolia to sign; nothing can be sent elsewhere.</>
+          ) : connector ? (
+            children
+          ) : (
+            <>{children} No browser wallet was found: install an extension wallet to use your own account.</>
+          )}
+        </span>
+      </p>
+      {wrongNetwork ? (
+        <Button size="sm" variant="danger" onClick={() => switchChain.mutate({ chainId: sepolia.id })} disabled={switchChain.isPending}>
+          {switchChain.isPending ? "Switching…" : "Switch to Sepolia"}
+        </Button>
+      ) : connector ? (
+        <Button size="sm" onClick={() => connect.mutate({ connector })} disabled={connect.isPending}>
+          {connect.isPending ? "Check your wallet…" : "Connect wallet"}
+        </Button>
+      ) : null}
+      {connect.isError && <p role="alert" className="w-full text-sm text-danger">The wallet did not connect. Approve the request in the wallet, then try again.</p>}
+    </div>
+  );
+}
+
+const EXAMPLES: Record<"provider" | "verifier", { title: string; steps: [string, string][] }> = {
+  provider: {
+    title: "What a provider does here",
+    steps: [
+      ["Submit evidence", "A link, note or file hash, before the delivery deadline. Resubmit as often as needed until then."],
+      ["Wait for the verifier", "The verifier approves the exact revision, or asks for another one."],
+      ["Claim the payout", "Approved work is yours to claim at any time, to any address you choose."],
+    ],
+  },
+  verifier: {
+    title: "What a verifier does here",
+    steps: [
+      ["Read the submission", "Each submission shows its evidence hash and revision number."],
+      ["Decide before the review deadline", "Approve that exact revision, or request a revision. A decision on an older revision is refused."],
+      ["Never touch the money", "A verifier cannot move funds or change the parties; the provider claims, the client refunds."],
+    ],
+  },
+};
+
+/** A static, labelled illustration of a role's workflow, for visitors without a wallet. */
+export function RoleExample({ role }: { role: "provider" | "verifier" }) {
+  const ex = EXAMPLES[role];
+  return (
+    <div className="rounded-2xl border border-dashed border-line-control/60 p-5 sm:p-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-heading">{ex.title}</p>
+        <ScopeTag kind="example" />
+      </div>
+      <ol className="mt-4 grid gap-4 sm:grid-cols-3">
+        {ex.steps.map(([title, text], i) => (
+          <li key={title} className="flex gap-3">
+            <span aria-hidden className="grid size-7 shrink-0 place-items-center rounded-full border border-line text-micro font-semibold text-ink-2">{i + 1}</span>
+            <div>
+              <p className="text-sm font-semibold">{title}</p>
+              <p className="mt-0.5 text-sm text-ink-2">{text}</p>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
 
@@ -93,53 +191,6 @@ export function ErrorState({ retry }: { retry: () => void }) {
 export function Loaded({ children, rows }: { children: ReactNode; rows?: number }) {
   const { q, loaded } = useAppData();
   if (!loaded) return q.isError ? <ErrorState retry={() => void q.refetch()} /> : <LoadingRows rows={rows} />;
-  return <>{children}</>;
-}
-
-/** Asks for a wallet (or a network switch) where an action or a personal view needs one. Reading never does. */
-export function WalletGate({ title, children, needSepolia = false }: { title: string; children: ReactNode; needSepolia?: boolean }) {
-  const { ready, address, wrongNetwork } = useWallet();
-  const connectors = useConnectors();
-  const connect = useConnect();
-  const switchChain = useSwitchChain();
-  if (!ready) return <Skeleton className="h-40" />;
-  if (!address) {
-    const connector = connectors[0];
-    return (
-      <div className="card p-7">
-        <p className="text-title">{title}</p>
-        <p className="mt-2 max-w-xl text-ink-2">
-          {connector
-            ? "Connect a browser wallet to see what is yours. You can sign in with any account: Settlane never holds a key, and reading the chain needs no wallet at all."
-            : "No browser wallet was detected. Install an extension wallet such as MetaMask or Rabby to use your own account, or keep exploring read-only."}
-        </p>
-        <div className="mt-5 flex flex-wrap gap-3">
-          {connector && (
-            <Button onClick={() => connect.mutate({ connector })} disabled={connect.isPending}>
-              {connect.isPending ? "Waiting for your wallet…" : "Connect wallet"}
-            </Button>
-          )}
-          <Link href="/explorer" className="inline-flex h-12 items-center gap-2 rounded-full border border-line px-6 text-[0.9375rem] font-medium hover:border-line-control hover:bg-surface">
-            Browse the public explorer <ArrowRight aria-hidden size={16} />
-          </Link>
-        </div>
-        {connect.isError && <p role="alert" className="mt-3 text-sm text-danger">The wallet did not connect. Approve the request in the wallet, then try again.</p>}
-      </div>
-    );
-  }
-  if (needSepolia && wrongNetwork) {
-    return (
-      <div role="alert" className="card border-danger p-7">
-        <p className="text-title">Your wallet is on another network</p>
-        <p className="mt-2 max-w-xl text-ink-2">Settlane runs on the Sepolia testnet. Transactions are blocked until the wallet is switched, so nothing can be sent to another network by mistake.</p>
-        <div className="mt-5">
-          <Button onClick={() => switchChain.mutate({ chainId: sepolia.id })} disabled={switchChain.isPending}>
-            {switchChain.isPending ? "Switching…" : "Switch to Sepolia"}
-          </Button>
-        </div>
-      </div>
-    );
-  }
   return <>{children}</>;
 }
 

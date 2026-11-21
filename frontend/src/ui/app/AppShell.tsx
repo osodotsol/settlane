@@ -11,7 +11,7 @@ import { attentionFor } from "@/domain/app-model";
 import { shortHex } from "@/domain/format";
 import { WalletControl } from "../WalletControl";
 import { Wordmark } from "../Wordmark";
-import { APP_NAV, isActive, type AppNavItem } from "./nav";
+import { APP_NAV, NAV_GROUPS, isActive, type AppNavItem } from "./nav";
 
 /** Counts of things waiting on the connected wallet, shown as badges in the navigation. */
 function useBadges(): Record<NonNullable<AppNavItem["badge"]>, number> {
@@ -64,9 +64,16 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="px-2">
             <Wordmark />
           </div>
-          <nav aria-label="Application" className="mt-8 flex flex-col gap-1">
-            {APP_NAV.map((item) => (
-              <SideLink key={item.href} item={item} active={isActive(path, item.href)} badges={badges} />
+          <nav aria-label="Application" className="mt-7 space-y-5">
+            {NAV_GROUPS.map((g) => (
+              <div key={g.id}>
+                <p className="px-3 pb-1.5 text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-ink-3">{g.label}</p>
+                <div className="flex flex-col gap-0.5">
+                  {APP_NAV.filter((i) => i.group === g.id).map((item) => (
+                    <SideLink key={item.href} item={item} active={isActive(path, item.href)} badges={badges} />
+                  ))}
+                </div>
+              </div>
             ))}
           </nav>
           <div className="mt-auto space-y-3">
@@ -101,7 +108,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <div className="lg:hidden">
               <Wordmark />
             </div>
-            <p className="hidden text-sm text-ink-3 lg:block">Settlane application</p>
+            <p className="hidden text-sm text-ink-3 lg:block">{APP_NAV.find((i) => isActive(path, i.href))?.hint ?? "Settlane application"}</p>
             <div className="flex items-center gap-3">
               <span className="hidden items-center gap-2 rounded-full border border-line bg-surface px-3 py-1 text-micro text-ink-2 sm:inline-flex">
                 <span aria-hidden className="size-1.5 rounded-full bg-paid" />
@@ -131,7 +138,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </ul>
           </nav>
         </header>
-        <main id="main" className="min-w-0 flex-1 px-4 pb-16 pt-8 sm:px-6 lg:px-8 lg:pt-10">
+        <main id="main" className="min-w-0 flex-1 px-4 pb-16 pt-6 sm:px-6 lg:px-10 lg:pt-8">
           <div className="mx-auto w-full max-w-[1100px]">{children}</div>
         </main>
       </div>
