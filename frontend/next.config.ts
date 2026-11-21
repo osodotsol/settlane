@@ -2,6 +2,15 @@ import type { NextConfig } from "next";
 
 // Public RPC hosts the browser may call (docs: frontend/PLAN.md §3, §9). Nothing secret is configured here.
 const RPC_HOSTS = ["https://ethereum-sepolia-rpc.publicnode.com", "https://sepolia.gateway.tenderly.co"];
+// The end-to-end runner points the browser at a local node through NEXT_PUBLIC_RPC_URLS; allow exactly those origins.
+for (const url of (process.env.NEXT_PUBLIC_RPC_URLS ?? "").split(",")) {
+  try {
+    const origin = new URL(url.trim()).origin;
+    if (!RPC_HOSTS.includes(origin)) RPC_HOSTS.push(origin);
+  } catch {
+    /* not a URL: ignore */
+  }
+}
 
 const csp = [
   "default-src 'self'",

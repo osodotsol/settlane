@@ -3,7 +3,9 @@
 //   1. Sepolia (read-only): e2e/sepolia.spec.ts against the real deployment.
 //   2. Local Anvil (chain id 11155111, simulated ETH): deploys the production bytecode, creates two
 //      agreements, then e2e/anvil.spec.ts creates more, advances time and finally stops the node.
-// Nothing is ever sent to a public network. Usage: npm run e2e [-- sepolia|anvil]
+//   3. The same, on a fresh node: e2e/app.spec.ts drives the application with a stand-in wallet (e2e/wallet.ts):
+//      create, submit, approve, request a revision, claim, refund, with role, deadline and error checks.
+// Nothing is ever sent to a public network. Usage: npm run e2e [-- sepolia|anvil|app]  (E2E_SKIP_BUILD=1 reuses .next-e2e-anvil)
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -56,7 +58,10 @@ if (!only || only === "sepolia") {
   stop(server);
 }
 
-if (!only || only === "anvil") {
+// A fresh Anvil with the production bytecode deployed and the same two agreements every time (the first one
+// paid, the second one funded), so the address and the deploy block are identical on every start and one
+// build serves both Anvil specs.
+async function startAnvil() {
   const anvilBin = [path.join(homedir(), "tools/foundry/bin/anvil"), "anvil"].find((p) => p === "anvil" || existsSync(p));
   const ANVIL = "http://127.0.0.1:8645";
   const node = spawn(anvilBin, ["--host", "127.0.0.1", "--port", "8645", "--chain-id", "11155111", "--silent"], { stdio: "ignore" });
@@ -80,7 +85,7 @@ if (!only || only === "anvil") {
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getCode", params: [mc, "latest"] }),
   }).then((r) => r.json());
   await rpc("anvil_setCode", [mc, code.result]);
-  const accounts = (await rpc("eth_accounts")).result.slice(0, 3);
+  const accounts = (await rpc("eth_accounts")).result.slice(0, 6);
   const [CLIENT, PROVIDER, VERIFIER] = accounts;
   const abi = settlaneAbiJson();
   const wallet = (account) => createWalletClient({ account, chain, transport: http(ANVIL) });
@@ -96,27 +101,44 @@ if (!only || only === "anvil") {
   await send(VERIFIER, "approve", [1n, 0, 0xe1n, 1n]);
   await send(PROVIDER, "claim", [1n, 0, PROVIDER]);
   await send(CLIENT, "create", [PROVIDER, VERIFIER, 3600n, 1, [parseEther("0.5"), 0n, 0n], [t + 1800n, 0n, 0n], [0x52n, 0n, 0n]], parseEther("0.5"));
+  return { ANVIL, node, accounts, SETTLANE, deployed };
+}
 
+if (!only || only === "anvil" || only === "app") {
+  const first = await startAnvil();
   const dist = {
     SETTLANE_DIST_DIR: ".next-e2e-anvil",
-    NEXT_PUBLIC_RPC_URLS: ANVIL,
-    NEXT_PUBLIC_SETTLANE_ADDRESS: SETTLANE,
-    NEXT_PUBLIC_DEPLOY_BLOCK: String(deployed.blockNumber),
+    NEXT_PUBLIC_RPC_URLS: first.ANVIL,
+    NEXT_PUBLIC_SETTLANE_ADDRESS: first.SETTLANE,
+    NEXT_PUBLIC_DEPLOY_BLOCK: String(first.deployed.blockNumber),
   };
+  let node = first.node;
   let server;
   try {
-    if (run("npx", ["next", "build"], dist) !== 0) throw new Error("build failed");
-    server = await serve(3922, dist);
-    failures +=
-      run("npx", ["playwright", "test", "e2e/anvil.spec.ts"], {
-        E2E_BASE_URL: "http://127.0.0.1:3922",
-        ANVIL_URL: ANVIL,
-        ANVIL_PID: String(node.pid),
-        SETTLANE,
-        ANVIL_ACCOUNTS: JSON.stringify(accounts),
-      }) === 0
-        ? 0
-        : 1;
+    if (!process.env.E2E_SKIP_BUILD && run("npx", ["next", "build"], dist) !== 0) throw new Error("build failed");
+    const specEnv = (a) => ({
+      E2E_BASE_URL: "http://127.0.0.1:3922",
+      ANVIL_URL: a.ANVIL,
+      ANVIL_PID: String(a.node.pid),
+      SETTLANE: a.SETTLANE,
+      ANVIL_ACCOUNTS: JSON.stringify(a.accounts),
+    });
+    if (!only || only === "anvil") {
+      // 2. Read-only pages against a changing chain; its last test stops the node.
+      server = await serve(3922, dist);
+      failures += run("npx", ["playwright", "test", "e2e/anvil.spec.ts"], specEnv(first)) === 0 ? 0 : 1;
+      stop(server);
+      stop(node);
+      await sleep(1500);
+    }
+    if (!only || only === "app") {
+      // 3. The application with a stand-in wallet (e2e/wallet.ts) against a fresh node, same address and block.
+      const second = only === "app" ? first : await startAnvil();
+      node = second.node;
+      if (second.SETTLANE !== first.SETTLANE || second.deployed.blockNumber !== first.deployed.blockNumber) throw new Error("the second node did not reproduce the deployment");
+      server = await serve(3922, dist);
+      failures += run("npx", ["playwright", "test", "e2e/app.spec.ts"], specEnv(second)) === 0 ? 0 : 1;
+    }
   } finally {
     stop(server);
     stop(node);

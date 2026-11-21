@@ -230,3 +230,15 @@ The owner's goal for this pass: a judge should understand the page at first glan
 - **Roles** are three cards (Client, Provider, Verifier), each with one line and two concrete actions, instead of a dense three-column table.
 - **The problem cards** each end with a "With Settlane:" line, so the problem and the answer are read together.
 - **The replay never stops.** The hero plays agreement #1 to its outcome, holds about 2.6 s, then plays agreement #2, and loops. It has a Pause / Play button (WCAG 2.2.2, because it moves for more than 5 s) and stops while it is off screen. A tab jumps to that agreement from its first step and keeps playing. Under reduced motion it shows the final state and only plays when the visitor presses Play.
+
+---
+
+## 14. The application (`/app`, 2026-11-21)
+
+The landing page is the pitch; `/app` is the product. It has its own shell (a sidebar from 1024 px, a scrollable section strip below it, the wallet and network state in the top bar) and uses the same tokens, type, cards, dots and motion rules as the site. There is no second implementation of anything that exists on the public pages: the agreement workspace reuses `LedgerStrip`, `SettlementLane`, `ActivityList`, `MilestoneDetail` and the avatar and address components.
+
+**Sections.** Dashboard (funds, the queue of what is waiting on the connected account, agreements, recent activity), My Agreements (filter by role and status), Create Agreement, My Work (the provider's milestones: ready, waiting, finished), Verifications (the verifier's: waiting for a decision, waiting on others, finished), Payments (ready to claim, ready to refund, payout history with transactions) and Activity (every event, filterable). Navigation badges count what needs the account. Reading never needs a wallet: without one, the funds and activity are protocol-wide and personal views ask to connect.
+
+**Writes (one path).** `src/chain/write.ts`: pin Sepolia, simulate the exact call with the connected account, ask the wallet to sign only if the simulation passes, then show the receipt's own status. A revert is explained with the contract's reason (`src/contract/reasons.ts`, tested against `handlers.fe`); a declined signature says nothing was sent; a wrong network blocks every action behind a switch button; a second click during a transaction is ignored. Irreversible actions (approve, request revision, claim, refund, create) show a confirmation that states the amount, the recipient and what cannot be undone. Evidence and specifications are text or a 32-byte hash, committed as keccak256 of the text.
+
+**What the interface never does.** It never invents a state: "confirmed" appears only for a receipt with status success. It never holds or asks for a key. It offers an action only to the role the contract allows at the block time it just read, and the contract is still the judge (simulation).

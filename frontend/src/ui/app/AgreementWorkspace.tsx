@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useAgreementData, useActivity } from "@/chain/queries";
-import { ACTION_LABEL, isOpen, milestoneActions, rolesOf } from "@/domain/app-model";
+import { rolesOf, isOpen } from "@/domain/app-model";
 import { formatUtc } from "@/domain/format";
 import { buildLaneChart } from "@/domain/lane";
 import { buildLedger } from "@/domain/ledger";
@@ -11,6 +11,7 @@ import { Address } from "../Address";
 import { Avatar } from "../Avatar";
 import { LedgerStrip } from "../LedgerStrip";
 import { MilestoneDetail } from "../MilestoneDetail";
+import { MilestoneActions } from "./MilestoneActions";
 import { SettlementLane } from "../SettlementLane";
 import { EmptyState, ErrorState, LoadingRows, RoleChip, useAppData } from "./parts";
 import { ButtonLink } from "../Button";
@@ -95,14 +96,7 @@ export function AgreementWorkspace({ id }: { id: bigint }) {
                 key={m.index}
                 m={m}
                 now={now}
-                actions={
-                  milestoneActions(agreement, m, address, now).length > 0 ? (
-                    <p className="mt-5 rounded-xl border border-line bg-sunken/60 px-4 py-3 text-sm">
-                      <span className="font-semibold">Available to you: </span>
-                      {milestoneActions(agreement, m, address, now).map((c) => ACTION_LABEL[c]).join(", ")}. Signing is switched on in the next milestone.
-                    </p>
-                  ) : null
-                }
+                actions={<MilestoneActions a={agreement} m={m} now={now} />}
               />
             );
           })}
