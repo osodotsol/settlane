@@ -231,6 +231,8 @@ State codes: 0 None, 1 Funded, 2 Submitted, 3 Approved, 4 Paid, 5 Refunded.
 
 ## 7. Implementation milestones (ordered; each ends with its QA subset passing)
 
+**F0 result (2026-11-21): done.** D-030 approved; Node 22.23.4 installed (checksum verified). The pinned production bytecode runs on `@ethereumjs/vm` 10.1.3 in Node and in headless Chromium 158 (14/14 checks each: create, stale-approval revert, approve, claim, early-refund revert, time jump, refund, accounting); bundle 133 KB gzip; page load to finished about 0.2 to 0.6 s. **Decision: the guided demo uses the in-browser EVM** (fallback not needed). Evidence: `frontend/spikes/evm-demo/README.md`. **F1: done** (scaffold, tokens, fonts, primitives, ABI sync, CI job), with initial landing, explorer and agreement routes reading Sepolia.
+
 | # | Milestone | Done when |
 | --- | --- | --- |
 | F0 | **Approval and spike.** You approve D-030 (frontend scope). Install Node 22 LTS. Spike: `@ethereumjs/vm` runs the pinned `Settlane.bin` (create, then submit, then a time jump, then refund) in a browser bundle. | Spike passes, and the gzipped VM chunk size and startup time are measured. Decide in-browser EVM versus reducer. |

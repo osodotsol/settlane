@@ -1,0 +1,179 @@
+@import "tailwindcss";
+
+/* Settlane design tokens: frontend/DESIGN.md §2 (every text pair measured for WCAG 2.2 AA). */
+:root {
+  color-scheme: light dark;
+  --paper: #f5f3ee;
+  --surface: #ffffff;
+  --sunken: #ece9e2;
+  --line: #ddd8ce;
+  --line-control: #8a8375;
+  --ink: #15171b;
+  --ink-2: #454b54;
+  --ink-3: #60666f;
+  --cobalt: #2e47c9;
+  --danger: #b42318;
+  --danger-tint: #fbe7e5;
+
+  --state-funded: #4a5568;
+  --state-funded-tint: #e8ebf0;
+  --state-submitted: #8f5400;
+  --state-submitted-tint: #f6e9d3;
+  --state-approved: #0d6b61;
+  --state-approved-tint: #daedea;
+  --state-paid: #1d6a33;
+  --state-paid-tint: #dceddf;
+  --state-refunded: #9a3d1c;
+  --state-refunded-tint: #f4e1d8;
+
+  --shadow-pop: 0 8px 24px -8px rgb(21 23 27 / 0.18);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0f1115;
+    --surface: #161920;
+    --sunken: #0b0d10;
+    --line: #262a33;
+    --line-control: #6b7280;
+    --ink: #ecedef;
+    --ink-2: #b6bac2;
+    --ink-3: #8c919b;
+    --cobalt: #93a5ff;
+    --danger: #f97066;
+    --danger-tint: #3a1715;
+
+    --state-funded: #a7b0bf;
+    --state-funded-tint: #1e232c;
+    --state-submitted: #e2a54a;
+    --state-submitted-tint: #2e2414;
+    --state-approved: #4ec0af;
+    --state-approved-tint: #12302c;
+    --state-paid: #5dc17a;
+    --state-paid-tint: #15301d;
+    --state-refunded: #e8906a;
+    --state-refunded-tint: #33201a;
+
+    --shadow-pop: 0 8px 24px -8px rgb(0 0 0 / 0.5);
+  }
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-line: var(--line);
+  --color-line-control: var(--line-control);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-cobalt: var(--cobalt);
+  --color-danger: var(--danger);
+  --color-danger-tint: var(--danger-tint);
+  --color-funded: var(--state-funded);
+  --color-funded-tint: var(--state-funded-tint);
+  --color-submitted: var(--state-submitted);
+  --color-submitted-tint: var(--state-submitted-tint);
+  --color-approved: var(--state-approved);
+  --color-approved-tint: var(--state-approved-tint);
+  --color-paid: var(--state-paid);
+  --color-paid-tint: var(--state-paid-tint);
+  --color-refunded: var(--state-refunded);
+  --color-refunded-tint: var(--state-refunded-tint);
+
+  --font-display: var(--font-newsreader), Georgia, serif;
+  --font-sans: var(--font-plex-sans), system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+
+  --shadow-pop: var(--shadow-pop);
+  --ease-out: var(--ease-out);
+}
+
+/* Type scale: DESIGN.md §3 */
+@utility text-display-xl {
+  font-family: var(--font-display);
+  font-size: clamp(2.75rem, 5vw + 1rem, 4.75rem);
+  line-height: 1.02;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+@utility text-display {
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 2.5vw + 1rem, 3rem);
+  line-height: 1.08;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+@utility text-title {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  line-height: 1.25;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+@utility text-heading {
+  font-size: 1.125rem;
+  line-height: 1.4;
+  font-weight: 600;
+}
+@utility text-micro {
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+@utility text-data {
+  font-family: var(--font-mono);
+  font-size: 0.9375rem;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+@utility measure {
+  max-width: 68ch;
+}
+
+@layer base {
+  html {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    min-height: 100dvh;
+    font-size: 1rem;
+    line-height: 1.6;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--cobalt) 22%, transparent);
+    color: var(--ink);
+  }
+  :focus-visible {
+    outline: 2px solid var(--cobalt);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  a {
+    text-underline-offset: 3px;
+    text-decoration-thickness: 1px;
+  }
+  table {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* DESIGN.md §7: under reduced motion nothing animates and nothing scrolls smoothly. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

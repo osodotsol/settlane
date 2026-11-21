@@ -111,6 +111,49 @@ jobs:
       - name: Anvil wrong-clock mutations (8 rebuilt contracts, each must fail only its own arm)
         run: python3 experiments/anvil/run.py --mutations
 
+  # Frontend (D-030): a separate job, so the Fe `test` job, the `anvil` job, the negative-control runner
+  # (which reads only `test`) and `release-gate` are unchanged. It rebuilds the production ABI with the
+  # pinned Fe and fails if the frontend's generated ABI differs from it or from the lint's ABI lock.
+  frontend:
+    name: frontend (Next.js)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Fe (pinned, SHA-256 verified)
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/fe" "https://github.com/argotorg/fe/releases/download/${FE_VERSION}/fe_linux_amd64"
+          echo "${FE_SHA256}  $RUNNER_TEMP/fe" | sha256sum -c -
+          install -D -m 0755 "$RUNNER_TEMP/fe" "$HOME/.fe/bin/fe"
+          echo "$HOME/.fe/bin" >> "$GITHUB_PATH"
+      - name: Build the production ABI (fe build)
+        run: rm -rf out && fe build
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.23.4
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install (lockfile only)
+        working-directory: frontend
+        run: npm ci
+      - name: ABI equals the production build and the lock
+        working-directory: frontend
+        run: npm run check-abi
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+      - name: Type check
+        working-directory: frontend
+        run: npm run typecheck
+      - name: Unit tests
+        working-directory: frontend
+        run: npm run test
+      - name: Production build
+        working-directory: frontend
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+
   # The one check to require before a release or a merge: it passes only when BOTH jobs passed
   # (a skipped, cancelled or failed job fails it). Branch protection itself is a repository
   # setting that a workflow file cannot create; see experiments/anvil/README.md.

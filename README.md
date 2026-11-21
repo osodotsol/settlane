@@ -63,6 +63,7 @@ What the compiler does **not** guarantee, and how the gap is closed: a `recv` ar
 | `experiments/anvil/` | Production bytecode on a local Anvil with controlled block timestamps. |
 | `experiments/sepolia/` | The Sepolia plan runner, a read-only deployment verifier and a local rehearsal. |
 | `docs/` | Specification (`LIFECYCLE.md`), security model (`SECURITY.md`), decisions, Fe notes, progress. |
+| `frontend/` | Next.js app (in progress, D-030): read-only explorer and agreement pages from Sepolia, design system and plan (`frontend/DESIGN.md`, `frontend/PLAN.md`). It reads the frozen contract; it contains no contract code. |
 
 Storage: `totals` (last id, global outstanding), `agreements: StorageMap<u256, Agreement>`, `milestones: StorageMap<(u256, u8), Milestone>`. Every key includes the agreement id, so agreements are isolated. Agreement status is derived, never stored.
 
