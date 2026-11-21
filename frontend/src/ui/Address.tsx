@@ -6,7 +6,7 @@ import { CopyButton } from "./CopyButton";
 /** An address in mono, elided in the middle, with copy, an Etherscan link and an optional role. */
 export function Address({ address, role }: { address: string; role?: string }) {
   return (
-    <span className="inline-flex items-center gap-1">
+    <span className="inline-flex flex-wrap items-center gap-1">
       {role && <span className="mr-1 rounded-full bg-sunken px-2 py-0.5 text-micro text-ink-2">{role}</span>}
       <span className="text-data" title={address}>
         <span aria-hidden>{shortHex(address)}</span>

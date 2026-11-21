@@ -1,10 +1,28 @@
-import { ExternalLink } from "lucide-react";
+import { ArrowDownToLine, BadgeCheck, ExternalLink, FilePlus2, RotateCcw, Undo2, Upload, type LucideIcon } from "lucide-react";
 import { toHex } from "viem";
 import { txUrl } from "@/config/chain";
-import type { Activity } from "@/contract/events";
+import type { Activity, ActivityKind } from "@/contract/events";
 import { formatEth, formatUtc, shortHex } from "@/domain/format";
 
-// The agreement's history, decoded from the contract's own events (chain order: block, then log index).
+// The agreement's history, decoded from the contract's own events (chain order: block, then log index),
+// drawn as a timeline: a spine, one node per event, and the same text and links as before.
+const ICON: Record<ActivityKind, LucideIcon> = {
+  created: FilePlus2,
+  submitted: Upload,
+  approved: BadgeCheck,
+  rejected: RotateCcw,
+  claimed: ArrowDownToLine,
+  refunded: Undo2,
+};
+const NODE: Record<ActivityKind, string> = {
+  created: "border-ink bg-surface text-ink",
+  submitted: "border-submitted bg-surface text-submitted",
+  approved: "border-approved bg-surface text-approved",
+  rejected: "border-submitted bg-surface text-submitted",
+  claimed: "border-paid bg-paid text-paper",
+  refunded: "border-refunded bg-refunded text-paper",
+};
+
 function describe(a: Activity): string {
   const ms = a.m === null ? "" : `milestone ${a.m + 1}`;
   switch (a.kind) {
@@ -26,23 +44,36 @@ function describe(a: Activity): string {
 export function ActivityList({ items }: { items: readonly Activity[] }) {
   if (items.length === 0) return <p className="text-ink-2">No events recorded for this agreement yet.</p>;
   return (
-    <ol className="divide-y divide-line border-y border-line">
-      {items.map((a) => (
-        <li key={`${a.txHash}:${a.logIndex}`} className="grid gap-1 py-3 sm:grid-cols-[13rem_1fr_auto] sm:items-center sm:gap-4">
-          <span className="text-data text-sm text-ink-3">{formatUtc(a.timestamp)}</span>
-          <span>{describe(a)}</span>
-          <a
-            href={txUrl(a.txHash)}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 text-sm text-ink-2 underline decoration-line-control underline-offset-4 hover:decoration-cobalt"
+    <ol className="reveal-stagger relative">
+      {items.map((a, i) => {
+        const Icon = ICON[a.kind];
+        return (
+          <li
+            key={`${a.txHash}:${a.logIndex}`}
+            style={{ "--i": Math.min(i, 6) } as React.CSSProperties}
+            className="group relative grid grid-cols-[2.5rem_1fr] gap-x-4 pb-7 last:pb-0 sm:grid-cols-[2.5rem_1fr_auto]"
           >
-            Block {a.blockNumber.toString()}
-            <ExternalLink aria-hidden size={14} />
-            <span className="sr-only">(transaction on Sepolia Etherscan, opens in a new tab)</span>
-          </a>
-        </li>
-      ))}
+            {i < items.length - 1 && <span aria-hidden className="absolute bottom-0 left-[1.1875rem] top-10 w-px bg-line" />}
+            <span aria-hidden className={`relative z-10 grid size-10 place-items-center rounded-full border-2 transition-transform duration-[var(--dur-hover)] ease-out group-hover:scale-105 ${NODE[a.kind]}`}>
+              <Icon size={17} strokeWidth={1.75} />
+            </span>
+            <div className="min-w-0 pt-0.5">
+              <p className="text-data text-[0.8125rem] text-ink-3">{formatUtc(a.timestamp)}</p>
+              <p className="mt-0.5">{describe(a)}</p>
+            </div>
+            <a
+              href={txUrl(a.txHash)}
+              target="_blank"
+              rel="noreferrer"
+              className="col-start-2 mt-2 inline-flex items-center gap-1 self-start text-sm text-ink-2 hover:text-ink sm:col-start-3 sm:mt-1"
+            >
+              <span className="draw-link">Block {a.blockNumber.toString()}</span>
+              <ExternalLink aria-hidden size={14} />
+              <span className="sr-only">(transaction on Sepolia Etherscan, opens in a new tab)</span>
+            </a>
+          </li>
+        );
+      })}
     </ol>
   );
 }

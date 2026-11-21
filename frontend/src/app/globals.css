@@ -27,9 +27,17 @@
   --state-refunded-tint: #f4e1d8;
 
   --shadow-pop: 0 8px 24px -8px rgb(21 23 27 / 0.18);
+  --shadow-lift: 0 1px 0 rgb(21 23 27 / 0.04), 0 10px 28px -14px rgb(21 23 27 / 0.28);
+
+  /* Motion tokens (DESIGN.md §7; UI/UX Pro Max "motion-consistency"): one vocabulary, used everywhere. */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-press: 120ms;
+  --dur-hover: 180ms;
+  --dur-panel: 260ms;
+  --dur-reveal: 420ms;
 }
 
+/* The dark palette, applied by the system preference and by `.stage` (a dark panel inside the light page). */
 @media (prefers-color-scheme: dark) {
   :root {
     --paper: #0f1115;
@@ -56,6 +64,7 @@
     --state-refunded-tint: #33201a;
 
     --shadow-pop: 0 8px 24px -8px rgb(0 0 0 / 0.5);
+    --shadow-lift: 0 1px 0 rgb(255 255 255 / 0.03), 0 10px 28px -14px rgb(0 0 0 / 0.7);
   }
 }
 
@@ -87,10 +96,20 @@
   --font-mono: var(--font-plex-mono), ui-monospace, monospace;
 
   --shadow-pop: var(--shadow-pop);
+  --shadow-lift: var(--shadow-lift);
   --ease-out: var(--ease-out);
 }
 
 /* Type scale: DESIGN.md §3 */
+@utility text-display-2xl {
+  font-family: var(--font-display);
+  font-size: clamp(2.75rem, 3.6vw + 1rem, 4.5rem);
+  line-height: 0.98;
+  font-weight: 450;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+  font-variant-numeric: lining-nums;
+}
 @utility text-display-xl {
   font-family: var(--font-display);
   font-size: clamp(2.75rem, 5vw + 1rem, 4.75rem);
@@ -114,6 +133,14 @@
   font-weight: 500;
   letter-spacing: -0.01em;
   text-wrap: balance;
+}
+@utility text-numeral {
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 2vw + 1.25rem, 3rem);
+  line-height: 1;
+  font-weight: 450;
+  letter-spacing: -0.02em;
+  font-variant-numeric: lining-nums tabular-nums;
 }
 @utility text-heading {
   font-size: 1.125rem;
@@ -143,6 +170,9 @@
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+    scroll-behavior: smooth;
+    /* WCAG 2.2 "focus not obscured": the sticky header (and its compact nav row) must never cover a focused control. */
+    scroll-padding-top: 7.5rem;
   }
   body {
     min-height: 100dvh;
@@ -165,6 +195,257 @@
   table {
     font-variant-numeric: tabular-nums;
   }
+  button,
+  [role="button"],
+  summary,
+  label[for],
+  select {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+}
+
+/* A dark panel that stays dark in the light theme: the hero and verification "stages". It redefines the
+   semantic tokens, so every component inside renders correctly without knowing it is on a stage. */
+@layer components {
+  .stage {
+    --paper: #0f1115;
+    --surface: #161920;
+    --sunken: #0b0d10;
+    --line: #2a2f3a;
+    --line-control: #6b7280;
+    --ink: #ecedef;
+    --ink-2: #b6bac2;
+    --ink-3: #8c919b;
+    --cobalt: #93a5ff;
+    --state-funded: #a7b0bf;
+    --state-funded-tint: #1e232c;
+    --state-submitted: #e2a54a;
+    --state-submitted-tint: #2e2414;
+    --state-approved: #4ec0af;
+    --state-approved-tint: #12302c;
+    --state-paid: #5dc17a;
+    --state-paid-tint: #15301d;
+    --state-refunded: #e8906a;
+    --state-refunded-tint: #33201a;
+    background: #12151b;
+    color: var(--ink);
+    border: 1px solid #262a33;
+    color-scheme: dark;
+  }
+
+  /* Ledger-paper ruling: faint horizontal rules that fade out downwards. Purely decorative. */
+  .ledger-rules::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image: repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 47px,
+      color-mix(in srgb, var(--ink) 4.5%, transparent) 47px,
+      color-mix(in srgb, var(--ink) 4.5%, transparent) 48px
+    );
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 18%, transparent 80%);
+    mask-image: linear-gradient(to bottom, transparent 0%, #000 18%, transparent 80%);
+  }
+
+  /* Interaction primitives. Hover only on devices that hover; press feedback everywhere. */
+  .press {
+    transition:
+      transform var(--dur-press) var(--ease-out),
+      background-color var(--dur-hover) var(--ease-out),
+      border-color var(--dur-hover) var(--ease-out),
+      box-shadow var(--dur-hover) var(--ease-out),
+      color var(--dur-hover) var(--ease-out);
+  }
+  .press:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+  @media (hover: hover) {
+    .lift:hover {
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-lift);
+    }
+    .lift:active {
+      transform: translateY(0) scale(0.98);
+    }
+  }
+
+    /* Hidden unless scroll-driven animations are available (see the motion section below). */
+  .scroll-progress {
+    display: none;
+  }
+
+  /* Underline that draws from the left on hover and focus. */
+  .draw-link {
+    position: relative;
+    text-decoration: none;
+    background-image: linear-gradient(currentColor, currentColor);
+    background-repeat: no-repeat;
+    background-position: 0 100%;
+    background-size: 0% 1px;
+    transition: background-size var(--dur-panel) var(--ease-out);
+  }
+  .draw-link:hover,
+  .draw-link:focus-visible {
+    background-size: 100% 1px;
+  }
+  .draw-link[aria-current="page"] {
+    background-size: 100% 2px;
+    background-image: linear-gradient(var(--cobalt), var(--cobalt));
+  }
+}
+
+/* ------------------------------------------------------------------------------------------------
+   Motion. Everything below is progressive enhancement on top of a complete static page:
+   - nothing is hidden by default (no-JS and unsupported browsers see the final state);
+   - scroll-driven effects use CSS `animation-timeline` (no scripts) and only where supported;
+   - all of it is removed under prefers-reduced-motion, which shows the final state immediately.
+   ------------------------------------------------------------------------------------------------ */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes grow-x {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+/* Scale only: elements are centred with Tailwind's separate `translate` property, which composes with this. */
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.2);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes sweep {
+  from {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  6% {
+    opacity: 1;
+  }
+  94% {
+    opacity: 1;
+  }
+  to {
+    transform: translateX(calc(var(--to, 100) * 1cqw));
+    opacity: 0;
+  }
+}
+@keyframes lit {
+  from {
+    opacity: 0.32;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes draw-ring {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes progress {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Page-load entrance: played once, staggered with --d (milliseconds). */
+  .enter {
+    animation: rise 700ms var(--ease-out) both;
+    animation-delay: calc(var(--d, 0) * 1ms);
+  }
+  /* Hero lane replay: bars draw, a cursor sweeps (constant-rate, so linear), marks pop as it passes. */
+  .draw-x {
+    transform-origin: left center;
+    animation: grow-x 700ms var(--ease-out) both;
+    animation-delay: calc(var(--d, 0) * 1ms);
+  }
+  .mark-pop {
+    animation: pop 420ms var(--ease-out) both;
+    animation-delay: calc(var(--d, 0) * 1ms);
+  }
+  .replay-cursor {
+    animation: sweep var(--dur, 2600ms) linear both;
+    animation-delay: calc(var(--d, 0) * 1ms);
+  }
+  .lit {
+    animation: lit 500ms var(--ease-out) both;
+    animation-delay: calc(var(--d, 0) * 1ms);
+  }
+  .draw-ring {
+    stroke-dasharray: 1;
+    animation: draw-ring 900ms var(--ease-out) both;
+    animation-delay: calc(var(--d, 0) * 1ms);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .replay-cursor {
+    display: none;
+  }
+}
+
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    /* Scroll-driven reveals: a small rise and fade as an element enters the viewport (8-16px, UI/UX Pro Max). */
+    .reveal {
+      animation: rise linear both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 55%;
+    }
+    /* Staggered children: --i is the child's index, each starts a little later in the entry range. */
+    .reveal-stagger > * {
+      animation: rise linear both;
+      animation-timeline: view();
+      animation-range: entry calc(var(--i, 0) * 7%) entry calc(52% + var(--i, 0) * 7%);
+    }
+    /* Bars and lanes draw in from the left when scrolled into view. */
+    .grow-x {
+      transform-origin: left center;
+      animation: grow-x linear both;
+      animation-timeline: view();
+      animation-range: entry 5% entry 75%;
+    }
+    .pop-in {
+      animation: pop linear both;
+      animation-timeline: view();
+      animation-range: entry 20% entry 90%;
+    }
+    /* A hairline reading-progress bar under the header. */
+    .scroll-progress {
+      display: block;
+      transform-origin: left center;
+      animation: progress linear both;
+      animation-timeline: scroll(root);
+    }
+  }
 }
 
 /* DESIGN.md §7: under reduced motion nothing animates and nothing scrolls smoothly. */
@@ -175,5 +456,25 @@
     animation: none !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* Printing (and any tool that renders the whole page at once) must never lose content to scroll reveals. */
+@media print {
+  .reveal,
+  .reveal-stagger > *,
+  .grow-x,
+  .pop-in,
+  .enter,
+  .draw-x,
+  .mark-pop,
+  .lit {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  .replay-cursor,
+  .scroll-progress {
+    display: none !important;
   }
 }

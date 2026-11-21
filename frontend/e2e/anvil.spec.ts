@@ -43,8 +43,8 @@ test.describe.configure({ mode: "serial" });
 
 test("a newly created agreement appears in the explorer and its page within seconds", async ({ page }) => {
   await page.goto("/explorer");
-  await expect(page.getByRole("link", { name: "#2" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "#3" })).toHaveCount(0);
+  await expect(page.locator("main").getByRole("link", { name: "#2" })).toBeVisible();
+  await expect(page.locator("main").getByRole("link", { name: "#3" })).toHaveCount(0);
   const before = await page.goto("/agreements/3");
   expect(before?.status()).toBe(404); // not created yet
 
@@ -52,13 +52,13 @@ test("a newly created agreement appears in the explorer and its page within seco
   const t = block.timestamp;
   await send(CLIENT, "create", [PROVIDER, VERIFIER, 3600n, 2, [parseEther("0.1"), parseEther("0.2"), 0n], [t + 600n, t + 1200n, 0n], [0x51n, 0x52n, 0n]], parseEther("0.3"));
 
-  const seconds = await until(page, "/explorer", async () => expect(page.getByRole("link", { name: "#3" })).toBeVisible());
+  const seconds = await until(page, "/explorer", async () => expect(page.locator("main").getByRole("link", { name: "#3" })).toBeVisible());
   console.log(`agreement 3 visible in the explorer after ${seconds.toFixed(1)} s`);
   expect(seconds).toBeLessThan(30);
 
   const res = await page.goto("/agreements/3");
   expect(res?.status()).toBe(200);
-  await expect(page.locator("#ledger-title").locator("..").getByText("0.3 = 0 + 0 + 0.3", { exact: false })).toBeVisible();
+  await expect(page.locator('section[aria-labelledby="ledger-title"]').getByText("0.3 = 0 + 0 + 0.3", { exact: false })).toBeVisible();
   // one state chip per milestone in the milestones section (the lanes repeat the state as a label)
   await expect(page.locator("#milestones").locator("..").getByText("Funded", { exact: true })).toHaveCount(2);
 });
@@ -100,7 +100,7 @@ test("when the RPC fails, cached pages show the last data with a notice; uncache
   const explorer = await page.goto("/explorer");
   expect(explorer?.status()).toBe(200);
   await expect(page.getByText("Showing the last data read from Sepolia")).toBeVisible();
-  await expect(page.getByRole("link", { name: "#3" })).toBeVisible();
+  await expect(page.locator("main").getByRole("link", { name: "#3" })).toBeVisible();
 
   const detail = await page.goto("/agreements/3");
   expect(detail?.status()).toBe(200);

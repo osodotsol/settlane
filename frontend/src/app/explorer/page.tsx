@@ -44,6 +44,7 @@ export default async function ExplorerPage() {
   const rows: ExplorerRow[] = (data?.agreements ?? []).map((a) => ({
     id: a.id.toString(),
     states: a.milestones.map((m) => displayState(m.state, data!.blockTime, m.deliverBy, m.decideBy)),
+    amounts: a.milestones.map((m) => m.amount.toString()),
     client: a.client,
     provider: a.provider,
     verifier: a.verifier,
@@ -54,13 +55,31 @@ export default async function ExplorerPage() {
     created: createdAt.has(a.id.toString()) ? `Created ${formatUtc(createdAt.get(a.id.toString())!)}` : null,
   }));
 
+  const settled = (data?.agreements ?? []).flatMap((a) => a.milestones).filter((m) => m.state === "paid" || m.state === "refunded").length;
+  const openCount = rows.filter((r) => r.open).length;
+  const d = (ms: number) => ({ "--d": ms }) as React.CSSProperties;
+
   return (
-    <Container className="py-14">
-      <h1 className="text-display">Agreements</h1>
-      <p className="mt-3 measure text-ink-2">
-        Every agreement on the deployed contract, discovered and read directly from Sepolia. No wallet needed. States are judged against the latest
-        block time.
-      </p>
+    <Container className="py-12 sm:py-16">
+      <div className="enter max-w-3xl" style={d(0)}>
+        <h1 className="text-display-xl">Agreements</h1>
+        <p className="mt-4 measure text-lg text-ink-2">
+          Every agreement on the deployed contract, discovered and read directly from Sepolia. No wallet needed. States are judged against the latest block
+          time.
+        </p>
+      </div>
+
+      {data && (
+        <dl className="enter mt-10 grid grid-cols-2 gap-x-8 gap-y-6 border-y border-line py-6 lg:grid-cols-4" style={d(120)}>
+          <div><dt className="text-sm text-ink-3">Agreements</dt><dd className="text-numeral mt-1.5">{data.agreements.length}</dd></div>
+          <div><dt className="text-sm text-ink-3">Open</dt><dd className="text-numeral mt-1.5">{openCount}</dd></div>
+          <div><dt className="text-sm text-ink-3">Milestones settled</dt><dd className="text-numeral mt-1.5">{settled}</dd></div>
+          <div>
+            <dt className="text-sm text-ink-3">Held for open milestones</dt>
+            <dd className="mt-1.5"><Amount wei={data.totalOutstanding} variant="numeral" /></dd>
+          </div>
+        </dl>
+      )}
 
       <div className="mt-10">
         {!data ? (
@@ -76,10 +95,7 @@ export default async function ExplorerPage() {
                 </Banner>
               </div>
             )}
-            <p className="mb-6 text-sm text-ink-3">
-              {data.agreements.length} agreement{data.agreements.length === 1 ? "" : "s"} · held for open milestones <Amount wei={data.totalOutstanding} /> · block
-              time {formatUtc(data.blockTime)}
-            </p>
+            <p className="mb-6 text-sm text-ink-3">States judged at Sepolia block time {formatUtc(data.blockTime)}.</p>
             {rows.length === 0 ? <Banner title="No agreements yet">The contract is deployed and holds no agreements.</Banner> : <ExplorerTable rows={rows} />}
           </>
         )}

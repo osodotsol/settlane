@@ -19,6 +19,8 @@ const csp = [
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // `next dev` otherwise writes frontend/AGENTS.md into the repository on every start.
+  agentRules: false,
   // The end-to-end runner (e2e/run.mjs) builds one app per backend (Sepolia, local Anvil) side by side.
   distDir: process.env.SETTLANE_DIST_DIR ?? ".next",
   // e2e builds use a generated tsconfig (e2e/run.mjs), so Next never rewrites the committed one.

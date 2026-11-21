@@ -5,13 +5,12 @@ type Variant = "primary" | "secondary" | "quiet" | "danger";
 type Size = "md" | "sm";
 
 const base =
-  "inline-flex items-center justify-center gap-2 rounded-lg font-medium whitespace-nowrap select-none " +
-  "transition-[background-color,color,border-color,box-shadow] duration-150 ease-out " +
+  "press inline-flex items-center justify-center gap-2 rounded-lg font-medium whitespace-nowrap select-none " +
   "disabled:cursor-not-allowed disabled:opacity-50";
 
 const variants: Record<Variant, string> = {
-  primary: "bg-ink text-paper hover:bg-ink/85 active:bg-ink/75",
-  secondary: "border border-line-control bg-surface text-ink hover:bg-sunken active:bg-sunken/70",
+  primary: "lift bg-ink text-paper hover:bg-ink/90",
+  secondary: "lift border border-line-control bg-surface text-ink hover:bg-sunken",
   quiet: "text-ink underline-offset-4 decoration-cobalt hover:underline px-0",
   danger: "border border-danger text-danger hover:bg-danger-tint",
 };

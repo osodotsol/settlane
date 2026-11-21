@@ -16,7 +16,7 @@ test("agreement 1: paid in full, exact wei, history in chain order", async ({ pa
   expect(res?.status()).toBe(200);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Agreement #1");
   await expect(page.getByText("Closed: every milestone is settled")).toBeVisible();
-  const ledger = page.locator("#ledger-title").locator("..");
+  const ledger = page.locator('section[aria-labelledby="ledger-title"]');
   await expect(ledger.getByText("0.001 = 0.001 + 0 + 0", { exact: false })).toBeVisible();
   await expect(ledger.locator('[title="1000000000000000 wei"]').first()).toBeVisible();
   await expect(ledger.getByText("Each figure equals the sum")).toBeVisible();
@@ -32,7 +32,7 @@ test("agreement 1: paid in full, exact wei, history in chain order", async ({ pa
 
 test("agreement 2: refunded in full after its delivery deadline", async ({ page }) => {
   await page.goto("/agreements/2");
-  await expect(page.locator("#ledger-title").locator("..").getByText("0.001 = 0 + 0.001 + 0", { exact: false })).toBeVisible();
+  await expect(page.locator('section[aria-labelledby="ledger-title"]').getByText("0.001 = 0 + 0.001 + 0", { exact: false })).toBeVisible();
   await expect(page.getByText("Refunded", { exact: true }).first()).toBeVisible();
   const history = page.locator("#history").locator("..").getByRole("listitem");
   await expect(history).toHaveCount(2);
@@ -46,14 +46,14 @@ test("explorer discovers agreements on-chain and filters them", async ({ page })
   await page.goto("/explorer");
   const rows = page.locator("table tbody tr");
   expect(await rows.count()).toBeGreaterThanOrEqual(2);
-  await expect(page.getByRole("link", { name: "#1" })).toBeVisible();
+  await expect(page.locator("main").getByRole("link", { name: "#1" })).toBeVisible();
   await page.getByLabel("Agreement number or address").fill("2");
   await expect(rows).toHaveCount(1);
-  await expect(page.getByRole("link", { name: "#2" })).toBeVisible();
+  await expect(page.locator("main").getByRole("link", { name: "#2" })).toBeVisible();
   await page.getByLabel("Agreement number or address").fill("");
-  await page.getByText("Open", { exact: true }).click();
+  await page.getByRole("group", { name: "Show agreements" }).getByText("Open", { exact: true }).click();
   // A1 and A2 are settled; only agreements created later could be open
-  await expect(page.getByRole("link", { name: "#1" })).toHaveCount(0);
+  await expect(page.locator("main").getByRole("link", { name: "#1" })).toHaveCount(0);
 });
 
 test("contract page: deployed code matches the pinned build", async ({ page }) => {
@@ -76,7 +76,7 @@ test.describe("without JavaScript", () => {
   test.use({ javaScriptEnabled: false });
   test("explorer and agreement pages are complete in the HTML", async ({ page }) => {
     await page.goto("/explorer");
-    await expect(page.getByRole("link", { name: "#1" })).toBeVisible();
+    await expect(page.locator("main").getByRole("link", { name: "#1" })).toBeVisible();
     await page.goto("/agreements/1");
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("Agreement #1");
     await expect(page.locator("#history").locator("..").getByRole("listitem")).toHaveCount(4);
@@ -85,7 +85,7 @@ test.describe("without JavaScript", () => {
 
 for (const scheme of ["light", "dark"] as const) {
   test.describe(`${scheme} theme`, () => {
-    test.use({ colorScheme: scheme });
+    test.use({ colorScheme: scheme, reducedMotion: "reduce" });
     test(`accessibility (axe, WCAG 2.2 AA) on every page`, async ({ page }) => {
       for (const path of PAGES) {
         await page.goto(path);
@@ -110,3 +110,100 @@ for (const scheme of ["light", "dark"] as const) {
     });
   });
 }
+
+// ---- Design behaviours (motion, story, header, focus) ----
+
+test.describe("with motion enabled", () => {
+  test.use({ reducedMotion: "no-preference", viewport: { width: 1440, height: 900 } });
+
+  test("nothing stays hidden: every scroll reveal is fully visible once scrolled into view", async ({ page }) => {
+    for (const path of ["/", "/agreements/1", "/contract", "/explorer"]) {
+      await page.goto(path);
+      const hidden = await page.evaluate(async () => {
+        const stuck: string[] = [];
+        const targets = [...document.querySelectorAll<HTMLElement>(".reveal, .reveal-stagger > *, .grow-x, .pop-in")];
+        for (const el of targets) {
+          el.scrollIntoView({ block: "center", behavior: "instant" });
+          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+          const cs = getComputedStyle(el);
+          if (Number(cs.opacity) < 0.99) stuck.push(`${el.tagName.toLowerCase()}.${String(el.className).slice(0, 40)} opacity ${cs.opacity}`);
+        }
+        return stuck;
+      });
+      expect(hidden, path).toEqual([]);
+    }
+  });
+
+  test("the hero replays the real agreement, then rests with every event and the outcome visible", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByText("A real agreement, replayed from Sepolia")).toBeVisible();
+    await page.waitForTimeout(4200); // entrance + the 2.6 s sweep + the outcome
+    const rows = page.locator(".stage ol .lit");
+    await expect(rows).toHaveCount(4);
+    for (let i = 0; i < 4; i++) expect(Number(await rows.nth(i).evaluate((el) => getComputedStyle(el).opacity))).toBeGreaterThan(0.99);
+    expect(Number(await page.locator(".replay-cursor").evaluate((el) => getComputedStyle(el).opacity))).toBe(0); // the cursor has left
+    await expect(page.getByText("Provider claimed 0.001 ETH")).toBeVisible();
+  });
+
+  test("scrolling the story changes the milestone card", async ({ page }) => {
+    await page.goto("/");
+    const steps = page.locator("#how-it-settles ol > li");
+    await expect(steps).toHaveCount(5);
+    await steps.nth(2).scrollIntoViewIfNeeded();
+    await steps.nth(2).evaluate((el) => el.scrollIntoView({ block: "center", behavior: "instant" }));
+    await expect(page.locator("#how-it-settles .stage").getByText("Verifier (trusted)")).toBeVisible();
+    await steps.nth(4).evaluate((el) => el.scrollIntoView({ block: "center", behavior: "instant" }));
+    await expect(page.locator("#how-it-settles .stage").getByText("Refunded to the client")).toBeVisible();
+    await expect(page.locator("#how-it-settles .stage").getByText("Expired").first()).toBeVisible();
+  });
+
+  test("the header gains depth once the page scrolls and the progress line follows", async ({ page }) => {
+    await page.goto("/");
+    const header = page.locator("header").first();
+    await expect(header).not.toHaveAttribute("data-scrolled", /.*/);
+    await page.evaluate(() => window.scrollTo({ top: 1200, behavior: "instant" }));
+    await expect(header).toHaveAttribute("data-scrolled", "true");
+    const scale = await page.locator(".scroll-progress").evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).a);
+    expect(scale).toBeGreaterThan(0);
+  });
+
+  test("a keyboard-focused control is never hidden under the sticky header", async ({ page }) => {
+    await page.goto("/");
+    const clearance = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop));
+    const header = await page.locator("header").first().boundingBox();
+    expect(clearance).toBeGreaterThanOrEqual(header!.height);
+    // tab down the page to a control far below the fold: it must land below the header
+    const link = page.locator("footer").getByRole("link", { name: "Limitations" });
+    await link.focus();
+    const box = await link.boundingBox();
+    expect(box!.y).toBeGreaterThanOrEqual(header!.height);
+  });
+});
+
+test.describe("reduced motion", () => {
+  test.use({ reducedMotion: "reduce", viewport: { width: 1440, height: 900 } });
+  test("shows every final state at once: no cursor, all events visible, nothing animating", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator(".replay-cursor")).toBeHidden();
+    for (const t of ["Agreement created, 0.001 ETH locked", "Provider submitted evidence", "Verifier approved the work", "Provider claimed 0.001 ETH"]) {
+      await expect(page.getByText(t)).toBeVisible();
+    }
+    const animated = await page.evaluate(() => document.getAnimations().length);
+    expect(animated).toBe(0);
+  });
+});
+
+test.describe("phone layout", () => {
+  test.use({ reducedMotion: "reduce", viewport: { width: 390, height: 844 } });
+  test("every navigation item fits on screen and the story card is replaced by the plain list", async ({ page }) => {
+    await page.goto("/");
+    const nav = page.getByRole("navigation", { name: "Main (compact)" });
+    for (const name of ["Explorer", "Contract", "How it settles"]) {
+      const box = await nav.getByRole("link", { name }).boundingBox();
+      expect(box!.x + box!.width, name).toBeLessThanOrEqual(390);
+      expect(box!.height, name).toBeGreaterThanOrEqual(40);
+    }
+    await expect(page.locator("#how-it-settles .stage")).toBeHidden();
+    await expect(page.locator("#how-it-settles ol > li")).toHaveCount(5);
+  });
+});

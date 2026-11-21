@@ -2,9 +2,12 @@ import localFont from "next/font/local";
 
 // Self-hosted, SIL OFL fonts (src/fonts/OFL-*.txt). No request to a font CDN, at build or at runtime.
 export const newsreader = localFont({
-  src: "../fonts/newsreader-latin-opsz-wght.woff2",
+  src: [
+    { path: "../fonts/newsreader-latin-opsz-wght.woff2", weight: "200 800", style: "normal" },
+    // The true italic (used for emphasis in display headings), not a synthesized slant.
+    { path: "../fonts/newsreader-latin-opsz-italic-wght.woff2", weight: "200 800", style: "italic" },
+  ],
   variable: "--font-newsreader",
-  weight: "200 800",
   display: "swap",
 });
 

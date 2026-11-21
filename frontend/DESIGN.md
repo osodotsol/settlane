@@ -180,3 +180,24 @@ Don't:
 - Signature visuals: the settlement lane and the ledger strip.
 - Every write passes through simulate → wallet → pending → confirmed or reverted.
 - Never hide that the verifier is trusted and that this is Sepolia test ETH.
+
+---
+
+## 11. Revision: premium pass (2026-11-21)
+
+Applied with UI/UX Pro Max v2.15.0 (`.claude/skills/ui-ux-pro-max`): its design-system query ("fintech escrow settlement trust blockchain milestone payments", dials variance 6 / motion 7 / density 4), landing, typography, UX-motion and focus searches. **Adopted:** Minimalism and Swiss style, IBM Plex Sans as the financial UI face (already used), the stagger and scroll-reveal principles (small offset, 300 to 450 ms, deceleration, final state under reduced motion, no content hidden without a fallback), focus-not-obscured, one primary action per view. **Rejected:** its suggested palette (amber `#F59E0B` with purple `#8B5CF6` on navy), which contradicts this identity (no violet) and the skill's own "avoid AI purple" line; its sales CTA ("Contact Sales"), which Settlane does not have; GSAP, because CSS scroll-driven animations do the same without a dependency. A timeline-chart search returned no verified match, so the lane follows the general rule (every range labelled with text, colour supplementary). Nothing from the other installed skills (brand, design, slides, banner, ui-styling) is used; several call the Gemini API or install shadcn through `npx`, which this project does not need.
+
+**Surfaces.** Besides paper and ink there is the **stage**: a dark panel that stays dark in the light theme (`.stage` redefines the semantic tokens, so components inside need no variants). It is used for the hero replay, the story card, the code panel, the verification seal and the closing call to action: the places that present proof. Hairline "ledger rules" (4.5% ink, fading in and out) sit behind the hero only.
+
+**Type.** Newsreader gains its true italic (146 KB, same OFL licence), used for one emphasised clause in the hero headline. Display sizes: `display-2xl` for the hero (clamp 2.75 to 4.5 rem), `numeral` for stat figures (lining, tabular).
+
+**Motion system (one vocabulary, `globals.css`).** Tokens: press 120 ms, hover 180 ms, panel 260 ms, reveal 420 ms, one ease-out `cubic-bezier(0.16, 1, 0.3, 1)`; constant-rate progress is linear. Four kinds of motion only:
+1. *Entrance* (`.enter`): played once on load, staggered with `--d`.
+2. *Hero replay*: the real agreement 1 on its lane: bars draw, a cursor sweeps at a constant rate, marks pop and transcript rows light as it passes, then the outcome appears (about 3.3 s, once).
+3. *Scroll-driven* (`.reveal`, `.reveal-stagger`, `.grow-x`, `.pop-in`, `.scroll-progress`): CSS `animation-timeline` only, no scripts, only where supported; a hairline reading-progress bar under the header.
+4. *State*: hover lift (1 px) and underline draw on devices that hover, press scale 0.98 everywhere, the sticky story card, tooltips on lane marks.
+Rules: nothing is hidden by default (no JavaScript, unsupported browsers and print see the final state); `prefers-reduced-motion` removes every animation, hides the replay cursor and shows all final states; no infinite animations; no blur or glow as decoration (the scrolled header is opaque).
+
+**Components added.** `HeroStage`, `StoryStepper` (the only client-side story logic: an IntersectionObserver picks the step; the card is aria-hidden and hidden on phones), `MilestoneTrack` (Funded, In review, Approved, Paid; or Funded, Expired, Refunded), `Avatar` (deterministic identicon, decorative), timeline `ActivityList`, richer `SettlementLane` (time axis, window labels at the bottom of segments, marks in the upper half so they never collide), `LedgerStrip` (large figure, shares), `VerificationSeal`, `CommandBlock`, `CodeBlock` (hand-highlighted, no highlighter shipped), `ExplorerTable` mini bars, a four-column footer.
+
+**Responsive.** The full navigation needs 1024 px (at 768 the logo, four links, network pill and wallet did not fit: found on the production build); below it the compact row shows Explorer, Contract and How it settles, and Limitations moves to the footer. Parties stack until 1024 px. Grid children that hold code or wide content carry `min-w-0` (a grid item otherwise cannot shrink below its content: the cause of a 666 px landing page on phones before the fix). Lane tooltips are width-bounded so a hidden tooltip can never widen the page.

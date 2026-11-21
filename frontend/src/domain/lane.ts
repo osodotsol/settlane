@@ -63,3 +63,42 @@ export function percentAt(chart: Pick<LaneChart, "start" | "end">, t: bigint): n
   if (t >= chart.end) return 100;
   return Number(((t - chart.start) * 10_000n) / (chart.end - chart.start)) / 100;
 }
+
+// ---- Axis and replay (pure, so they are tested like the rest of the lane geometry) ----
+
+export type Tick = { at: bigint; percent: number; label: string };
+
+// 1 minute up to 1 year (multiples of a day from 1 day on, so those ticks land on UTC midnight).
+const TICK_STEPS = [60, 300, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400, 172800, 604800, 2_592_000, 7_776_000, 31_536_000];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "15:30" for an instant, or "Nov 21" at 00:00 UTC (the day boundary is the useful label there). */
+export function tickLabel(at: bigint): string {
+  const d = new Date(Number(at) * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return d.getUTCHours() === 0 && d.getUTCMinutes() === 0 ? `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}` : `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+
+/**
+ * Evenly spaced axis ticks on round UTC times: the smallest step from 1 minute to 1 year that gives at most
+ * `target` ticks across the chart. Ticks strictly inside the chart only.
+ */
+export function axisTicks(chart: Pick<LaneChart, "start" | "end">, target = 5): Tick[] {
+  const span = Number(chart.end - chart.start);
+  if (span <= 0) return [];
+  // Beyond a year the step is simply the span divided into `target` parts, so the tick count stays bounded.
+  const step = BigInt(TICK_STEPS.find((s) => span / s <= target) ?? Math.ceil(span / target));
+  const ticks: Tick[] = [];
+  for (let at = (chart.start / step + 1n) * step; at < chart.end; at += step) {
+    ticks.push({ at, percent: percentAt(chart, at), label: tickLabel(at) });
+  }
+  return ticks;
+}
+
+/** The hero replay: the cursor starts after `startMs` and crosses the whole chart in `durationMs`. */
+export const REPLAY = { startMs: 700, durationMs: 2600 } as const;
+
+/** When (in ms after load) the cursor reaches `percent` of the chart; marks and rows light up then. */
+export function replayDelay(percent: number): number {
+  return Math.round(REPLAY.startMs + (Math.min(Math.max(percent, 0), 100) / 100) * REPLAY.durationMs);
+}
