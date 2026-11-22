@@ -91,6 +91,8 @@ test("create: the form enforces the contract's rules, then creates and funds an 
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Agreement #3");
   await expect(page.getByText("You are the client")).toBeVisible();
   await expect(page.locator("#milestone-1").getByText("Funded", { exact: true }).first()).toBeVisible();
+  // the agreement just created on the local chain (no snapshot there) has a complete, state-verified history
+  await expect(page.getByText("History complete", { exact: false }).first()).toBeVisible({ timeout: 30_000 });
 });
 
 test("roles: only the party that may act is offered an action", async ({ page }) => {

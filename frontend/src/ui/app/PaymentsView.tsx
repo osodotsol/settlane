@@ -1,12 +1,14 @@
 "use client";
 
 import { ExternalLink } from "lucide-react";
-import { useActivity } from "@/chain/queries";
+import { useHistory } from "@/chain/queries";
 import { txUrl } from "@/config/chain";
 import type { Activity } from "@/contract/events";
 import { payableTo, payoutsFor, rolesOf, totalsOf, type Role } from "@/domain/app-model";
 import { formatUtc, shortHex } from "@/domain/format";
+import { aggregateCoverage, describeHistory } from "@/domain/history-coverage";
 import { Amount } from "../Amount";
+import { HistoryNotice } from "../HistoryNotice";
 import { AttentionRow, ConnectPrompt, EmptyState, Loaded, PageHeader, ScopeTag, Section, StatTile, useAppData } from "./parts";
 
 type Payout = Activity & { role?: Role };
@@ -35,13 +37,13 @@ function PayoutList({ items, showRole }: { items: Payout[]; showRole: boolean })
 
 export function PaymentsView() {
   const { wallet, all, mine, now } = useAppData();
-  const activity = useActivity();
+  const activity = useHistory();
   const address = wallet.address;
   const lead = "Money you can take out, and money already paid out. Settlane only ever sends ETH on a provider's claim or a client's refund.";
 
   if (!address) {
     const t = totalsOf(all, now);
-    const payouts = (activity.data ?? []).filter((e) => e.kind === "claimed" || e.kind === "refunded").slice().reverse();
+    const payouts = (activity.data?.events ?? []).filter((e) => e.kind === "claimed" || e.kind === "refunded").slice().reverse();
     return (
       <>
         <PageHeader title="Payments" lead={lead} />
@@ -55,7 +57,14 @@ export function PaymentsView() {
               <StatTile tone="refunded" label="Refunded to clients" value={<Amount wei={t.refunded} variant="numeral" />} />
               <StatTile tone="funded" label="Still held" value={<Amount wei={t.outstanding} variant="numeral" />} />
             </div>
-            {activity.isPending ? <p role="status" className="text-ink-2">Reading events from Sepolia…</p> : payouts.length === 0 ? <p className="text-sm text-ink-2">No claim or refund has happened yet.</p> : <PayoutList items={payouts} showRole={false} />}
+            {activity.isPending ? (
+              <p role="status" className="text-ink-2">Reading events from Sepolia…</p>
+            ) : (
+              <>
+                <HistoryNotice status={activity.data?.status} coverage={aggregateCoverage(all, activity.data?.events ?? [])} className="mb-4" />
+                {payouts.length > 0 ? <PayoutList items={payouts} showRole={false} /> : describeHistory(activity.data?.status, aggregateCoverage(all, activity.data?.events ?? [])).level === "complete" ? <p className="text-sm text-ink-2">No claim or refund has happened yet.</p> : null}
+              </>
+            )}
           </Loaded>
         </Section>
       </>
@@ -63,7 +72,7 @@ export function PaymentsView() {
   }
 
   const pay = payableTo(mine, address, now);
-  const payouts = payoutsFor(activity.data ?? [], mine, address);
+  const payouts = payoutsFor(activity.data?.events ?? [], mine, address);
   const asProvider = mine.filter((a) => rolesOf(a, address).includes("provider"));
   const asClient = mine.filter((a) => rolesOf(a, address).includes("client"));
   const sum = (xs: typeof mine, f: "paid" | "refunded") => xs.reduce((s, a) => s + a[f], 0n);
@@ -90,10 +99,15 @@ export function PaymentsView() {
         <Section title="Your payout history" id="history" aside={<ScopeTag kind="yours" />}>
           {activity.isPending ? (
             <p role="status" className="text-ink-2">Reading events from Sepolia…</p>
-          ) : payouts.length === 0 ? (
-            <EmptyState title="No payouts yet">Claims and refunds in your agreements are listed here with their transactions.</EmptyState>
           ) : (
-            <PayoutList items={payouts} showRole />
+            <>
+              <HistoryNotice status={activity.data?.status} coverage={aggregateCoverage(mine, activity.data?.events ?? [])} className="mb-4" />
+              {payouts.length > 0 ? (
+                <PayoutList items={payouts} showRole />
+              ) : describeHistory(activity.data?.status, aggregateCoverage(mine, activity.data?.events ?? [])).level === "complete" ? (
+                <EmptyState title="No payouts yet">Claims and refunds in your agreements are listed here with their transactions.</EmptyState>
+              ) : null}
+            </>
           )}
         </Section>
       </Loaded>

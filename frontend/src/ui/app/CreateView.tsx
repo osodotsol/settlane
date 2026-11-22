@@ -2,7 +2,7 @@
 
 import { Plus, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
-import { useActivity, useOverview } from "@/chain/queries";
+import { useHistory, useOverview } from "@/chain/queries";
 import { useMounted, useWallet } from "@/chain/use-wallet";
 import { commit } from "@/domain/commitment";
 import { MAX_MILESTONES, UNIT_SECONDS, emptyForm, emptyMilestone, validateCreate, type FormErrors, type FormInput, type MilestoneInput, type Unit } from "@/domain/create-form";
@@ -78,7 +78,7 @@ function CreateForm({ restore }: { restore: boolean }) {
   const uid = useId();
   const wallet = useWallet();
   const overview = useOverview();
-  useActivity(); // warm the event history while the form is filled in
+  useHistory(); // warm the event history while the form is filled in
   const [form, setForm] = useState<FormInput>(() => (restore ? loadDraft() : emptyForm()));
   const [attempts, setAttempts] = useState(0);
   const summaryRef = useRef<HTMLDivElement>(null);

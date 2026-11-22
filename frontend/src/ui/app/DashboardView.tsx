@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useActivity } from "@/chain/queries";
+import { useHistory } from "@/chain/queries";
 import { attentionFor, totalsOf } from "@/domain/app-model";
 import { shortHex } from "@/domain/format";
 import { ActivityList } from "../ActivityList";
+import { HistoryNotice } from "../HistoryNotice";
 import { Amount } from "../Amount";
 import { ButtonLink } from "../Button";
 import { AgreementRow, AttentionRow, ConnectPrompt, EmptyState, Loaded, PageHeader, ScopeTag, Section, StatTile, useAppData } from "./parts";
@@ -28,13 +29,13 @@ function FundsBar({ paid, refunded, outstanding }: { paid: bigint; refunded: big
 
 export function DashboardView() {
   const { wallet, all, mine, now } = useAppData();
-  const activity = useActivity();
+  const activity = useHistory();
   const address = wallet.address;
   const scope = address ? mine : all;
   const totals = totalsOf(scope, now);
   const queue = attentionFor(mine, address, now);
   const ids = new Set(scope.map((a) => a.id));
-  const events = (activity.data ?? []).filter((e) => ids.has(e.id)).slice(-6).reverse();
+  const events = (activity.data?.events ?? []).filter((e) => ids.has(e.id)).slice(-6).reverse();
   const tag = <ScopeTag kind={address ? "yours" : "public"} />;
 
   return (
@@ -114,7 +115,10 @@ export function DashboardView() {
             ) : activity.isError ? (
               <p role="alert" className="text-ink-2">The event history could not be read right now.</p>
             ) : (
-              <ActivityList items={events} showAgreement empty="No events yet." />
+              <>
+                <HistoryNotice status={activity.data?.status} className="mb-4" />
+                <ActivityList items={events} showAgreement empty="No events yet." />
+              </>
             )}
           </div>
         </section>

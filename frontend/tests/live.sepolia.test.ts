@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { scanActivity } from "@/contract/events";
+import { history as engine } from "@/contract/history-instance";
 import { readAgreement } from "@/contract/read";
 import { fixture, fixtureActivity, fixtureAgreement } from "./fixture";
 
@@ -10,7 +10,14 @@ describe.runIf(process.env.SETTLANE_LIVE === "1")("live Sepolia equals the recor
     for (const id of [1, 2] as const) expect(await readAgreement(BigInt(id))).toEqual(fixtureAgreement(id));
   }, 60_000);
   it("the event history up to the recorded block decodes exactly as recorded", async () => {
-    const live = await scanActivity(BigInt(fixture.fromBlock), BigInt(fixture.toBlock));
-    expect(live).toEqual(fixtureActivity());
+    // through the application's own engine (verified snapshot + live scan): A1's and A2's events must equal the fixture
+    const { events, status } = await engine.refresh();
+    expect(status.snapshot.used).toBe(true);
+    const upTo = events.filter((e) => e.blockNumber >= BigInt(fixture.fromBlock) && e.blockNumber <= BigInt(fixture.toBlock)).map((e) => {
+      const copy: Partial<typeof e> = { ...e };
+      delete copy.blockHash; // the fixture predates block hashes
+      return copy;
+    });
+    expect(upTo).toEqual(fixtureActivity());
   }, 120_000);
 });

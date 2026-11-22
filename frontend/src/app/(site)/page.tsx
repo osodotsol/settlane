@@ -1,7 +1,8 @@
 import { ArrowRight, CircleCheck, TriangleAlert } from "lucide-react";
 import { RUNTIME_SHA256, REPOSITORY } from "@/config/chain";
-import { getActivity, getAgreement, getDeployedCodeHash, getOverview } from "@/contract/data";
+import { getAgreement, getDeployedCodeHash, getHistory, getOverview } from "@/contract/data";
 import { buildReplay, type ReplayStory } from "@/domain/replay";
+import { agreementCoverage } from "@/domain/history-coverage";
 import { sampleAgreement } from "@/domain/sample";
 import { Amount } from "@/ui/Amount";
 import { ButtonLink } from "@/ui/Button";
@@ -127,11 +128,14 @@ const FE_LINES: Tok[][] = [
 
 async function loadStories(): Promise<ReplayStory[]> {
   try {
-    const [one, two, history] = await Promise.all([getAgreement(1n), getAgreement(2n), getActivity()]);
+    const [one, two, history] = await Promise.all([getAgreement(1n), getAgreement(2n), getHistory()]);
+    // A replay is built only from an agreement whose recorded events equal what its state requires. Otherwise the
+    // hero falls back to the labelled illustration: no partial or invented replay is ever shown as real.
     const stories = [one, two]
       .map((v) => v.value.agreement)
       .filter((a): a is NonNullable<typeof a> => a !== null)
-      .map((a) => buildReplay(a, history.value));
+      .filter((a) => agreementCoverage(a, history.value.events).complete)
+      .map((a) => buildReplay(a, history.value.events));
     if (stories.length > 0) return stories;
   } catch {
     /* fall through to the labelled illustration */

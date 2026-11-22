@@ -1,18 +1,11 @@
 import { decodeEventLog, type Address, type Hex } from "viem";
-import { publicClient } from "@/chain/client";
-import { DEPLOY_BLOCK, SETTLANE_ADDRESS } from "@/config/chain";
 import { settlaneAbi } from "./abi";
 
-// Activity history from the contract's own events (frontend/PLAN.md §3, §6).
-// - Bounded queries: eth_getLogs in chunks of CHUNK blocks (publicnode accepts 10,000), CONCURRENCY at a time.
-// - Incremental: after the first scan only new blocks are read, plus a REORG_WINDOW of recent blocks whose
-//   entries are replaced (not merged), so a log from an orphaned block cannot survive a re-scan.
-// - Deduplicated by (transaction hash, log index) and ordered by (block number, log index).
-// Protocol ETH-transfer logs (EIP-7708, emitted by 0xfff…fffe) never match: the query filters on the contract address.
+// Event decoding and merging helpers. Where the events come from (the verified snapshot, the live scan, the
+// coverage checks) is in history.ts; the application never reads logs any other way.
 
 export const CHUNK = 10_000n;
 export const REORG_WINDOW = 64n;
-const CONCURRENCY = 4;
 
 export type ActivityKind = "created" | "submitted" | "approved" | "rejected" | "claimed" | "refunded";
 
@@ -23,6 +16,8 @@ export type Activity = {
   blockNumber: bigint;
   logIndex: number;
   txHash: Hex;
+  /** The hash of the block that held the log (identifies the block, so a reorganized block is told apart). */
+  blockHash?: Hex;
   timestamp: bigint;
   evidence?: bigint;
   revision?: bigint;
@@ -37,7 +32,7 @@ export type Activity = {
 };
 
 /** The minimal log shape the decoder needs (what eth_getLogs returns, and what the fixtures record). */
-export type RawLog = { topics: readonly Hex[]; data: Hex; blockNumber: bigint; logIndex: number; transactionHash: Hex };
+export type RawLog = { topics: readonly Hex[]; data: Hex; blockNumber: bigint; logIndex: number; transactionHash: Hex; blockHash?: Hex | null };
 
 /** Decodes one Settlane log. Returns null for anything that is not one of the six Settlane events. */
 export function decodeActivity(log: RawLog, timestamp: bigint): Activity | null {
@@ -47,7 +42,7 @@ export function decodeActivity(log: RawLog, timestamp: bigint): Activity | null 
   } catch {
     return null;
   }
-  const base = { blockNumber: log.blockNumber, logIndex: log.logIndex, txHash: log.transactionHash, timestamp };
+  const base = { blockNumber: log.blockNumber, logIndex: log.logIndex, txHash: log.transactionHash, ...(log.blockHash ? { blockHash: log.blockHash } : {}), timestamp };
   const a = decoded.args as Record<string, unknown>;
   switch (decoded.eventName) {
     case "AgreementCreated":
@@ -85,7 +80,9 @@ export function decodeActivity(log: RawLog, timestamp: bigint): Activity | null 
   }
 }
 
-const key = (a: Pick<Activity, "txHash" | "logIndex">) => `${a.txHash.toLowerCase()}:${a.logIndex}`;
+/** Identity of an event: the block, the transaction and the position in it (blockHash when known). */
+export const eventKey = (a: Pick<Activity, "txHash" | "logIndex" | "blockHash">) => `${(a.blockHash ?? "").toLowerCase()}:${a.txHash.toLowerCase()}:${a.logIndex}`;
+const key = eventKey;
 
 export function compareActivity(x: Activity, y: Activity): number {
   if (x.blockNumber !== y.blockNumber) return x.blockNumber < y.blockNumber ? -1 : 1;
@@ -113,7 +110,7 @@ export function chunkRanges(from: bigint, to: bigint, size = CHUNK): [bigint, bi
   return out;
 }
 
-async function pool<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+export async function pool<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
   let next = 0;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
@@ -124,43 +121,4 @@ async function pool<T, R>(items: readonly T[], limit: number, fn: (item: T) => P
   });
   await Promise.all(workers);
   return results;
-}
-
-/** Fetches and decodes every Settlane log in [from, to]. */
-export async function scanActivity(from: bigint, to: bigint): Promise<Activity[]> {
-  if (to < from) return [];
-  const ranges = chunkRanges(from, to);
-  const logs = (
-    await pool(ranges, CONCURRENCY, ([fromBlock, toBlock]) => publicClient.getLogs({ address: SETTLANE_ADDRESS, fromBlock, toBlock }))
-  ).flat();
-  const blocks = [...new Set(logs.map((l) => l.blockNumber).filter((b): b is bigint => b !== null))];
-  const times = new Map<bigint, bigint>();
-  await pool(blocks, CONCURRENCY, async (blockNumber) => {
-    const block = await publicClient.getBlock({ blockNumber });
-    times.set(blockNumber, block.timestamp);
-  });
-  const out: Activity[] = [];
-  for (const l of logs) {
-    if (l.blockNumber === null || l.logIndex === null || l.transactionHash === null || l.removed) continue;
-    const a = decodeActivity(
-      { topics: l.topics, data: l.data, blockNumber: l.blockNumber, logIndex: l.logIndex, transactionHash: l.transactionHash },
-      times.get(l.blockNumber) ?? 0n,
-    );
-    if (a) out.push(a);
-  }
-  return out;
-}
-
-// Incremental state for this server process.
-let known: Activity[] = [];
-let scannedTo: bigint | null = null;
-
-/** Every Settlane event from the deploy block to the latest block, ordered. */
-export async function refreshActivity(): Promise<Activity[]> {
-  const latest = await publicClient.getBlockNumber();
-  const from = scannedTo === null ? DEPLOY_BLOCK : scannedTo - REORG_WINDOW + 1n > DEPLOY_BLOCK ? scannedTo - REORG_WINDOW + 1n : DEPLOY_BLOCK;
-  const incoming = await scanActivity(from, latest);
-  known = mergeWindow(known, from, incoming);
-  scannedTo = latest;
-  return known;
 }

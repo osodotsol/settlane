@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useAgreementData, useActivity } from "@/chain/queries";
+import { useAgreementData, useHistory } from "@/chain/queries";
 import { rolesOf, isOpen } from "@/domain/app-model";
 import { formatUtc } from "@/domain/format";
 import { buildLaneChart } from "@/domain/lane";
 import { buildLedger } from "@/domain/ledger";
+import { agreementCoverage } from "@/domain/history-coverage";
 import { ActivityList } from "../ActivityList";
+import { HistoryNotice } from "../HistoryNotice";
 import { Address } from "../Address";
 import { Avatar } from "../Avatar";
 import { LedgerStrip } from "../LedgerStrip";
@@ -30,7 +32,7 @@ function Card({ children, title, id, lead }: { children: React.ReactNode; title:
 export function AgreementWorkspace({ id }: { id: bigint }) {
   const { address } = useWallet();
   const q = useAgreementData(id);
-  const activity = useActivity();
+  const activity = useHistory();
   useAppData();
   if (q.isPending || q.isError || q.data.agreement === null) {
     return (
@@ -51,7 +53,7 @@ export function AgreementWorkspace({ id }: { id: bigint }) {
     );
   }
   const { agreement, blockTime: now } = q.data;
-  const history = (activity.data ?? []).filter((a) => a.id === id);
+  const history = (activity.data?.events ?? []).filter((a) => a.id === id);
   const created = history.find((a) => a.kind === "created");
   const earliest = agreement.milestones.reduce((x, m) => (m.deliverBy < x ? m.deliverBy : x), agreement.milestones[0]!.deliverBy);
   const chart = buildLaneChart(agreement.milestones, history, created?.timestamp ?? earliest - agreement.reviewPeriod, now);
@@ -109,7 +111,14 @@ export function AgreementWorkspace({ id }: { id: bigint }) {
       </section>
 
       <Card title="History" id="history" lead="Decoded from the contract's events on Sepolia, in chain order.">
-        {activity.isPending ? <p role="status" className="text-ink-2">Reading events from Sepolia…</p> : <ActivityList items={history} />}
+        {activity.isPending ? (
+          <p role="status" className="text-ink-2">Reading events from Sepolia…</p>
+        ) : (
+          <>
+            <HistoryNotice status={activity.data?.status} coverage={agreementCoverage(agreement, history)} className="mb-5" />
+            <ActivityList items={history} empty="No events could be read for this agreement." />
+          </>
+        )}
       </Card>
     </>
   );

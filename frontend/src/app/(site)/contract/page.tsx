@@ -3,7 +3,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { CI_URL, DEPLOY_BLOCK, DEPLOY_TX, FE_VERSION, REPOSITORY, RUNTIME_SHA256, SETTLANE_ADDRESS, txUrl } from "@/config/chain";
 import { settlaneAbi } from "@/contract/abi";
-import { getActivity, getDeployedCodeHash } from "@/contract/data";
+import { getDeployedCodeHash, getHistory } from "@/contract/data";
+import { HistoryNotice } from "@/ui/HistoryNotice";
 import type { Activity, ActivityKind } from "@/contract/events";
 import { formatUtc, shortHex } from "@/domain/format";
 import { Address } from "@/ui/Address";
@@ -49,13 +50,13 @@ const idx = (i: number) => ({ "--i": i }) as React.CSSProperties;
 const delay = (ms: number) => ({ "--d": ms }) as React.CSSProperties;
 
 export default async function ContractPage() {
-  const [code, activity] = await Promise.allSettled([getDeployedCodeHash(), getActivity()]);
+  const [code, activity] = await Promise.allSettled([getDeployedCodeHash(), getHistory()]);
   const live = code.status === "fulfilled" ? code.value.value : null;
   const status = live === null ? "unknown" : live.sha256 === RUNTIME_SHA256 ? "match" : "mismatch";
 
   // One row per transaction, in chain order; the deployment first.
   const txs = new Map<string, Activity[]>();
-  if (activity.status === "fulfilled") for (const a of activity.value.value) txs.set(a.txHash, [...(txs.get(a.txHash) ?? []), a]);
+  if (activity.status === "fulfilled") for (const a of activity.value.value.events) txs.set(a.txHash, [...(txs.get(a.txHash) ?? []), a]);
 
   const fns = settlaneAbi.filter((x) => x.type === "function") as unknown as Fn[];
   const events = settlaneAbi.filter((x) => x.type === "event") as unknown as Ev[];
@@ -124,6 +125,7 @@ export default async function ContractPage() {
       <section aria-labelledby="transactions" className="mt-20">
         <h2 id="transactions" className="text-title reveal">Transactions</h2>
         <p className="reveal mt-1 text-sm text-ink-3">The deployment, then every transaction that emitted a Settlane event, in chain order.</p>
+        {activity.status === "fulfilled" && <HistoryNotice status={activity.value.value.status} className="mt-4" />}
         {activity.status === "rejected" ? (
           <div className="mt-4"><Banner title="The event history could not be read right now">Reload to try again.</Banner></div>
         ) : (

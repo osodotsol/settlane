@@ -2,7 +2,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
-import { refreshActivity } from "@/contract/events";
+import { history } from "@/contract/history-instance";
 import { latestBlockTime, readAgreement, readOverview } from "@/contract/read";
 
 // Browser-side reads of the deployed contract through the same read layer the server pages use (public,
@@ -18,7 +18,8 @@ export const keys = {
 
 export const useOverview = () => useQuery({ queryKey: keys.overview, queryFn: readOverview, refetchInterval: POLL });
 
-export const useActivity = () => useQuery({ queryKey: keys.activity, queryFn: refreshActivity, refetchInterval: POLL * 2 });
+/** Events (verified snapshot + live scan) with the status that says whether they are complete. */
+export const useHistory = () => useQuery({ queryKey: keys.activity, queryFn: () => history.refresh(), refetchInterval: POLL * 2 });
 
 export function useAgreementData(id: bigint) {
   return useQuery({

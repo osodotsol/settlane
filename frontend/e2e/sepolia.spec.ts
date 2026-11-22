@@ -5,6 +5,7 @@ import path from "node:path";
 import { createPublicClient, decodeEventLog, http } from "viem";
 import { sepolia } from "viem/chains";
 import { settlaneAbi } from "../src/contract/abi";
+import snapshotFile from "../src/contract/history-snapshot.json";
 
 // Live expectations come from the chain itself (other agreements may be created on the deployment at any time):
 // the network's totals and its event list, read read-only from a public endpoint.
@@ -23,13 +24,14 @@ async function networkTotals() {
   }
 }
 async function networkEvents() {
-  const head = await chain.getBlockNumber();
-  const out: string[] = [];
-  for (let from = 12175958n; from <= head; from += 10_000n) {
-    const to = from + 9_999n < head ? from + 9_999n : head;
-    for (const l of await chain.getLogs({ address: SETTLANE, fromBlock: from, toBlock: to })) out.push(decodeEventLog({ abi: settlaneAbi, topics: l.topics, data: l.data }).eventName);
+  // the verified snapshot (old logs are pruned on public nodes) plus the logs after its boundary, read now
+  const names = snapshotFile.events.map((e) => decodeEventLog({ abi: settlaneAbi, topics: e.topics as [`0x${string}`, ...`0x${string}`[]], data: e.data as `0x${string}` }).eventName as string);
+  const head = (await chain.getBlockNumber()) - 3n; // the node that answers getLogs can lag the one that reported the head
+  for (let from = BigInt(snapshotFile.lastVerifiedBlock) + 1n; from <= head; from += 5_000n) {
+    const to = from + 4_999n < head ? from + 4_999n : head;
+    for (const l of await chain.getLogs({ address: SETTLANE, fromBlock: from, toBlock: to })) names.push(decodeEventLog({ abi: settlaneAbi, topics: l.topics, data: l.data }).eventName as string);
   }
-  return out;
+  return names;
 }
 
 // Against the real Sepolia deployment (read-only). A1 and A2 are terminal, so their values are fixed.
@@ -69,6 +71,27 @@ test("agreement 1: paid in full, exact wei, history in chain order", async ({ pa
   await expect(history.nth(2)).toContainText("Verifier approved milestone 1, revision 1");
   await expect(history.nth(3)).toContainText("Provider claimed 0.001 ETH for milestone 1");
   await expect(history.nth(3)).toContainText("Block 12176195");
+  // the history is verified against the contract's own state: complete is claimed only when the counts match
+  await expect(page.locator('[data-history="complete"]').first()).toContainText("History complete");
+  await expect(page.locator('[data-history="incomplete"]')).toHaveCount(0);
+});
+
+test("agreements 3 and 4: their real-wallet histories are complete and in chain order", async ({ page }) => {
+  await page.goto("/agreements/3");
+  const h3 = page.locator("#history").locator("..").getByRole("listitem");
+  await expect(h3).toHaveCount(2);
+  await expect(h3.nth(0)).toContainText("Agreement created and funded with 0.0002 ETH");
+  await expect(h3.nth(1)).toContainText("Client refunded 0.0002 ETH for milestone 1");
+  await expect(h3.nth(1)).toContainText("Block 12186149");
+  await expect(page.locator('[data-history="complete"]').first()).toBeVisible();
+  await page.goto("/agreements/4");
+  const h4 = page.locator("#history").locator("..").getByRole("listitem");
+  await expect(h4).toHaveCount(4);
+  await expect(h4.nth(1)).toContainText("revision 1");
+  await expect(h4.nth(2)).toContainText("Verifier approved milestone 1, revision 1");
+  await expect(h4.nth(3)).toContainText("Provider claimed 0.0002 ETH");
+  await expect(h4.nth(3)).toContainText("Block 12186326");
+  await expect(page.locator('[data-history="incomplete"]')).toHaveCount(0);
 });
 
 test("agreement 2: refunded in full after its delivery deadline", async ({ page }) => {

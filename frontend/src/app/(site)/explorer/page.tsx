@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { getActivity, getOverview } from "@/contract/data";
+import { getHistory, getOverview } from "@/contract/data";
 import type { Agreement } from "@/contract/read";
 import { formatRelative, formatUtc } from "@/domain/format";
 import { displayState, isFinal } from "@/domain/lifecycle";
@@ -34,8 +34,8 @@ export default async function ExplorerPage() {
   }
   let createdAt = new Map<string, bigint>();
   try {
-    const activity = await getActivity();
-    createdAt = new Map(activity.value.filter((a) => a.kind === "created").map((a) => [a.id.toString(), a.timestamp]));
+    const history = await getHistory();
+    createdAt = new Map(history.value.events.filter((a) => a.kind === "created").map((a) => [a.id.toString(), a.timestamp]));
   } catch {
     /* creation times are optional */
   }

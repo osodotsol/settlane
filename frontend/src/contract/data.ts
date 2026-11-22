@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { publicClient } from "@/chain/client";
 import { SETTLANE_ADDRESS } from "@/config/chain";
 import { cached, type Cached } from "./cache";
-import { refreshActivity, type Activity } from "./events";
+import { history } from "./history-instance";
+import type { History } from "./history";
 import { latestBlockTime, readAgreement, readOverview, type Agreement } from "./read";
 
 // Cached server-side reads used by the pages (see cache.ts). TTLs are short so a new agreement or a new
@@ -13,7 +14,8 @@ export type Overview = Awaited<ReturnType<typeof readOverview>>;
 
 export const getOverview = (): Promise<Cached<Overview>> => cached("overview", TTL, readOverview);
 
-export const getActivity = (): Promise<Cached<Activity[]>> => cached("activity", TTL, refreshActivity);
+/** Events (verified snapshot + live scan) with an honest status. Never throws: a node outage is reported in `status`. */
+export const getHistory = (): Promise<Cached<History>> => cached("history", TTL, () => history.refresh());
 
 export const getAgreement = (id: bigint): Promise<Cached<{ agreement: Agreement | null; blockTime: bigint }>> =>
   cached(`agreement:${id}`, TTL, async () => {

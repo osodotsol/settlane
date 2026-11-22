@@ -71,12 +71,32 @@ test("a new event is added to the history exactly once, in order", async ({ page
     await expect(items).toHaveCount(2);
     await expect(items.nth(1)).toContainText("Provider submitted evidence");
     await expect(items.nth(1)).toContainText("revision 1");
+    // state and events are cached separately for up to 10 s, so wait for both to catch up
+    await expect(page.locator("#milestones").locator("..").getByText("In review", { exact: true })).toHaveCount(1);
   });
-  await expect(page.locator("#milestones").locator("..").getByText("In review", { exact: true })).toHaveCount(1);
+  // the history is verified against the contract's state on a deployment with NO snapshot (the local chain): full scan,
+  // and "complete" only because the events equal what the state requires (1 created, 1 submitted)
+  await expect(page.locator('[data-history="complete"]').first()).toContainText("History complete");
+  await expect(page.locator('[data-history="incomplete"]')).toHaveCount(0);
   // a later reload, after further incremental scans, still shows each event once
   await page.waitForTimeout(12_000);
   await page.goto("/agreements/3");
   await expect(page.locator("#history").locator("..").getByRole("listitem")).toHaveCount(2);
+});
+
+test("a history that is behind the contract's state is never called complete", async ({ page }) => {
+  // Agreement 3 has one submission recorded. Submit again and look at once: the contract's state (revision 2) can be ahead of
+  // the cached events for a moment. Whenever the list holds fewer events than the state requires, the page says so.
+  await send(PROVIDER, "submit", [3n, 0, 0xabdn]);
+  await until(page, "/agreements/3", async () => {
+    const items = page.locator("#history").locator("..").getByRole("listitem");
+    await expect(items).toHaveCount(3);
+    await expect(page.locator('[data-history="complete"]').first()).toContainText("History complete");
+  });
+  // at no point during that wait may the page have shown a list that disagrees with the state as complete
+  const bad = await page.locator('[data-history="complete"]').count();
+  const rows = await page.locator("#history").locator("..").getByRole("listitem").count();
+  expect(bad === 0 || rows === 3).toBe(true);
 });
 
 test("after a deadline passes, the lane and the state show the refund eligibility", async ({ page }) => {

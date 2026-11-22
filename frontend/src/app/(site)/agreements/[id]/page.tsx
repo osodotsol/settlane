@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getActivity, getAgreement } from "@/contract/data";
+import { getAgreement, getHistory } from "@/contract/data";
 import type { Activity } from "@/contract/events";
 import { formatUtc } from "@/domain/format";
+import { agreementCoverage } from "@/domain/history-coverage";
+import { HistoryNotice } from "@/ui/HistoryNotice";
 import { buildLaneChart } from "@/domain/lane";
 import { buildLedger } from "@/domain/ledger";
 import { displayState, isFinal } from "@/domain/lifecycle";
@@ -54,16 +56,17 @@ export default async function AgreementPage({ params }: Params) {
   const { agreement, blockTime: now } = view.value;
   if (agreement === null) notFound();
 
-  // History is optional: if it cannot be read, the page still shows state, accounting and the lanes.
+  // History never blocks the page: state, accounting and the lanes are live, and the event list says if it is incomplete.
   let history: Activity[] | null = null;
-  let historyStale = false;
+  let historyStatus: Awaited<ReturnType<typeof getHistory>>["value"]["status"] | undefined;
   try {
-    const all = await getActivity();
-    history = all.value.filter((a) => a.id === id);
-    historyStale = all.stale;
+    const all = await getHistory();
+    history = all.value.events.filter((a) => a.id === id);
+    historyStatus = all.value.status;
   } catch {
     history = null;
   }
+  const coverage = history ? agreementCoverage(agreement, history) : undefined;
   const created = history?.find((a) => a.kind === "created");
   const earliestDeadline = agreement.milestones.reduce((x, m) => (m.deliverBy < x ? m.deliverBy : x), agreement.milestones[0]!.deliverBy);
   const chart = buildLaneChart(agreement.milestones, history ?? [], created?.timestamp ?? earliestDeadline - agreement.reviewPeriod, now);
@@ -92,7 +95,7 @@ export default async function AgreementPage({ params }: Params) {
         </span>
       </div>
 
-      {(view.stale || historyStale) && (
+      {view.stale && (
         <div className="mt-6">
           <Banner title="Showing the last data read from Sepolia">
             The public endpoints are not answering right now. These figures were read at {new Date(view.fetchedAt).toISOString().slice(0, 19).replace("T", " ")} UTC.
@@ -137,11 +140,8 @@ export default async function AgreementPage({ params }: Params) {
       <section aria-labelledby="history" className="card mt-6 p-6 sm:p-8">
         <h2 id="history" className="text-title">History</h2>
         <p className="mb-6 mt-1 text-sm text-ink-3">Decoded from the contract&apos;s events on Sepolia, in chain order.</p>
-        {history === null ? (
-          <Banner title="The history could not be read right now">The state above is current; reload to try the event history again.</Banner>
-        ) : (
-          <ActivityList items={history} />
-        )}
+        <HistoryNotice status={historyStatus} coverage={coverage} className="mb-5" />
+        {history === null ? null : <ActivityList items={history} empty="No events could be read for this agreement." />}
       </section>
     </Container>
   );

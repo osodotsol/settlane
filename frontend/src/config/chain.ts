@@ -32,6 +32,21 @@ export const RPC_URLS: readonly string[] = (
   .map((u) => u.trim())
   .filter(Boolean);
 
+/**
+ * Where event LOGS are read from, in order. Public nodes prune old logs: publicnode answers "pruned history
+ * unavailable" for ranges whose logs are older than a few thousand blocks (docs/EVENT_HISTORY.md), while Tenderly
+ * and the Ethereum Foundation's ethpandaops node returned them (verified, not assumed). Logs older than the verified
+ * snapshot are never needed from these; they only cover the blocks after it. If NEXT_PUBLIC_RPC_URLS is set (the
+ * local test chain) the same endpoints serve logs, and NEXT_PUBLIC_HISTORY_RPC_URLS overrides both.
+ */
+export const HISTORY_RPC_URLS: readonly string[] = (
+  process.env.NEXT_PUBLIC_HISTORY_RPC_URLS ??
+  (process.env.NEXT_PUBLIC_RPC_URLS ? process.env.NEXT_PUBLIC_RPC_URLS : [...RPC_URLS, "https://rpc.sepolia.ethpandaops.io"].join(","))
+)
+  .split(",")
+  .map((u) => u.trim())
+  .filter(Boolean);
+
 export const BLOCK_EXPLORER = "https://sepolia.etherscan.io";
 
 /** Hosted CI (GitHub Actions) for the repository. */
