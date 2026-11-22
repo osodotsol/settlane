@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ACTION_LABEL, milestonesAs, type MilestoneEntry, type Role } from "@/domain/app-model";
+import { milestoneStatusLine, milestonesAs, type MilestoneEntry, type Role } from "@/domain/app-model";
 import { formatRelative } from "@/domain/format";
 import { displayState } from "@/domain/lifecycle";
 import { Amount } from "../Amount";
@@ -9,24 +9,17 @@ import { StateChip } from "../StateChip";
 import { ConnectPrompt, EmptyState, Loaded, PageHeader, RoleExample, ScopeTag, Section, useAppData } from "./parts";
 
 function Entry({ e, now, role, publicView = false }: { e: MilestoneEntry; now: bigint; role: Role; publicView?: boolean }) {
+  // Deadlines matter only while the milestone is still open; finished and expired milestones show none.
   const due = e.state === "funded" ? e.m.deliverBy : e.state === "submitted" ? e.m.decideBy : null;
-  const line = publicView
-    ? e.state === "funded"
-      ? "Waiting for the provider's evidence"
-      : "Waiting for the verifier's decision"
-    : e.actions.length > 0
-      ? e.actions.map((a) => ACTION_LABEL[a]).join(" or ")
-      : role === "provider"
-        ? "Waiting on the verifier or the client"
-        : "Waiting on the provider or the client";
+  const line = milestoneStatusLine(e.state, role, publicView ? [] : e.actions);
   return (
     <li>
       <Link href={`/app/agreements/${e.a.id}#milestone-${e.m.index + 1}`} className="card card-hover group flex flex-wrap items-center justify-between gap-x-6 gap-y-3 p-4 sm:px-5">
         <div className="min-w-0">
           <p className="text-heading">Agreement #{e.a.id.toString()} · milestone {e.m.index + 1}</p>
           <p className="mt-1 text-sm text-ink-2">
-            <span className={!publicView && e.actions.length > 0 ? "font-semibold text-ink" : undefined}>{line}</span>
-            {due !== null && <> · {due > now ? `closes ${formatRelative(due, now)}` : "deadline passed"}</>}
+            <span className={line.act ? "font-semibold text-ink" : undefined}>{line.text}</span>
+            {due !== null && <> · closes {formatRelative(due, now)}</>}
           </p>
         </div>
         <div className="flex items-center gap-4">

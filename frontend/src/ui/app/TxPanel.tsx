@@ -1,11 +1,21 @@
 "use client";
 
 import { ExternalLink } from "lucide-react";
-import type { ReactNode } from "react";
-import type { TxState } from "@/chain/write";
+import { useSyncExternalStore, type ReactNode } from "react";
+import { useConnection } from "wagmi";
+import { sepolia } from "wagmi/chains";
+import { formatElapsed, useNow } from "@/chain/use-now";
+import { describeTrace, traceStore } from "@/chain/wallet-trace";
+import type { TxEntry } from "@/chain/tx-registry";
+import type { useTx } from "@/chain/write";
 import { txUrl } from "@/config/chain";
+import { shortHex } from "@/domain/format";
 import { Button } from "../Button";
 
+// The life of one wallet request, stated exactly: what the page knows, and what it does not. A wallet that has
+// not answered is "waiting", never "cancelled"; a hash means "sent"; only a successful receipt means "confirmed".
+
+const SLOW_MS = 15_000;
 const STEPS = ["Checked with the contract", "Signed in your wallet", "Confirmed on Sepolia"] as const;
 
 function Steps({ done, now }: { done: number; now: number }) {
@@ -21,44 +31,171 @@ function Steps({ done, now }: { done: number; now: number }) {
   );
 }
 
-const Tx = ({ hash }: { hash: string }) => (
+const Tx = ({ hash, label = "View the transaction" }: { hash: string; label?: string }) => (
   <a href={txUrl(hash)} target="_blank" rel="noreferrer" className="draw-link inline-flex items-center gap-1 text-ink-2 hover:text-ink">
-    View the transaction <ExternalLink aria-hidden size={14} />
+    {label} <ExternalLink aria-hidden size={14} />
     <span className="sr-only">(Etherscan, opens in a new tab)</span>
   </a>
 );
 
-/** The life of one transaction, from the contract check to its receipt. Nothing here is assumed: it mirrors `TxState`. */
-export function TxPanel({ state, onDismiss, onSuccess }: { state: TxState; onDismiss: () => void; onSuccess?: (s: Extract<TxState, { phase: "confirmed" }>) => ReactNode }) {
-  if (state.phase === "idle") return null;
+const EMPTY: never[] = [];
+
+/** What the page asked the wallet during this request (method names and timings only). */
+function WalletActivity({ entry, now }: { entry: TxEntry; now: number }) {
+  const all = useSyncExternalStore(traceStore.subscribe, traceStore.snapshot, () => EMPTY);
+  const lines = describeTrace(all.filter((e) => e.startedAt >= entry.startedAt), now);
+  if (lines.length === 0) return null;
+  return (
+    <details className="mt-3 text-micro text-ink-3">
+      <summary className="cursor-pointer select-none hover:text-ink">What this page asked the wallet</summary>
+      <ul className="mt-1.5 space-y-0.5 text-data text-[0.75rem]">
+        {lines.map((l, i) => <li key={i}>{l}</li>)}
+      </ul>
+      <p className="mt-1.5">This is only what the page sent and what came back. It cannot see inside MetaMask.</p>
+    </details>
+  );
+}
+
+function Guidance() {
+  return (
+    <ol className="mt-2 list-decimal space-y-1 pl-5 text-ink-2">
+      <li>Click the MetaMask icon in the browser toolbar. The request may be waiting there, or in a MetaMask window behind this one.</li>
+      <li>If MetaMask shows an error, for example &quot;Cannot read properties of undefined (reading &apos;origin&apos;)&quot;, press Try again in MetaMask, then look for the request.</li>
+      <li>Check it (Sepolia, the right account, the amount) and approve or reject it. Do not press the button on this page again.</li>
+    </ol>
+  );
+}
+
+export function TxPanel({ tx, onSuccess }: { tx: ReturnType<typeof useTx>; onSuccess?: (createdId: bigint | undefined) => ReactNode }) {
+  const { entry } = tx;
+  const { address, chainId } = useConnection();
+  const open = entry !== undefined && (entry.state.phase === "awaiting" || entry.state.phase === "pending" || entry.state.phase === "checking");
+  const now = useNow(open);
+  if (!entry) return null;
+  const s = entry.state;
   const box = "mt-4 rounded-xl border px-4 py-3 text-sm";
-  switch (state.phase) {
+  const otherAccount = address && address.toLowerCase() !== entry.account.toLowerCase() && (s.phase === "awaiting" || s.phase === "pending" || s.phase === "unknown");
+  const notes = (
+    <>
+      {otherAccount && (
+        <p className="mt-2 rounded-lg border border-submitted bg-submitted-tint px-3 py-2 text-ink">
+          This request belongs to {shortHex(entry.account)}. You are now connected as {shortHex(address!)}. If it is approved in MetaMask it is still signed by {shortHex(entry.account)}; the page will not send it again.
+        </p>
+      )}
+      {s.phase === "awaiting" && chainId !== undefined && chainId !== sepolia.id && (
+        <p className="mt-2 rounded-lg border border-danger bg-danger-tint px-3 py-2 text-ink">Your wallet switched network while this request was open. If MetaMask still asks, check that it says Sepolia; otherwise reject it.</p>
+      )}
+      {entry.lateHashes.length > 0 && (
+        <p className="mt-2 text-ink-2">
+          An earlier request for this action was answered late and sent: {entry.lateHashes.map((h) => <span key={h} className="mr-2"><Tx hash={h} label={shortHex(h, 10, 6)} /></span>)}
+        </p>
+      )}
+      <WalletActivity entry={entry} now={now} />
+    </>
+  );
+  const dismiss = <div className="mt-3"><Button variant="secondary" size="sm" onClick={tx.dismiss}>Dismiss</Button></div>;
+
+  switch (s.phase) {
     case "checking":
-      return <div role="status" className={`${box} border-line bg-surface`}><Steps done={0} now={0} /><p className="mt-2 text-ink-2">Checking the call against the contract. Nothing is signed yet.</p></div>;
-    case "signing":
-      return <div role="status" className={`${box} border-line bg-surface`}><Steps done={1} now={1} /><p className="mt-2 text-ink-2">Confirm the transaction in your wallet. Check the network says Sepolia.</p></div>;
-    case "confirming":
-      return <div role="status" className={`${box} border-line bg-surface`}><Steps done={2} now={2} /><p className="mt-2 text-ink-2">Sent. Waiting for Sepolia to include it in a block. This usually takes under a minute. <Tx hash={state.hash} /></p></div>;
+      return <div role="status" className={`${box} border-line bg-surface`}><Steps done={0} now={0} /><p className="mt-2 text-ink-2">Checking the call against the contract. Nothing has been asked of your wallet yet.</p></div>;
+    case "awaiting": {
+      const elapsed = now - s.since;
+      return (
+        <div role="status" className={`${box} ${elapsed >= SLOW_MS ? "border-submitted" : "border-line"} bg-surface`}>
+          <Steps done={1} now={1} />
+          <p className="mt-2 font-semibold text-ink">Waiting for your signature in MetaMask · {formatElapsed(elapsed)}</p>
+          {elapsed < SLOW_MS ? (
+            <p className="mt-1 text-ink-2">Confirm it in MetaMask. Check that the network says Sepolia.</p>
+          ) : (
+            <>
+              <p className="mt-1 text-ink-2">MetaMask has not answered yet. Nothing has been sent.</p>
+              <Guidance />
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <Button variant="secondary" size="sm" onClick={tx.stopWaiting}>Stop waiting</Button>
+                <span className="text-micro text-ink-3">This does not cancel the request in MetaMask. If you answer it later, this page still records the result.</span>
+              </div>
+            </>
+          )}
+          {notes}
+        </div>
+      );
+    }
+    case "pending":
+      return (
+        <div role="status" className={`${box} border-line bg-surface`}>
+          <Steps done={2} now={2} />
+          <p className="mt-2 font-semibold text-ink">Sent. Waiting for a block · {formatElapsed(now - s.since)}</p>
+          <p className="mt-1 text-ink-2">Do not send it again. <Tx hash={s.hash} /></p>
+          {notes}
+        </div>
+      );
     case "confirmed":
       return (
         <div role="status" className={`${box} border-paid bg-paid-tint`}>
           <Steps done={3} now={-1} />
-          <p className="mt-2 font-semibold text-ink">Confirmed in block {state.blockNumber.toString()}.</p>
-          <p className="mt-1 text-ink-2"><Tx hash={state.hash} /></p>
-          {onSuccess?.(state)}
-          <div className="mt-3"><Button variant="secondary" size="sm" onClick={onDismiss}>Dismiss</Button></div>
+          <p className="mt-2 font-semibold text-ink">Confirmed in block {s.blockNumber.toString()}.</p>
+          <p className="mt-1 text-ink-2"><Tx hash={s.hash} /></p>
+          {onSuccess?.(s.createdId)}
+          {notes}
+          {dismiss}
         </div>
       );
+    case "found":
+      return (
+        <div role="status" className={`${box} border-paid bg-paid-tint`}>
+          <p className="font-semibold text-ink">Done on-chain: the contract shows this action took effect.</p>
+          <p className="mt-1 text-ink-2">The page did not see MetaMask&apos;s answer, so it has no transaction link; the agreement&apos;s history lists it.</p>
+          {onSuccess?.(s.createdId)}
+          {notes}
+          {dismiss}
+        </div>
+      );
+    case "rejected":
+      return <div role="status" className={`${box} border-line bg-surface`}><p className="font-semibold text-ink">You declined the request in MetaMask.</p><p className="mt-1 text-ink-2">Nothing was sent. You can try again when you are ready.</p>{notes}{dismiss}</div>;
+    case "cancelled":
+      return <div role="status" className={`${box} border-line bg-surface`}><p className="font-semibold text-ink">Cancelled in MetaMask.</p><p className="mt-1 text-ink-2">The wallet replaced this transaction with a cancellation, so the action did not happen. <Tx hash={s.hash} label="View the cancellation" /></p>{notes}{dismiss}</div>;
+    case "reverted":
+      return <div role="alert" className={`${box} border-danger bg-danger-tint`}><p className="font-semibold text-ink">Mined, but the contract reverted it.</p><p className="mt-1 text-ink-2">No state changed and no ETH moved; the network fee was paid. Refresh to see the current state. <Tx hash={s.hash} /></p>{notes}{dismiss}</div>;
     case "failed":
       return (
         <div role="alert" className={`${box} border-danger bg-danger-tint`}>
-          <p className="font-semibold text-ink">{state.problem.message}</p>
-          <p className="mt-1 text-ink-2">{state.problem.recovery}</p>
-          {state.problem.reason && <p className="mt-2 text-micro text-ink-3">Contract reason: <span className="text-data text-[0.8125rem]">{state.problem.reason}</span></p>}
-          {state.hash && <p className="mt-2"><Tx hash={state.hash} /></p>}
-          <div className="mt-3"><Button variant="secondary" size="sm" onClick={onDismiss}>Dismiss</Button></div>
+          <p className="font-semibold text-ink">{s.problem.message}</p>
+          <p className="mt-1 text-ink-2">{s.problem.recovery}</p>
+          {s.problem.reason && <p className="mt-2 text-micro text-ink-3">Contract reason: <span className="text-data text-[0.8125rem]">{s.problem.reason}</span></p>}
+          {notes}
+          {dismiss}
         </div>
       );
+    case "unknown": {
+      const what = {
+        stopped: "The page stopped waiting. The request may still be open in MetaMask: if it appears, check it and approve or reject it.",
+        "wallet-error": `${s.problem?.message ?? "The wallet returned an error."} The page cannot tell whether anything was sent.`,
+        "receipt-timeout": "It was sent, but no block has included it after 10 minutes.",
+        reloaded: "This page was reloaded or reopened while a request for this action was open. It may still be open in MetaMask.",
+        replaced: "The wallet replaced this transaction with a different one.",
+      }[s.reason];
+      const c = entry.check;
+      return (
+        <div role="alert" className={`${box} border-submitted bg-surface`}>
+          <p className="font-semibold text-ink">Outcome not known yet</p>
+          <p className="mt-1 text-ink-2">{what} {s.hash && <Tx hash={s.hash} />}</p>
+          {c && (
+            <p className="mt-2 text-ink-2">
+              {c.pendingInMempool
+                ? `Checked: a transaction from ${shortHex(entry.account)} is waiting for a block. Do not send another; check again shortly.`
+                : entry.cleared
+                  ? `Checked: nothing from ${shortHex(entry.account)} is pending and this action has not happened. If MetaMask still shows the old request, reject it there first. You can now send a new request.`
+                  : `Checked: this action has not happened yet.`}
+            </p>
+          )}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button variant="secondary" size="sm" onClick={() => void tx.reconcile()}>Check the chain</Button>
+            {entry.cleared && <Button variant="quiet" size="sm" onClick={tx.dismiss}>Dismiss</Button>}
+          </div>
+          {notes}
+        </div>
+      );
+    }
   }
 }
 

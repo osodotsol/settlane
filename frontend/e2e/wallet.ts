@@ -17,6 +17,13 @@ export async function installWallet(page: Page, opts: WalletOptions) {
       w.__calls = [] as string[];
       w.__reject = false;
       w.__authorized = authorized; // false: like a wallet that has not yet approved this site (no account until requested)
+      // Held requests reproduce a wallet that does not answer (as MetaMask did in the real-wallet run): the request is
+      // recorded when the page makes it and answered only when the test calls release.
+      w.__holdSign = false;
+      w.__held = [] as { tx: unknown; res: (v: unknown) => void; rej: (e: unknown) => void }[];
+      w.__sent = [] as unknown[];
+      w.__holdConnect = false;
+      w.__heldConnect = null as null | (() => void);
       const listeners: Record<string, ((...a: unknown[]) => void)[]> = {};
       const hex = (n: number) => `0x${n.toString(16)}`;
       const forward = async (method: string, params: unknown[]) => {
@@ -31,6 +38,16 @@ export async function installWallet(page: Page, opts: WalletOptions) {
           (w.__calls as string[]).push(method);
           switch (method) {
             case "eth_requestAccounts":
+              if (w.__holdConnect) {
+                if (w.__heldConnect) throw Object.assign(new Error("Request of type 'wallet_requestPermissions' already pending"), { code: -32002 });
+                return new Promise((res) => {
+                  w.__heldConnect = () => {
+                    w.__authorized = true;
+                    w.__heldConnect = null;
+                    res([w.__account]);
+                  };
+                });
+              }
               w.__authorized = true;
               return [w.__account];
             case "eth_accounts":
@@ -46,7 +63,10 @@ export async function installWallet(page: Page, opts: WalletOptions) {
             }
             case "eth_sendTransaction": {
               if (w.__reject) throw Object.assign(new Error("User rejected the request."), { code: 4001 });
+              // signed by the account the request was made for, even if the user switches account before answering
               const tx = { ...(params[0] as Record<string, unknown>), from: w.__account };
+              (w.__sent as unknown[]).push(tx);
+              if (w.__holdSign) return new Promise((res, rej) => (w.__held as { tx: unknown; res: (v: unknown) => void; rej: (e: unknown) => void }[]).push({ tx, res, rej }));
               return forward(method, [tx]);
             }
             default:
@@ -56,6 +76,18 @@ export async function installWallet(page: Page, opts: WalletOptions) {
         on: (e: string, l: (...a: unknown[]) => void) => void (listeners[e] = [...(listeners[e] ?? []), l]),
         removeListener: (e: string, l: (...a: unknown[]) => void) => void (listeners[e] = (listeners[e] ?? []).filter((x) => x !== l)),
         emit: (e: string, ...a: unknown[]) => (listeners[e] ?? []).forEach((l) => l(...a)),
+      };
+      w.__release = async () => {
+        const h = (w.__held as { tx: unknown; res: (v: unknown) => void; rej: (e: unknown) => void }[]).shift();
+        if (!h) return null;
+        try {
+          const r = await forward("eth_sendTransaction", [h.tx]);
+          h.res(r);
+          return r;
+        } catch (e) {
+          h.rej(e);
+          return null;
+        }
       };
       w.ethereum = provider;
       w.__walletEmit = provider.emit;
@@ -85,3 +117,13 @@ export const setWalletChain = (page: Page, chainId: number) =>
     w.__walletEmit("chainChanged", `0x${c.toString(16)}`);
   }, chainId);
 export const rejectNextSignature = (page: Page, on = true) => page.evaluate((v) => void ((window as unknown as { __reject: boolean }).__reject = v), on);
+
+/** From now on, signature requests are held unanswered until `releaseSignature`. */
+export const holdSignatures = (page: Page, on = true) => page.evaluate((v) => void ((window as unknown as { __holdSign: boolean }).__holdSign = v), on);
+/** Answers the oldest held signature request: the transaction is sent to the node and its hash returned to the page. */
+export const releaseSignature = (page: Page) => page.evaluate(() => (window as unknown as { __release: () => Promise<string | null> }).__release());
+/** Every transaction the page asked the wallet to send, as the wallet received it. */
+export const sentTransactions = (page: Page) => page.evaluate(() => (window as unknown as { __sent: Record<string, string>[] }).__sent);
+/** From now on, a connection request is held unanswered (a second one gets -32002, as MetaMask does). */
+export const holdConnection = (page: Page, on = true) => page.evaluate((v) => void ((window as unknown as { __holdConnect: boolean }).__holdConnect = v), on);
+export const releaseConnection = (page: Page) => page.evaluate(() => (window as unknown as { __heldConnect: null | (() => void) }).__heldConnect?.());

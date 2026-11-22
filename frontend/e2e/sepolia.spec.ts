@@ -2,6 +2,35 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
+import { createPublicClient, decodeEventLog, http } from "viem";
+import { sepolia } from "viem/chains";
+import { settlaneAbi } from "../src/contract/abi";
+
+// Live expectations come from the chain itself (other agreements may be created on the deployment at any time):
+// the network's totals and its event list, read read-only from a public endpoint.
+const chain = createPublicClient({ chain: sepolia, transport: http("https://ethereum-sepolia-rpc.publicnode.com", { timeout: 20_000, retryCount: 3 }) });
+const SETTLANE = "0xf79d229a039bf5c84ecc7327060f8bbc888d2182" as const;
+async function networkTotals() {
+  let paid = 0n, refunded = 0n;
+  for (let id = 1n; ; id++) {
+    try {
+      const acc = await chain.readContract({ address: SETTLANE, abi: settlaneAbi, functionName: "getAccounting", args: [id] });
+      paid += acc[1];
+      refunded += acc[2];
+    } catch {
+      return { paid, refunded };
+    }
+  }
+}
+async function networkEvents() {
+  const head = await chain.getBlockNumber();
+  const out: string[] = [];
+  for (let from = 12175958n; from <= head; from += 10_000n) {
+    const to = from + 9_999n < head ? from + 9_999n : head;
+    for (const l of await chain.getLogs({ address: SETTLANE, fromBlock: from, toBlock: to })) out.push(decodeEventLog({ abi: settlaneAbi, topics: l.topics, data: l.data }).eventName);
+  }
+  return out;
+}
 
 // Against the real Sepolia deployment (read-only). A1 and A2 are terminal, so their values are fixed.
 // Playwright runs from frontend/ (e2e/run.mjs sets the working directory).
@@ -271,13 +300,16 @@ test.describe("application, no wallet", () => {
     await expect(page.getByText("Connect a wallet to turn this into your dashboard")).toBeVisible();
     const funds = page.locator('section[aria-labelledby="funds"]');
     await expect(funds.getByText("Public · every agreement on Sepolia")).toBeVisible();
-    await expect(funds.locator('[title="1000000000000000 wei"]')).toHaveCount(2); // paid 0.001 and refunded 0.001
+    const totals = await networkTotals(); // A1, A2 and any later agreements
+    expect(totals.paid).toBeGreaterThanOrEqual(1_000_000_000_000_000n);
+    await expect(funds.locator(`[title="${totals.paid} wei"]`).first()).toBeVisible();
+    await expect(funds.locator(`[title="${totals.refunded} wei"]`).first()).toBeVisible();
     await expect(funds.getByText("Deposited equals paid plus refunded plus held")).toBeVisible();
     await expect(page.locator('section[aria-labelledby="actions"]')).toHaveCount(0); // no personal section without an account
     const list = page.locator('section[aria-labelledby="mine"]');
     await expect(list.getByRole("link", { name: /#1/ })).toBeVisible();
     await expect(list.getByRole("link", { name: /#2/ })).toBeVisible();
-    await expect(page.locator('section[aria-labelledby="recent"]')).toContainText("Agreement #2");
+    await expect(page.locator('section[aria-labelledby="recent"]')).toContainText(/Agreement #\d+/);
     await expect(page.getByRole("heading", { name: "Recent network activity" })).toBeVisible();
   });
 
@@ -315,11 +347,11 @@ test.describe("application, no wallet", () => {
     await expect(page.getByText("Refunded to the client · agreement #2, milestone 1")).toBeVisible();
     // Activity is public: every real event, newest first, filterable
     await visit(page, "/app/activity");
-    await expect(page.locator("ol > li")).toHaveCount(6);
-    await expect(page.locator("ol > li").first()).toContainText("Agreement #2");
+    const events = await networkEvents();
+    await expect(page.locator("ol > li")).toHaveCount(events.length);
     await page.getByRole("group", { name: "Kind of event" }).getByRole("button", { name: "Claimed" }).click();
-    await expect(page.locator("ol > li")).toHaveCount(1);
-    await expect(page.locator("ol > li").first()).toContainText("Provider claimed 0.001 ETH");
+    await expect(page.locator("ol > li")).toHaveCount(events.filter((e) => e === "MilestoneClaimed").length);
+    await expect(page.locator("ol > li").last()).toContainText("Agreement #1 · Provider claimed 0.001 ETH"); // newest first: A1's claim is the oldest
   });
 
   test("the agreement workspace shows parties, accounting, milestones and history from the chain", async ({ page }) => {

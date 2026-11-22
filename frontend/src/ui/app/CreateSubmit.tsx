@@ -2,11 +2,10 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { useConnect, useConnectors, useSwitchChain } from "wagmi";
-import { sepolia } from "wagmi/chains";
 import { formatEther } from "viem";
 import { publicClient } from "@/chain/client";
-import { useSettlaneTx } from "@/chain/write";
+import { CREATE_KEY, useTx } from "@/chain/write";
+import { useWalletActions } from "@/chain/wallet-actions";
 import { useWallet } from "@/chain/use-wallet";
 import { latestBlockTime } from "@/contract/read";
 import { toCreateArgs, type Draft, type FormErrors } from "@/domain/create-form";
@@ -19,12 +18,12 @@ type Result = { ok: true; draft: Draft } | { ok: false; errors: FormErrors };
 /** The last step of Create: a summary, one confirmation, then the shared simulate, sign and receipt path. */
 export function CreateSubmit({ result, onAttempt, total }: { result: Result; onAttempt: () => void; total: bigint }) {
   const wallet = useWallet();
-  const { state, send, reset, busy } = useSettlaneTx();
+  const tx = useTx(CREATE_KEY);
+  const busy = !tx.canStart;
+  const done = tx.entry?.state.phase === "confirmed" || tx.entry?.state.phase === "found";
   const [confirming, setConfirming] = useState(false);
   const [local, setLocal] = useState<string | null>(null);
-  const connectors = useConnectors();
-  const connect = useConnect();
-  const switchChain = useSwitchChain();
+  const walletActions = useWalletActions();
 
   const start = async () => {
     setConfirming(false);
@@ -36,12 +35,11 @@ export function CreateSubmit({ result, onAttempt, total }: { result: Result; onA
       return;
     }
     const { args, value } = toCreateArgs(result.draft, blockTime);
-    await send({ fn: "create", args, value });
+    tx.start({ fn: "create", args, value }, "Create and fund");
   };
 
   // Without a Sepolia wallet the draft can still be checked; simulation and signing need one.
   if (!wallet.canTransact) {
-    const connector = connectors[0];
     return (
       <div className="space-y-3 border-t border-line pt-4">
         <Button type="button" variant="secondary" className="w-full" onClick={onAttempt}>Check draft</Button>
@@ -50,16 +48,16 @@ export function CreateSubmit({ result, onAttempt, total }: { result: Result; onA
           {wallet.wrongNetwork ? (
             <>
               <p className="text-ink-2">Your wallet is on another network. Signing is blocked until it is on Sepolia.</p>
-              <Button size="sm" variant="danger" className="mt-3 w-full" onClick={() => switchChain.mutate({ chainId: sepolia.id })} disabled={switchChain.isPending}>
-                {switchChain.isPending ? "Switching…" : "Switch to Sepolia"}
+              <Button size="sm" variant="danger" className="mt-3 w-full" onClick={() => void walletActions.switchToSepolia()} disabled={walletActions.waiting !== null}>
+                {walletActions.waiting?.kind === "switch" ? "Waiting for MetaMask…" : "Switch to Sepolia"}
               </Button>
             </>
           ) : (
             <>
               <p className="text-ink-2">To simulate and sign, connect the wallet that will be the client. Your draft stays as it is.</p>
-              {connector ? (
-                <Button size="sm" className="mt-3 w-full" onClick={() => connect.mutate({ connector })} disabled={connect.isPending}>
-                  {connect.isPending ? "Check your wallet…" : "Connect wallet to sign"}
+              {walletActions.hasConnector ? (
+                <Button size="sm" className="mt-3 w-full" onClick={() => void walletActions.connect()} disabled={walletActions.waiting !== null}>
+                  {walletActions.waiting?.kind === "connect" ? "Waiting for MetaMask…" : "Connect wallet to sign"}
                 </Button>
               ) : (
                 <p className="mt-2 text-micro text-ink-3">No browser wallet was found. Install an extension wallet to sign.</p>
@@ -77,7 +75,7 @@ export function CreateSubmit({ result, onAttempt, total }: { result: Result; onA
         <Button
           type="button"
           className="w-full"
-          disabled={busy || state.phase === "confirmed"}
+          disabled={busy || done}
           onClick={() => {
             onAttempt();
             if (result.ok) setConfirming(true);
@@ -89,17 +87,17 @@ export function CreateSubmit({ result, onAttempt, total }: { result: Result; onA
       {!result.ok && <p className="text-micro text-ink-3">The draft is checked again against your connected account before signing.</p>}
       {confirming && result.ok && (
         <ConfirmBar busy={busy} onCancel={() => setConfirming(false)} onConfirm={() => void start()} label="Create and sign">
-          You are about to lock <span className="font-semibold text-ink">{formatEther(total)} ETH</span> of test ETH in the Settlane contract on Sepolia. It leaves only by its rules: the provider claims approved work, and you can refund a milestone after its deadline passes.
+          You are about to lock <span className="font-semibold text-ink">{formatEther(total)} ETH</span> of test ETH in the Settlane contract on Sepolia. It leaves only by its rules: the provider claims approved work, and you can refund a milestone after its deadline passes. The deadlines are fixed from the latest block&apos;s time when you press Create and sign; the time you take to approve in MetaMask comes out of each delivery window.
         </ConfirmBar>
       )}
       {local && <p role="alert" className="rounded-xl border border-danger bg-danger-tint px-4 py-3 text-sm text-ink">{local}</p>}
+      {busy && tx.blockReason && <p className="text-micro text-ink-3">{tx.blockReason}</p>}
       <TxPanel
-        state={state}
-        onDismiss={reset}
-        onSuccess={(s) =>
-          s.createdId !== undefined ? (
+        tx={tx}
+        onSuccess={(createdId) =>
+          createdId !== undefined ? (
             <p className="mt-2">
-              <Link href={`/app/agreements/${s.createdId}`} className="draw-link font-semibold text-cobalt">Open agreement #{s.createdId.toString()}</Link>
+              <Link href={`/app/agreements/${createdId}`} className="draw-link font-semibold text-cobalt">Open agreement #{createdId.toString()}</Link>
             </p>
           ) : null
         }

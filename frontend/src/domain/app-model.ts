@@ -177,3 +177,27 @@ export function milestonesAs(agreements: readonly Agreement[], who: Address | un
   const newest = (x: MilestoneEntry, y: MilestoneEntry) => (x.a.id === y.a.id ? x.m.index - y.m.index : x.a.id < y.a.id ? 1 : -1);
   return { todo: todo.sort(newest), waiting: waiting.sort(newest), done: done.sort(newest) };
 }
+
+/**
+ * One line for a milestone in a role's queue. A finished milestone says so and never suggests that someone still
+ * has to act; an expired one says that only the client can act (a refund).
+ */
+export function milestoneStatusLine(state: DisplayState, role: Role, actions: readonly ActionKind[]): { text: string; act: boolean } {
+  if (actions.length > 0) return { text: actions.map((a) => ACTION_LABEL[a]).join(" or "), act: true };
+  switch (state) {
+    case "paid":
+      return { text: "Paid to the provider. Nothing left to do.", act: false };
+    case "refunded":
+      return { text: "Refunded to the client. Nothing left to do.", act: false };
+    case "expired":
+      return { text: "Expired. Only the client can act now: a refund.", act: false };
+    case "approved":
+      return { text: role === "verifier" ? "Approved. Your part is done; the provider can claim." : "Approved. The provider can claim.", act: false };
+    case "submitted":
+      return { text: "Waiting for the verifier's decision", act: false };
+    case "funded":
+      return { text: "Waiting for the provider's evidence", act: false };
+    default:
+      return { text: "", act: false };
+  }
+}

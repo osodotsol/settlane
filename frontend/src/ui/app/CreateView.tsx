@@ -150,7 +150,7 @@ function CreateForm({ restore }: { restore: boolean }) {
               </Field>
             </div>
             <div className="md:max-w-[calc(50%-0.625rem)]">
-              <Field label="Review period" hint="Time the verifier has after each delivery deadline." error={shown?.review} htmlFor={`${uid}-review`}>
+              <Field label="Review period" hint="The verifier can decide until each delivery deadline plus this period, wherever in the window the work arrives." error={shown?.review} htmlFor={`${uid}-review`}>
                 <Duration id={`${uid}-review`} unitLabel="Review period unit" value={form.review} unit={form.reviewUnit} onChange={(v, u) => set({ review: v, reviewUnit: u })} invalid={!!shown?.review} />
               </Field>
             </div>
@@ -174,7 +174,7 @@ function CreateForm({ restore }: { restore: boolean }) {
                   <Field label="Amount (ETH)" error={e?.amount} htmlFor={`${uid}-a${i}`}>
                     <input id={`${uid}-a${i}`} inputMode="decimal" value={m.amount} onChange={(ev) => setM(i, { amount: ev.target.value })} aria-invalid={!!e?.amount} aria-describedby={e?.amount ? `${uid}-a${i}-error` : undefined} className={`${input} text-data`} placeholder="0.01" />
                   </Field>
-                  <Field label="Deliver within" hint="Counted from when the agreement is confirmed." error={e?.deadline} htmlFor={`${uid}-d${i}`}>
+                  <Field label="Deliver within" hint="Counted from when you press Create and sign. Time spent approving in MetaMask comes out of it." error={e?.deadline} htmlFor={`${uid}-d${i}`}>
                     <Duration id={`${uid}-d${i}`} unitLabel={`Milestone ${i + 1} deadline unit`} value={m.every} unit={m.unit} onChange={(v, u) => setM(i, { every: v, unit: u })} invalid={!!e?.deadline} />
                   </Field>
                 </div>
@@ -215,9 +215,9 @@ function CreateForm({ restore }: { restore: boolean }) {
           {blockTime !== undefined && result.ok && (
             <ul className="space-y-1.5 border-t border-line pt-4 text-micro text-ink-3">
               {result.draft.items.map((x, i) => (
-                <li key={i}>Milestone {i + 1}: deliver by ≈ {formatUtc(blockTime + x.deliverIn)}, review by ≈ {formatUtc(blockTime + x.deliverIn + result.draft.reviewPeriod)}</li>
+                <li key={i}>Milestone {i + 1}, if you sign now: deliver by ≈ {formatUtc(blockTime + x.deliverIn)}, decision by ≈ {formatUtc(blockTime + x.deliverIn + result.draft.reviewPeriod)}</li>
               ))}
-              <li>Final deadlines are set from the block time at signing.</li>
+              <li>The exact deadlines are fixed when you press Create and sign, from the latest block&apos;s time. The contract stores them as given and never moves them, even if the transaction lands minutes later.</li>
             </ul>
           )}
           <CreateSubmit result={result} onAttempt={() => setAttempts((n) => n + 1)} total={total} />

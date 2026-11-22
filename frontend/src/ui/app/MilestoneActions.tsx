@@ -2,10 +2,9 @@
 
 import { useId, useState } from "react";
 import { isAddress, getAddress, toHex, type Address } from "viem";
-import { useSwitchChain } from "wagmi";
-import { sepolia } from "wagmi/chains";
 import { useWallet } from "@/chain/use-wallet";
-import { useSettlaneTx } from "@/chain/write";
+import { milestoneKey, useTx } from "@/chain/write";
+import { useWalletActions } from "@/chain/wallet-actions";
 import type { Agreement, Milestone } from "@/contract/read";
 import { commit } from "@/domain/commitment";
 import { milestoneActions, type ActionKind } from "@/domain/app-model";
@@ -32,21 +31,22 @@ function Payee({ id, value, onChange, error }: { id: string; value: string; onCh
 export function MilestoneActions({ a, m, now }: { a: Agreement; m: Milestone; now: bigint }) {
   const uid = useId();
   const wallet = useWallet();
-  const switchChain = useSwitchChain();
-  const { state, send, reset, busy } = useSettlaneTx();
+  const walletActions = useWalletActions();
+  const tx = useTx(milestoneKey(a.id, m.index));
+  const busy = !tx.canStart;
   const [evidence, setEvidence] = useState("");
   const [payee, setPayee] = useState("");
   const [confirm, setConfirm] = useState<ActionKind | "reject" | null>(null);
 
   const can = milestoneActions(a, m, wallet.address, now);
-  if (can.length === 0 && state.phase === "idle") return null;
+  if (can.length === 0 && !tx.entry) return null;
   const me = wallet.address;
   const to = payee.trim() === "" ? me : payee.trim();
   const payeeError = to === undefined ? undefined : !isAddress(to, { strict: false }) ? "Enter a valid address." : /^0x0{40}$/i.test(to) ? "The payee cannot be the zero address." : undefined;
   const ev = commit(evidence);
-  const run = async (fn: Parameters<typeof send>[0]) => {
+  const run = (req: Parameters<typeof tx.start>[0], label: string) => {
     setConfirm(null);
-    await send(fn);
+    tx.start(req, label);
   };
   const hex = (v: bigint) => toHex(v, { size: 32 });
 
@@ -56,7 +56,7 @@ export function MilestoneActions({ a, m, now }: { a: Agreement; m: Milestone; no
         <div role="alert">
           <p className="font-semibold">Your wallet is on another network.</p>
           <p className="mt-1 text-sm text-ink-2">Switch to Sepolia to act. Nothing can be sent to another network from here.</p>
-          <div className="mt-3"><Button size="sm" onClick={() => switchChain.mutate({ chainId: sepolia.id })} disabled={switchChain.isPending}>{switchChain.isPending ? "Switching…" : "Switch to Sepolia"}</Button></div>
+          <div className="mt-3"><Button size="sm" onClick={() => void walletActions.switchToSepolia()} disabled={walletActions.waiting !== null}>{walletActions.waiting?.kind === "switch" ? "Waiting for MetaMask…" : "Switch to Sepolia"}</Button></div>
         </div>
       ) : (
         <>
@@ -71,7 +71,7 @@ export function MilestoneActions({ a, m, now }: { a: Agreement; m: Milestone; no
                 {evidence.trim() !== "" && !ev.ok && <p role="alert" className="mt-1.5 text-sm text-danger">{ev.error}</p>}
               </div>
               <p className="text-micro text-ink-3">This becomes revision {(m.revision + 1n).toString()}. You can submit again until the delivery deadline ({formatRelative(m.deliverBy, now)}).</p>
-              <Button size="sm" disabled={!ev.ok || busy} onClick={() => ev.ok && void run({ fn: "submit", args: [a.id, m.index, ev.value] })}>Submit evidence</Button>
+              <Button size="sm" disabled={!ev.ok || busy} onClick={() => ev.ok && run({ fn: "submit", args: [a.id, m.index, ev.value] }, "Submit evidence")}>Submit evidence</Button>
             </div>
           )}
 
@@ -95,12 +95,12 @@ export function MilestoneActions({ a, m, now }: { a: Agreement; m: Milestone; no
                 </div>
               )}
               {confirm === "review" && (
-                <ConfirmBar busy={busy} onCancel={() => setConfirm(null)} onConfirm={() => void run({ fn: "approve", args: [a.id, m.index, m.evidence, m.revision] })} label="Approve and sign">
+                <ConfirmBar busy={busy} onCancel={() => setConfirm(null)} onConfirm={() => run({ fn: "approve", args: [a.id, m.index, m.evidence, m.revision] }, `Approve revision ${m.revision}`)} label="Approve and sign">
                   Approving makes {formatEth(m.amount)} ETH claimable by the provider, with no deadline. It cannot be undone and the client can no longer refund it.
                 </ConfirmBar>
               )}
               {confirm === "reject" && (
-                <ConfirmBar busy={busy} onCancel={() => setConfirm(null)} onConfirm={() => void run({ fn: "reject", args: [a.id, m.index, m.evidence, m.revision] })} label="Request revision and sign">
+                <ConfirmBar busy={busy} onCancel={() => setConfirm(null)} onConfirm={() => run({ fn: "reject", args: [a.id, m.index, m.evidence, m.revision] }, "Request a revision")} label="Request revision and sign">
                   The milestone returns to Funded and the provider may submit again until the delivery deadline. This is recorded on-chain.
                 </ConfirmBar>
               )}
@@ -120,7 +120,7 @@ export function MilestoneActions({ a, m, now }: { a: Agreement; m: Milestone; no
                 <ConfirmBar
                   busy={busy}
                   onCancel={() => setConfirm(null)}
-                  onConfirm={() => void run({ fn: confirm, args: [a.id, m.index, getAddress(to) as Address] })}
+                  onConfirm={() => run({ fn: confirm, args: [a.id, m.index, getAddress(to) as Address] }, confirm === "claim" ? "Claim payout" : "Refund to client")}
                   label={confirm === "claim" ? "Claim and sign" : "Refund and sign"}
                 >
                   {formatEth(m.amount)} ETH will be sent from the contract to <span className="text-data text-[0.8125rem]">{shortHex(to, 8, 6)}</span>. It is paid once and cannot be repeated.
@@ -130,7 +130,8 @@ export function MilestoneActions({ a, m, now }: { a: Agreement; m: Milestone; no
           )}
         </>
       )}
-      <TxPanel state={state} onDismiss={reset} />
+      {tx.blockReason && tx.entry?.state.phase === "unknown" && <p className="mt-3 text-sm text-ink-2">{tx.blockReason}</p>}
+      <TxPanel tx={tx} />
     </div>
   );
 }

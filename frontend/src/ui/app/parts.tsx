@@ -4,10 +4,9 @@ import { ArrowRight, TriangleAlert } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import type { Address } from "viem";
-import { useConnect, useConnectors, useSwitchChain } from "wagmi";
-import { sepolia } from "wagmi/chains";
 import { useOverview } from "@/chain/queries";
 import { useWallet } from "@/chain/use-wallet";
+import { useWalletActions } from "@/chain/wallet-actions";
 import type { Agreement } from "@/contract/read";
 import { ACTION_LABEL, ROLE_LABEL, agreementsFor, isOpen, nextLine, rolesOf, type AttentionItem, type Role } from "@/domain/app-model";
 import { formatEth, formatRelative } from "@/domain/format";
@@ -76,12 +75,10 @@ export function ScopeTag({ kind }: { kind: "public" | "yours" | "example" }) {
  */
 export function ConnectPrompt({ children }: { children: ReactNode }) {
   const { ready, address, wrongNetwork } = useWallet();
-  const connectors = useConnectors();
-  const connect = useConnect();
-  const switchChain = useSwitchChain();
+  const wallet = useWalletActions();
   if (!ready) return <Skeleton className="h-[3.25rem]" />;
   if (address && !wrongNetwork) return null;
-  const connector = connectors[0];
+  const waitingLabel = "Waiting for MetaMask…";
   return (
     <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 rounded-2xl border border-line bg-surface py-2.5 pl-4 pr-2.5">
       <p className="flex min-w-0 items-start gap-2.5 text-sm text-ink-2">
@@ -89,7 +86,7 @@ export function ConnectPrompt({ children }: { children: ReactNode }) {
         <span>
           {wrongNetwork ? (
             <>Your wallet is on another network. Switch to Sepolia to sign; nothing can be sent elsewhere.</>
-          ) : connector ? (
+          ) : wallet.hasConnector ? (
             children
           ) : (
             <>{children} No browser wallet was found: install an extension wallet to use your own account.</>
@@ -97,15 +94,14 @@ export function ConnectPrompt({ children }: { children: ReactNode }) {
         </span>
       </p>
       {wrongNetwork ? (
-        <Button size="sm" variant="danger" onClick={() => switchChain.mutate({ chainId: sepolia.id })} disabled={switchChain.isPending}>
-          {switchChain.isPending ? "Switching…" : "Switch to Sepolia"}
+        <Button size="sm" variant="danger" onClick={() => void wallet.switchToSepolia()} disabled={wallet.waiting !== null}>
+          {wallet.waiting?.kind === "switch" ? waitingLabel : "Switch to Sepolia"}
         </Button>
-      ) : connector ? (
-        <Button size="sm" onClick={() => connect.mutate({ connector })} disabled={connect.isPending}>
-          {connect.isPending ? "Check your wallet…" : "Connect wallet"}
+      ) : wallet.hasConnector ? (
+        <Button size="sm" onClick={() => void wallet.connect()} disabled={wallet.waiting !== null}>
+          {wallet.waiting?.kind === "connect" ? waitingLabel : "Connect wallet"}
         </Button>
       ) : null}
-      {connect.isError && <p role="alert" className="w-full text-sm text-danger">The wallet did not connect. Approve the request in the wallet, then try again.</p>}
     </div>
   );
 }

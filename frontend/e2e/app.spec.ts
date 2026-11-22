@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { createPublicClient, createWalletClient, http, keccak256, parseEther, stringToBytes, type Address } from "viem";
 import { sepolia } from "viem/chains";
 import { settlaneAbi } from "../src/contract/abi";
-import { installWallet, rejectNextSignature, setWalletChain, switchAccount, walletCalls } from "./wallet";
+import { holdConnection, holdSignatures, installWallet, rejectNextSignature, releaseConnection, releaseSignature, sentTransactions as sentParams, setWalletChain, switchAccount, walletCalls } from "./wallet";
 
 // The application, end to end, with a stand-in wallet (e2e/wallet.ts) against a throw-away local Anvil that runs
 // the PRODUCTION bytecode (chain id 11155111, simulated ETH). The wallet holds no key: Anvil's unlocked accounts
@@ -331,7 +331,8 @@ test("declining the signature in the wallet sends nothing and says so", async ({
   await rejectNextSignature(page);
   await page.getByRole("button", { name: "Review and create" }).click();
   await page.getByRole("button", { name: "Create and sign" }).click();
-  await expect(page.getByRole("alert").filter({ hasText: "You declined the request in your wallet." })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("You declined the request in MetaMask.")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("Nothing was sent. You can try again when you are ready.")).toBeVisible();
   await expect(page.getByText(/Confirmed in block/)).toHaveCount(0);
   expect(await pub.readContract({ address: SETTLANE, abi: settlaneAbi, functionName: "totalOutstanding" })).toBe(count);
 });
@@ -348,4 +349,168 @@ test("a balance too small for the agreement is caught before signing", async ({ 
   await page.getByRole("button", { name: "Create and sign" }).click();
   await expect(page.getByRole("alert").filter({ hasText: "Get test ETH from a Sepolia faucet" })).toBeVisible({ timeout: 30_000 });
   expect(await sentTransactions(page)).toBe(0);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Wallet reliability (R1). The stand-in wallet holds requests unanswered to reproduce what MetaMask did in the
+// real-wallet run (docs/ACCEPTANCE_REAL_WALLET.md, section 8). These are SIMULATIONS of that behavior with the
+// real application code; they do not exercise MetaMask itself.
+// ---------------------------------------------------------------------------------------------------------
+
+/** Number of agreements (ids are consecutive from 1). */
+async function agreementTotal(): Promise<number> {
+  let n = 0;
+  for (;;) {
+    try {
+      await pub.readContract({ address: SETTLANE, abi: settlaneAbi, functionName: "getAgreement", args: [BigInt(n + 1)] });
+      n++;
+    } catch {
+      return n;
+    }
+  }
+}
+/** A new funded agreement (Client, Provider, Verifier); optionally submitted and approved. Returns its id. */
+async function newAgreement(stage: "funded" | "approved"): Promise<bigint> {
+  const t = await now();
+  await chainSend(CLIENT, "create", [PROVIDER, VERIFIER, 3600n, 1, [parseEther("0.01"), 0n, 0n], [t + 3600n, 0n, 0n], [0x99n, 0n, 0n]], parseEther("0.01"));
+  const id = BigInt(await agreementTotal());
+  if (stage === "approved") {
+    await chainSend(PROVIDER, "submit", [id, 0, 0xe9n]);
+    await chainSend(VERIFIER, "approve", [id, 0, 0xe9n, 1n]);
+  }
+  return id;
+}
+const nonceOf = (a: Address) => pub.getTransactionCount({ address: a });
+
+test("an unanswered signature: elapsed guidance, no duplicate, Stop waiting keeps it open, a late approval still lands", async ({ page }) => {
+  test.setTimeout(120_000);
+  const id = await newAgreement("approved");
+  const estimate = await pub.estimateContractGas({ address: SETTLANE, abi: settlaneAbi, functionName: "claim", args: [id, 0, PROVIDER], account: PROVIDER });
+  const nonceBefore = await nonceOf(PROVIDER);
+  await openAs(page, PROVIDER, `/app/agreements/${id}`);
+  await loaded(page);
+  await holdSignatures(page);
+  await panel(page).getByRole("button", { name: "Claim payout" }).click();
+  await panel(page).getByRole("button", { name: "Claim and sign" }).click();
+  await expect(panel(page).getByText(/Waiting for your signature in MetaMask · \d+ s/)).toBeVisible({ timeout: 15_000 });
+  // nothing to press twice: the action's button is disabled while the request is open
+  await expect(panel(page).getByRole("button", { name: "Claim payout" })).toBeDisabled();
+  // after 15 s: the page says what it knows, and what to do in MetaMask
+  await expect(panel(page).getByText("MetaMask has not answered yet. Nothing has been sent.")).toBeVisible({ timeout: 20_000 });
+  await expect(panel(page).getByText(/press Try again in MetaMask/)).toBeVisible();
+  await panel(page).getByText("What this page asked the wallet").click();
+  await expect(panel(page).getByText(/eth_sendTransaction: handed to the wallet \d+ s ago, no answer yet/)).toBeVisible();
+  // the gas limit handed to the wallet is the estimate plus 25%, and no fee field is set
+  const [sent] = await sentParams(page);
+  expect(BigInt(sent!.gas!)).toBe((estimate * 125n + 99n) / 100n);
+  expect(sent!.maxFeePerGas).toBeUndefined();
+  expect(sent!.maxPriorityFeePerGas).toBeUndefined();
+
+  // Stop waiting: the page says the outcome is unknown, NOT that the request was cancelled, and refuses a second one
+  await panel(page).getByRole("button", { name: "Stop waiting" }).click();
+  await expect(panel(page).getByText("Outcome not known yet")).toBeVisible();
+  await expect(panel(page).getByText(/The page stopped waiting. The request may still be open in MetaMask/)).toBeVisible();
+  await expect(panel(page).getByText(/may still be open in your wallet. Check the chain before sending another/)).toBeVisible();
+  await expect(panel(page).getByRole("button", { name: "Claim payout" })).toBeDisabled();
+  expect((await walletCalls(page)).filter((c) => c === "eth_sendTransaction")).toHaveLength(1);
+
+  // the user approves in MetaMask much later: the page still follows it to the receipt
+  await releaseSignature(page);
+  await confirmed(page);
+  expect((await milestone(id))[0]).toBe(4); // Paid
+  expect(await nonceOf(PROVIDER)).toBe(nonceBefore + 1); // exactly one transaction
+  const receipt = await pub.getTransactionReceipt({ hash: (await pub.getBlock({ includeTransactions: true })).transactions.at(-1)!.hash });
+  expect(receipt.gasUsed).toBeLessThanOrEqual(estimate);
+});
+
+test("a double click sends one request", async ({ page }) => {
+  const id = await newAgreement("funded");
+  await openAs(page, PROVIDER, `/app/agreements/${id}`);
+  await loaded(page);
+  await holdSignatures(page);
+  await panel(page).getByLabel("Evidence").fill("double click");
+  await panel(page).getByRole("button", { name: "Submit evidence" }).dblclick();
+  await expect(panel(page).getByText(/Waiting for your signature in MetaMask/)).toBeVisible({ timeout: 15_000 });
+  await page.waitForTimeout(1_000);
+  expect((await walletCalls(page)).filter((c) => c === "eth_sendTransaction")).toHaveLength(1);
+  await releaseSignature(page);
+  await confirmed(page);
+  expect((await milestone(id))[7]).toBe(1n); // revision 1: submitted once
+});
+
+test("account and network changes while a request is open neither resend it nor lose it", async ({ page }) => {
+  const id = await newAgreement("funded");
+  const nonceBefore = await nonceOf(PROVIDER);
+  await openAs(page, PROVIDER, `/app/agreements/${id}`);
+  await loaded(page);
+  await holdSignatures(page);
+  await panel(page).getByLabel("Evidence").fill("switch while open");
+  await panel(page).getByRole("button", { name: "Submit evidence" }).click();
+  await expect(panel(page).getByText(/Waiting for your signature in MetaMask/)).toBeVisible({ timeout: 15_000 });
+  await switchAccount(page, CLIENT);
+  await expect(page.getByText(/This request belongs to 0x7099…79C8\. You are now connected as 0xf39F…2266/)).toBeVisible();
+  await setWalletChain(page, 1);
+  await expect(page.getByText("Your wallet switched network while this request was open.", { exact: false })).toBeVisible();
+  await setWalletChain(page, 11155111);
+  await switchAccount(page, PROVIDER);
+  await expect(page.getByText(/This request belongs to/)).toHaveCount(0);
+  expect((await walletCalls(page)).filter((c) => c === "eth_sendTransaction")).toHaveLength(1);
+  await releaseSignature(page);
+  await confirmed(page);
+  expect(await nonceOf(PROVIDER)).toBe(nonceBefore + 1);
+  expect((await milestone(id))[0]).toBe(2); // Submitted, by the provider it was requested for
+});
+
+test("after a reload the open request is remembered, a duplicate is refused, and Check the chain finds the late result", async ({ page }) => {
+  const id = await newAgreement("funded");
+  await openAs(page, PROVIDER, `/app/agreements/${id}`);
+  await loaded(page);
+  await holdSignatures(page);
+  await panel(page).getByLabel("Evidence").fill("reload while open");
+  await panel(page).getByRole("button", { name: "Submit evidence" }).click();
+  await expect(panel(page).getByText(/Waiting for your signature in MetaMask/)).toBeVisible({ timeout: 15_000 });
+  await page.reload(); // the page's own promise is gone; the wallet could still answer
+  await loaded(page);
+  await expect(panel(page).getByText("Outcome not known yet")).toBeVisible();
+  await expect(panel(page).getByText(/This page was reloaded or reopened while a request for this action was open/)).toBeVisible();
+  await expect(panel(page).getByRole("button", { name: "Submit evidence" })).toBeDisabled();
+  // MetaMask sends it after all (simulated outside the page)
+  await chainSend(PROVIDER, "submit", [id, 0, BigInt(keccak256(stringToBytes("reload while open")))]);
+  await panel(page).getByRole("button", { name: "Check the chain" }).click();
+  await expect(panel(page).getByText("Done on-chain: the contract shows this action took effect.")).toBeVisible({ timeout: 20_000 });
+  await panel(page).getByRole("button", { name: "Dismiss" }).click();
+  await expect(panel(page).getByText("Replace your submission")).toBeVisible({ timeout: 20_000 });
+});
+
+test("after a reload, when nothing was sent, Check the chain clears the way for one new request", async ({ page }) => {
+  const id = await newAgreement("funded");
+  const nonceBefore = await nonceOf(PROVIDER);
+  await openAs(page, PROVIDER, `/app/agreements/${id}`);
+  await loaded(page);
+  await holdSignatures(page);
+  await panel(page).getByLabel("Evidence").fill("lost request");
+  await panel(page).getByRole("button", { name: "Submit evidence" }).click();
+  await expect(panel(page).getByText(/Waiting for your signature in MetaMask/)).toBeVisible({ timeout: 15_000 });
+  await page.reload();
+  await loaded(page);
+  await panel(page).getByRole("button", { name: "Check the chain" }).click();
+  await expect(panel(page).getByText(/nothing from 0x7099…79C8 is pending and this action has not happened/)).toBeVisible({ timeout: 20_000 });
+  await panel(page).getByLabel("Evidence").fill("sent again");
+  await panel(page).getByRole("button", { name: "Submit evidence" }).click();
+  await confirmed(page);
+  expect(await nonceOf(PROVIDER)).toBe(nonceBefore + 1);
+});
+
+test("an unanswered connection request: guidance, Stop waiting, MetaMask's 'already pending', and a late approval connects", async ({ page }) => {
+  await installWallet(page, { rpc: ANVIL, account: CLIENT, authorized: false });
+  await page.goto("/app");
+  await holdConnection(page);
+  await page.getByRole("button", { name: "Connect wallet", exact: true }).first().click();
+  await expect(page.getByRole("button", { name: "Waiting for MetaMask…" }).first()).toBeVisible();
+  await expect(page.getByText(/MetaMask hasn't answered the connection request · \d+ s/)).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Stop waiting" }).click();
+  await page.getByRole("button", { name: "Connect wallet", exact: true }).first().click(); // MetaMask still has the first one
+  await expect(page.getByText("MetaMask already has a request from this page waiting.", { exact: false })).toBeVisible();
+  await releaseConnection(page); // the user approves the first request in MetaMask
+  await expect(page.getByRole("button", { name: /^Connected as/ })).toBeVisible();
 });
