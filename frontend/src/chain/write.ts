@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useSyncExternalStore } from "react";
-import { decodeEventLog, type Address, type Hex, type TransactionReceipt } from "viem";
+import { decodeEventLog, encodeFunctionData, type Address, type Hex, type TransactionReceipt } from "viem";
 import { useConnection, useWriteContract } from "wagmi";
 import { sepolia } from "wagmi/chains";
 import { publicClient } from "@/chain/client";
@@ -11,9 +11,9 @@ import { describeTxError, walletErrorKind } from "./errors";
 import { checkAddress } from "@/domain/address";
 import { gasWithMargin } from "./gas";
 import { useRefreshChainData } from "./queries";
-import { effectNow, readSnapshot, type Snapshot, type TxAction } from "./tx-effect";
+import { deadReason, effectNow, isSameCall, readSnapshot, searchAccountTxs, type Snapshot, type TxAction } from "./tx-effect";
 import { assessRecovery, releases, type RecoveryFacts } from "./tx-recovery";
-import { actionKey, baseOf, blockReason, canStart, isTerminal, openInAnotherTab, registry, requestKey, type TxEntry } from "./tx-registry";
+import { actionKey, baseOf, blockReason, canStart, isTerminal, registry, requestKey, type Ghost, type TxEntry } from "./tx-registry";
 
 // Every write goes through one path: pin the network, SIMULATE the exact call against the contract with the
 // connected account, estimate gas and add a margin (gas.ts), record the request in the registry
@@ -71,23 +71,72 @@ export function actionOf(req: TxRequest): TxAction {
   return req.fn === "create" ? { fn: "create" } : { fn: req.fn, id: req.args[0], m: req.args[1] };
 }
 
-type StartParams = { req: TxRequest; label: string; account: Address; walletChainId: number | undefined; write: WriteFn; refresh: () => unknown };
+type StartParams = {
+  req: TxRequest;
+  label: string;
+  account: Address;
+  walletChainId: number | undefined;
+  write: WriteFn;
+  refresh: () => unknown;
+  /** Submit only: the user accepts that an earlier, unproven submission approved late would replace this evidence. */
+  acceptLateReplace?: boolean;
+};
+
+/** The exact calldata and value of a request (what the wallet is asked to send). */
+export function callOf(req: TxRequest): { data: Hex; value: string } {
+  const data = encodeFunctionData({ abi: settlaneAbi, functionName: req.fn, args: req.args } as never);
+  return { data, value: (req.fn === "create" ? req.value : 0n).toString() };
+}
+
+/**
+ * The ghosts (earlier unproven requests) that may still take effect, after checking the chain (R2-C). A ghost is dropped
+ * only with proof: its exact call was found mined from the account, or the contract can permanently no longer accept it.
+ * Any read failure keeps it.
+ */
+async function liveGhosts(action: TxAction, account: Address, ghosts: Ghost[]): Promise<Ghost[]> {
+  if (ghosts.length === 0) return ghosts;
+  let snap: Snapshot | undefined;
+  let blockTime: bigint | undefined;
+  let latest: number | undefined;
+  try {
+    [snap, blockTime, latest] = await Promise.all([readSnapshot(action), publicClient.getBlock({ blockTag: "latest" }).then((b) => b.timestamp), publicClient.getTransactionCount({ address: account, blockTag: "latest" })]);
+  } catch {
+    return ghosts;
+  }
+  const alive: Ghost[] = [];
+  for (const g of ghosts) {
+    const own = (action.fn === "create" ? action : { ...action, fn: g.fn }) as TxAction; // judged as ITS action (approve and reject share a key)
+    if (snap?.kind === "milestone" && blockTime !== undefined && deadReason(own, { data: g.data }, snap, blockTime)) continue;
+    if (g.hash && (await publicClient.getTransactionReceipt({ hash: g.hash }).catch(() => null))) continue;
+    if (g.nonceBefore !== undefined && g.blockBefore !== undefined && latest !== undefined && latest > g.nonceBefore) {
+      const found = await searchAccountTxs(account, { data: g.data, value: g.value }, g.nonceBefore, latest, BigInt(g.blockBefore) - 2n).catch(() => null);
+      if (found?.match) continue;
+    }
+    alive.push(g);
+  }
+  return alive;
+}
 
 /**
  * Runs one request end to end. Synchronous up to the first await, so a second click (or a second component)
  * finds the action already registered and cannot start it again. The promise outlives the component: it
  * keeps updating the registry when the user navigates away, and applies a late wallet answer.
  */
-export async function startTx({ req, label, account, walletChainId, write, refresh }: StartParams): Promise<void> {
+export async function startTx({ req, label, account, walletChainId, write, refresh, acceptLateReplace }: StartParams): Promise<void> {
   const action = actionOf(req);
   // one record per action PER ACCOUNT on this chain and contract (R2-B): another account's request never blocks this one
   const key = requestKey(account, actionKey(action));
   const previous = registry.get(key);
   if (!canStart(previous)) return;
   const attempt = (previous?.attempt ?? 0) + 1;
-  // an earlier attempt whose outcome was never proven is remembered on the new one, so the interface keeps saying so
-  const unproven = previous?.state.phase === "unknown" ? { startedAt: previous.startedAt, reason: previous.recovery?.verdict.kind ?? "unknown" } : previous?.previous;
-  registry.set({ key, label, action, account, chainId: CHAIN.id, contract: SETTLANE_ADDRESS, startedAt: Date.now(), attempt, state: { phase: "checking" }, live: true, lateHashes: previous?.lateHashes ?? [], previous: unproven });
+  // An overridden earlier request (its outcome never proven) becomes a GHOST of the new attempt: it is remembered, stored,
+  // and it constrains what may be sent until the chain shows it can no longer take effect (R2-C).
+  const ghosts: Ghost[] = [...(previous?.ghosts ?? [])];
+  if (previous?.state.phase === "unknown" && previous.recovery?.verdict.kind === "override" && previous.call) {
+    ghosts.push({ startedAt: previous.startedAt, fn: previous.action.fn, data: previous.call.data, value: previous.call.value, hash: previous.state.hash, nonceBefore: previous.nonceBefore, blockBefore: previous.blockBefore });
+  }
+  const call = callOf(req);
+  registry.set({ key, label, action, account, chainId: CHAIN.id, contract: SETTLANE_ADDRESS, startedAt: Date.now(), attempt, state: { phase: "checking" }, live: true, lateHashes: previous?.lateHashes ?? [], ghosts });
   const set = (patch: (e: TxEntry) => TxEntry) => registry.update(key, attempt, patch);
 
   // Last line of defence for addresses (R2 M2): every address argument must pass the EIP-55 check (checksummed or one
@@ -104,6 +153,30 @@ export async function startTx({ req, label, account, walletChainId, write, refre
   if (walletChainId !== sepolia.id) {
     set((e) => ({ ...e, live: false, state: { phase: "failed", problem: { message: "Your wallet is not on Sepolia.", recovery: "Switch the wallet to Sepolia, then try again. Nothing was sent." } } }));
     return;
+  }
+
+  // 0. While an earlier request may still land, only the SAME call may be sent (R2-C): a late original is then a duplicate the
+  //    contract refuses (claim, refund, approve, reject) or an identical resubmission. A different payee, a different
+  //    decision or another create would let the late original win. A submit with other evidence needs the user's explicit
+  //    acknowledgment (the alternative could cost the provider the delivery deadline); a create never gets here (held).
+  if (ghosts.length > 0) {
+    const alive = await liveGhosts(action, account, ghosts);
+    set((e) => ({ ...e, ghosts: alive }));
+    const different = alive.filter((g) => g.data.toLowerCase() !== call.data.toLowerCase() || g.value !== call.value);
+    if (different.length > 0 && !(req.fn === "submit" && acceptLateReplace)) {
+      set((e) => ({
+        ...e,
+        live: false,
+        state: {
+          phase: "failed",
+          problem: {
+            message: req.fn === "submit" ? "An earlier submission for this milestone may still be approved in MetaMask, and it would replace this evidence." : "An earlier request for this milestone may still be approved in MetaMask, and it differs from this one.",
+            recovery: req.fn === "submit" ? "Submit the same evidence as before, or confirm that you accept the risk. Nothing was sent." : "Until the chain shows the earlier request can no longer take effect, only the same request can be sent again (the contract refuses a duplicate). Nothing was sent.",
+          },
+        },
+      }));
+      return;
+    }
   }
 
   // 1. Simulate and estimate against the contract. Nothing is asked of the wallet yet.
@@ -124,10 +197,11 @@ export async function startTx({ req, label, account, walletChainId, write, refre
     set((e) => ({ ...e, live: false, state: { phase: "failed", problem: { message: "The agreement's current state could not be read from Sepolia, so the request was not sent.", recovery: "Nothing was sent. Try again in a moment." } } }));
     return;
   }
-  const { before, nonceBefore } = baseline;
+  const { before, nonceBefore, blockBefore } = baseline;
 
-  // 3. Ask the wallet. No timeout here: an unanswered request stays open (the user may still answer it).
-  if (!set((e) => ({ ...e, before, nonceBefore, state: { phase: "awaiting", since: Date.now() } }))) return;
+  // 3. Ask the wallet. No timeout here: an unanswered request stays open (the user may still answer it). The exact call is
+  //    recorded first, so the chain can later be searched for it even if the page never sees a hash.
+  if (!set((e) => ({ ...e, before, nonceBefore, blockBefore: blockBefore.toString(), call, state: { phase: "awaiting", since: Date.now() } }))) return;
   let hash: Hex;
   try {
     // chainId is pinned again: wagmi and viem refuse to send when the wallet is on any other network.
@@ -155,11 +229,13 @@ export async function startTx({ req, label, account, walletChainId, write, refre
 }
 
 /** The state and the account's confirmed nonce just before signing, read with a few retries; null if unreadable. */
-async function readBaseline(action: TxAction, account: Address): Promise<{ before: Snapshot; nonceBefore: number } | null> {
+async function readBaseline(action: TxAction, account: Address): Promise<{ before: Snapshot; nonceBefore: number; blockBefore: bigint } | null> {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
+      // the block number first: the nonce read after it is at least the count at that block (the search starts there)
+      const blockBefore = await publicClient.getBlockNumber();
       const [before, nonceBefore] = await Promise.all([readSnapshot(action), publicClient.getTransactionCount({ address: account })]);
-      return { before, nonceBefore };
+      return { before, nonceBefore, blockBefore };
     } catch {
       await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
     }
@@ -197,7 +273,9 @@ async function followReceipt(key: string, attempt: number, hash: Hex, isCreate: 
       },
     });
     if (replacedReason === "cancelled") set((e) => ({ ...e, live: false, state: { phase: "cancelled", hash: receipt.transactionHash } }));
-    else if (replacedReason === "replaced") set((e) => ({ ...e, live: false, state: { phase: "unknown", reason: "replaced", hash: receipt.transactionHash } }));
+    // a replacement by a DIFFERENT transaction: the original hash is kept (its receipt will never exist); the replacement is
+    // recorded apart and is never mistaken for this request (R2-C)
+    else if (replacedReason === "replaced") set((e) => ({ ...e, live: false, replacedBy: receipt.transactionHash, state: { phase: "unknown", reason: "replaced", hash } }));
     else if (receipt.status === "success") set((e) => ({ ...e, live: false, state: { phase: "confirmed", hash: receipt.transactionHash, blockNumber: receipt.blockNumber, createdId: isCreate ? createdAgreementId(receipt) : undefined } }));
     else set((e) => ({ ...e, live: false, state: { phase: "reverted", hash: receipt.transactionHash } }));
   } catch {
@@ -231,14 +309,38 @@ export async function reconcile(key: string, refresh: () => unknown): Promise<vo
       publicClient.getTransactionCount({ address: e.account, blockTag: "pending" }),
     ]);
     const hasBaseline = e.before !== undefined && e.nonceBefore !== undefined;
-    const effect = hasBaseline ? await effectNow(e.action, e.account, e.before!) : { done: false };
+    const effect = hasBaseline ? await effectNow(e.action, e.account, e.before!, e.call) : { done: false };
+    const txNonce = tx?.nonce ?? e.txNonce;
+    // Rule 2 and rule 10 (R2-C): which transactions used the account's nonces since the baseline, and is one of them THIS
+    // request's exact call? A failed search is not an error here: it only means nothing can be proven from it.
+    let matched: RecoveryFacts["matched"];
+    let consumedBy: RecoveryFacts["consumedBy"];
+    if (hasBaseline && e.call && e.blockBefore !== undefined && latestNonce > e.nonceBefore!) {
+      const search = await searchAccountTxs(e.account, e.call, e.nonceBefore!, latestNonce, BigInt(e.blockBefore) - 2n).catch(() => null);
+      if (search?.match) {
+        const r = await publicClient.getTransactionReceipt({ hash: search.match.hash });
+        matched = { hash: search.match.hash, status: r.status === "success" ? "success" : "reverted", blockNumber: r.blockNumber };
+      }
+      const user = txNonce !== undefined ? search?.byNonce.get(txNonce) : undefined;
+      if (user && !isSameCall(user, e.call)) consumedBy = { nonce: txNonce!, hash: user.hash };
+    }
+    if (!consumedBy && e.replacedBy && e.call) {
+      const r = await publicClient.getTransaction({ hash: e.replacedBy }).catch(() => null);
+      if (r && r.blockNumber !== null && !isSameCall({ to: r.to ?? null, input: r.input, value: r.value }, e.call)) consumedBy = { nonce: r.nonce, hash: e.replacedBy };
+    }
+    // Rule 9: a milestone request the contract can permanently no longer accept
+    let dead: string | undefined;
+    if (e.action.fn !== "create") {
+      const [snap, block] = await Promise.all([readSnapshot(e.action), publicClient.getBlock({ blockTag: "latest" })]);
+      if (snap.kind === "milestone") dead = deadReason(e.action, e.call, snap, block.timestamp);
+    }
     facts = {
       live: e.live,
-      liveElsewhere: openInAnotherTab(e, registry.tabId, at),
+      liveElsewhere: await registry.openElsewhere(e),
       hash,
       receipt: receipt ? { status: receipt.status === "success" ? "success" : "reverted", blockNumber: receipt.blockNumber } : null,
       txPending: !!tx && tx.blockNumber === null,
-      txNonce: tx?.nonce ?? e.txNonce,
+      txNonce,
       latestNonce,
       pendingNonce,
       hasBaseline,
@@ -246,6 +348,9 @@ export async function reconcile(key: string, refresh: () => unknown): Promise<vo
       createdId: effect.createdId,
       attested: e.attested === true,
       isCreate: e.action.fn === "create",
+      matched,
+      consumedBy,
+      dead,
     };
     if (tx && e.txNonce === undefined) record({ txNonce: tx.nonce });
   } catch (error) {
@@ -256,8 +361,10 @@ export async function reconcile(key: string, refresh: () => unknown): Promise<vo
   switch (verdict.kind) {
     case "confirmed":
     case "reverted": {
-      const receipt = await publicClient.getTransactionReceipt({ hash: hash! }).catch(() => null);
-      registry.update(key, e.attempt, (x) => ({ ...x, recovery: { verdict, at }, state: verdict.kind === "confirmed" ? { phase: "confirmed", hash: hash!, blockNumber: facts.receipt!.blockNumber, createdId: x.action.fn === "create" && receipt ? createdAgreementId(receipt) : undefined } : { phase: "reverted", hash: hash! } }));
+      const h = verdict.hash ?? hash!;
+      const receipt = await publicClient.getTransactionReceipt({ hash: h }).catch(() => null);
+      const blockNumber = receipt?.blockNumber ?? facts.receipt?.blockNumber ?? facts.matched?.blockNumber ?? 0n;
+      registry.update(key, e.attempt, (x) => ({ ...x, live: false, recovery: { verdict, at }, state: verdict.kind === "confirmed" ? { phase: "confirmed", hash: h, blockNumber, createdId: x.action.fn === "create" && receipt ? createdAgreementId(receipt) : undefined } : { phase: "reverted", hash: h } }));
       await refresh();
       return;
     }
@@ -308,9 +415,9 @@ export function useTx(base: string) {
   const { mutateAsync } = useWriteContract();
   const refresh = useRefreshChainData();
   const start = useCallback(
-    (req: TxRequest, label: string) => {
+    (req: TxRequest, label: string, opts?: { acceptLateReplace?: boolean }) => {
       if (!address) return;
-      void startTx({ req, label, account: address, walletChainId: chainId, write: mutateAsync as WriteFn, refresh });
+      void startTx({ req, label, account: address, walletChainId: chainId, write: mutateAsync as WriteFn, refresh, acceptLateReplace: opts?.acceptLateReplace });
     },
     [address, chainId, mutateAsync, refresh],
   );

@@ -5,6 +5,7 @@ import { toHex } from "viem";
 import { checkAddress } from "@/domain/address";
 import { useWallet } from "@/chain/use-wallet";
 import { milestoneKey, useTx } from "@/chain/write";
+import { callArgs } from "@/chain/tx-effect";
 import { useWalletActions } from "@/chain/wallet-actions";
 import type { Agreement, Milestone } from "@/contract/read";
 import { commit } from "@/domain/commitment";
@@ -39,6 +40,7 @@ export function MilestoneActions({ a, m, now }: { a: Agreement; m: Milestone; no
   const [evidence, setEvidence] = useState("");
   const [payee, setPayee] = useState("");
   const [confirm, setConfirm] = useState<ActionKind | "reject" | null>(null);
+  const [ack, setAck] = useState(false);
 
   const can = milestoneActions(a, m, wallet.address, now);
   if (can.length === 0 && !tx.entry && tx.others.length === 0) return null;
@@ -49,10 +51,20 @@ export function MilestoneActions({ a, m, now }: { a: Agreement; m: Milestone; no
   const payeeError = payeeCheck && !payeeCheck.ok ? payeeCheck.error : undefined;
   const payeeWarning = payeeCheck?.ok && "warning" in payeeCheck ? payeeCheck.warning : undefined;
   const ev = commit(evidence);
-  const run = (req: Parameters<typeof tx.start>[0], label: string) => {
+  const run = (req: Parameters<typeof tx.start>[0], label: string, opts?: Parameters<typeof tx.start>[2]) => {
     setConfirm(null);
-    tx.start(req, label);
+    tx.start(req, label, opts);
   };
+  // Earlier submissions whose outcome is unproven (R2-C): their evidence, decoded from the exact call that was sent.
+  const e = tx.entry;
+  const pendingGhost = e?.state.phase === "unknown" && e.recovery?.verdict.kind === "override" && e.call ? [{ fn: e.action.fn, data: e.call.data }] : [];
+  const ghostEvidence = [...(e?.ghosts ?? []), ...pendingGhost]
+    .filter((g) => g.fn === "submit")
+    .map((g) => callArgs({ data: g.data })?.args[2] as bigint | undefined)
+    .filter((x): x is bigint => x !== undefined);
+  const needsAck = ev.ok && ghostEvidence.some((g) => g !== ev.value);
+  const latestSent = e?.state.phase === "confirmed" && e.action.fn === "submit" ? (callArgs(e.call)?.args[2] as bigint | undefined) : undefined;
+  const lateReplaced = m.state === "submitted" && latestSent !== undefined && m.evidence !== latestSent && ghostEvidence.includes(m.evidence);
   const hex = (v: bigint) => toHex(v, { size: 32 });
 
   return (
@@ -76,7 +88,18 @@ export function MilestoneActions({ a, m, now }: { a: Agreement; m: Milestone; no
                 {evidence.trim() !== "" && !ev.ok && <p role="alert" className="mt-1.5 text-sm text-danger">{ev.error}</p>}
               </div>
               <p className="text-micro text-ink-3">This becomes revision {(m.revision + 1n).toString()}. You can submit again until the delivery deadline ({formatRelative(m.deliverBy, now)}).</p>
-              <Button size="sm" disabled={!ev.ok || busy} onClick={() => ev.ok && run({ fn: "submit", args: [a.id, m.index, ev.value] }, "Submit evidence")}>Submit evidence</Button>
+              {lateReplaced && (
+                <p role="alert" className="rounded-lg border border-danger bg-danger-tint px-3 py-2 text-sm text-ink" data-late-replaced>
+                  The evidence on-chain is now from your EARLIER request, which MetaMask sent late: it replaced your newer evidence ({shortHex(hex(latestSent!), 10, 8)}). Submit the newer evidence again before the delivery deadline, and tell the verifier.
+                </p>
+              )}
+              {needsAck && (
+                <label className="flex items-start gap-2 rounded-lg border border-submitted bg-submitted-tint px-3 py-2 text-sm text-ink">
+                  <input type="checkbox" className="mt-1" checked={ack} onChange={(x) => setAck(x.target.checked)} />
+                  <span>An earlier submission of mine was never proven closed. If MetaMask still sends it before the delivery deadline, it will replace this evidence and the verifier will see the old one. I accept that, and will check the evidence on-chain.</span>
+                </label>
+              )}
+              <Button size="sm" disabled={!ev.ok || busy || (needsAck && !ack)} onClick={() => ev.ok && run({ fn: "submit", args: [a.id, m.index, ev.value] }, "Submit evidence", { acceptLateReplace: needsAck && ack })}>Submit evidence</Button>
             </div>
           )}
 

@@ -123,7 +123,7 @@ describe("the page's agreement read goes through the same count", () => {
     expect(reads.agreementCalls).toBe(1);
     expect(cacheSize()).toBe(1);
     expect(knownIds.reads).toBe(1);
-  });
+  }, 20_000); // 300 sequential page reads: slow under a loaded parallel run
 });
 
 describe("the server cache is bounded", () => {

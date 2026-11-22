@@ -109,7 +109,7 @@ describe("the request registry: one open request per action", () => {
       entry({ phase: "awaiting", since: 5 }, { key: requestKey(ACCOUNT, "a") }),
       entry({ phase: "pending", hash: HASH, since: 5 }, { key: requestKey(ACCOUNT, "b"), before: { kind: "milestone", state: "approved", revision: 1n, rejections: 0n } }),
       entry({ phase: "confirmed", hash: HASH, blockNumber: 9n }, { key: requestKey(ACCOUNT, "c") }),
-      entry({ phase: "unknown", reason: "stopped" }, { key: requestKey(ACCOUNT, "d"), cleared: true }),
+      entry({ phase: "unknown", reason: "stopped" }, { key: requestKey(ACCOUNT, "d"), cleared: true, recovery: { verdict: { kind: "released", reason: "proof" }, at: 1 } }),
       entry({ phase: "unknown", reason: "stopped" }, { key: requestKey(ACCOUNT, "e") }),
     ]);
     const back = deserialize(raw, 2_000);
@@ -120,8 +120,8 @@ describe("the request registry: one open request per action", () => {
     expect(back[2]!.state).toEqual({ phase: "unknown", reason: "stopped" });
     expect(back.every((e) => e.live === false)).toBe(true);
   });
-  it("drops stale entries and tolerates garbage", () => {
-    expect(deserialize(serialize([entry({ phase: "awaiting", since: 1 })]), 1_000 + 25 * 3_600_000)).toEqual([]);
+  it("keeps unresolved entries however old they are (R2-C: time is not evidence) and tolerates garbage", () => {
+    expect(deserialize(serialize([entry({ phase: "awaiting", since: 1 })]), 1_000 + 25 * 3_600_000)).toHaveLength(1);
     expect(deserialize("not json", 0)).toEqual([]);
     expect(deserialize(null, 0)).toEqual([]);
   });

@@ -492,12 +492,13 @@ test("after a reload the open request is remembered, a duplicate is refused, and
   // MetaMask sends it after all (simulated outside the page)
   await chainSend(PROVIDER, "submit", [id, 0, BigInt(keccak256(stringToBytes("reload while open")))]);
   await panel(page).getByRole("button", { name: "Check the chain" }).click();
-  await expect(panel(page).getByText("Done on-chain: the contract shows this action took effect.")).toBeVisible({ timeout: 20_000 });
+  // R2-C: the exact call is found among the account's transactions, so the page names the transaction itself
+  await expect(panel(page).getByText(/Confirmed in block \d+/)).toBeVisible({ timeout: 20_000 });
   await panel(page).getByRole("button", { name: "Dismiss" }).click();
   await expect(panel(page).getByText("Replace your submission")).toBeVisible({ timeout: 20_000 });
 });
 
-test("after a reload, when nothing was sent, a new submission is allowed only on the user's word, and the old outcome stays unknown (R2-B)", async ({ page }) => {
+test("after a reload, when nothing was sent, the SAME submission may be sent again on the user's word; the old outcome stays unknown (R2-B, R2-C)", async ({ page }) => {
   const id = await newAgreement("funded");
   const nonceBefore = await nonceOf(PROVIDER);
   await openAs(page, PROVIDER, `/app/agreements/${id}`);
@@ -515,9 +516,10 @@ test("after a reload, when nothing was sent, a new submission is allowed only on
   await panel(page).getByRole("button", { name: "It is no longer in MetaMask" }).click();
   // the user's word is a decision, not proof: the outcome stays unknown and the page says what a late approval would do
   await expect(panel(page).getByText(/That is your decision, not proof: the outcome stays unknown/)).toBeVisible({ timeout: 20_000 });
-  await expect(panel(page).getByText(/it is a valid resubmission and replaces the newer evidence/)).toBeVisible();
+  await expect(panel(page).getByText(/You may submit the SAME evidence again/)).toBeVisible();
   await expect(panel(page).getByText("Outcome not known yet")).toBeVisible();
-  await panel(page).getByLabel("Evidence").fill("sent again");
+  await panel(page).getByLabel("Evidence").fill("lost request"); // the same evidence: a late original would only repeat it
+  await expect(panel(page).getByRole("checkbox")).toHaveCount(0);
   await panel(page).getByRole("button", { name: "Submit evidence" }).click();
   await confirmed(page);
   await expect(panel(page).locator("[data-previous-unproven]")).toContainText("was never proven closed");
@@ -539,6 +541,7 @@ test("a lost create is never unlocked by the user's word; another account is not
   await page.getByRole("button", { name: "Create and sign" }).click();
   await expect(page.getByText(/Waiting for your signature in MetaMask/)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("button", { name: "Review and create" })).toBeDisabled();
+  const [asked] = await sentParams(page); // exactly what MetaMask was asked to sign
   // another account in this browser is neither blocked nor shown the client's request as its own
   await switchAccount(page, STRANGER);
   await expect(page.getByText(/0xf39F…2266 has an unfinished request for this action in this browser/)).toBeVisible();
@@ -550,22 +553,28 @@ test("a lost create is never unlocked by the user's word; another account is not
   await expect(page.getByRole("button", { name: /^Connected as/ })).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("Outcome not known yet")).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: "Check the chain" }).click();
-  await expect(page.getByText(/The chain shows this action has not happened and nothing from 0xf39F…2266 is pending/)).toBeVisible({ timeout: 20_000 });
-  await page.getByRole("button", { name: "It is no longer in MetaMask" }).click();
-  await expect(page.getByText(/Your answer is recorded, but it cannot prove the old request is closed/)).toBeVisible({ timeout: 20_000 });
+  // R2-C: held at once; there is no "it is gone" button that could unlock a create, and time does not either
+  await expect(page.getByText(/A new create from 0xf39F…2266 stays blocked until the chain settles it; time passing does not/)).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole("button", { name: "It is no longer in MetaMask" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Review and create" })).toBeDisabled();
   await expect(page.getByLabel("Specification")).toHaveValue("Lost create"); // the draft is kept
   expect(await outstanding()).toBe(before);
-  // the old request is approved in MetaMask after all (simulated outside the page): the chain settles it
+  // a DIFFERENT agreement by the same client (another device) does not settle it (R2-C: matched on the request's terms)
   const t = await now();
   await chainSend(CLIENT, "create", [PROVIDER, VERIFIER, 86_400n, 1, [parseEther("0.01"), 0n, 0n], [t + 7_200n, 0n, 0n], [BigInt(keccak256(stringToBytes("Lost create"))), 0n, 0n]], parseEther("0.01"));
   await page.getByRole("button", { name: "Check the chain" }).click();
-  await expect(page.getByText("Done on-chain: the contract shows this action took effect.")).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator("[data-recovery]")).toHaveAttribute("data-recovery", "create-held", { timeout: 20_000 });
+  await expect(page.getByRole("button", { name: "Review and create" })).toBeDisabled();
+  // the old request is approved in MetaMask after all: exactly the call it was asked to sign (simulated outside the page)
+  await wallet(CLIENT).sendTransaction({ to: SETTLANE, data: asked!.data as `0x${string}`, value: BigInt(asked!.value ?? "0x0") });
+  await page.getByRole("button", { name: "Check the chain" }).click();
+  // found by its exact call among the account's transactions: the page now knows the transaction itself
+  await expect(page.getByText(/Confirmed in block \d+/)).toBeVisible({ timeout: 20_000 });
   await expect(page.getByText(/was created\. The draft was cleared so it cannot be created twice by accident\./)).toBeVisible();
   await expect(page.getByLabel("Specification")).toHaveValue("");
   await page.getByRole("button", { name: "Start a new draft from these terms" }).click();
   await expect(page.getByLabel("Specification")).toHaveValue("Lost create");
-  expect(await outstanding()).toBe(before + parseEther("0.01")); // exactly one agreement was funded
+  expect(await outstanding()).toBe(before + parseEther("0.02")); // the different one, and the original: never a third
 });
 
 test("an unanswered connection request: guidance, Stop waiting, MetaMask's 'already pending', and a late approval connects", async ({ page }) => {
@@ -614,4 +623,75 @@ test("made-up agreement ids get a 404 from one shared count, malformed ids never
   expect(Date.now() - t0).toBeLessThan(20_000);
   for (const bad of ["0", "01", "abc", "1".repeat(25)]) expect((await request.get(`/agreements/${bad}`)).status()).toBe(404);
   expect((await request.get("/agreements/1")).status()).toBe(200);
+});
+
+// R2-C. These two move the local chain's clock forward, so they run last.
+
+test("R2-C Decision 2: a late duplicate submit DOES replace newer evidence while the delivery window is open; the page demands consent and warns, and the window closing ends the risk", async ({ page }) => {
+  test.setTimeout(150_000);
+  const id = await newAgreement("funded"); // delivery deadline: one hour from now
+  await openAs(page, PROVIDER, `/app/agreements/${id}`);
+  await loaded(page);
+  await holdSignatures(page);
+  await panel(page).getByLabel("Evidence").fill("version A");
+  await panel(page).getByRole("button", { name: "Submit evidence" }).click();
+  await expect(panel(page).getByText(/Waiting for your signature in MetaMask/)).toBeVisible({ timeout: 15_000 });
+  const [askedA] = await sentParams(page);
+  await page.reload();
+  await loaded(page);
+  await panel(page).getByRole("button", { name: "Check the chain" }).click();
+  await panel(page).getByRole("button", { name: "It is no longer in MetaMask" }).click({ timeout: 20_000 });
+  await expect(panel(page).getByText(/That is your decision, not proof/)).toBeVisible({ timeout: 20_000 });
+  // different evidence: the page refuses to send it without explicit consent to the late-replacement risk
+  await panel(page).getByLabel("Evidence").fill("version B");
+  const ack = panel(page).getByRole("checkbox");
+  await expect(ack).toBeVisible();
+  await expect(panel(page).getByRole("button", { name: "Submit evidence" })).toBeDisabled();
+  await ack.check();
+  await panel(page).getByRole("button", { name: "Submit evidence" }).click();
+  await confirmed(page);
+  const hashB = BigInt(keccak256(stringToBytes("version B")));
+  expect((await milestone(id)).slice(5)).toEqual([hashB, 0n, 1n]); // evidence B, revision 1
+  // REPRODUCTION: MetaMask sends the old request A after all, inside the delivery window. The contract accepts it as a
+  // resubmission (LIFECYCLE T2) and A replaces the newer B at revision 2.
+  await wallet(PROVIDER).sendTransaction({ to: SETTLANE, data: askedA!.data as `0x${string}` });
+  const hashA = BigInt(keccak256(stringToBytes("version A")));
+  expect((await milestone(id)).slice(5)).toEqual([hashA, 0n, 2n]);
+  // the page says so, plainly, to the provider
+  await page.reload();
+  await loaded(page);
+  await expect(panel(page).locator("[data-late-replaced]")).toContainText("replaced your newer evidence", { timeout: 20_000 });
+  // once the delivery window has closed (by block time), the same late request is refused by the contract
+  await rpc("evm_increaseTime", [3_700]);
+  await rpc("evm_mine");
+  await expect(pub.call({ account: PROVIDER, to: SETTLANE, data: askedA!.data as `0x${string}` })).rejects.toThrow(/delivery window is closed/);
+});
+
+test("R2-C Decision 1: a lost create signed late that REVERTS is found by its exact call, and only then may the client create again", async ({ page }) => {
+  test.setTimeout(150_000);
+  await openAs(page, CLIENT, "/app/create");
+  await page.getByLabel("Provider", { exact: true }).fill(PROVIDER);
+  await page.getByLabel("Verifier", { exact: true }).fill(VERIFIER);
+  await page.getByLabel("Amount (ETH)").fill("0.01");
+  await page.getByLabel("Deliver within").fill("6"); // the form requires at least 5 minutes
+  await page.getByLabel("Milestone 1 deadline unit").selectOption("minutes");
+  await page.getByLabel("Specification").fill("Create that reverts");
+  await holdSignatures(page);
+  await page.getByRole("button", { name: "Review and create" }).click();
+  await page.getByRole("button", { name: "Create and sign" }).click();
+  await expect(page.getByText(/Waiting for your signature in MetaMask/)).toBeVisible({ timeout: 15_000 });
+  const [asked] = await sentParams(page);
+  await page.reload();
+  await expect(page.getByRole("button", { name: /^Connected as/ })).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Check the chain" }).click();
+  await expect(page.locator("[data-recovery]")).toHaveAttribute("data-recovery", "create-held", { timeout: 20_000 });
+  // much later (past the deadline it was built with) the user approves the old prompt: it is mined and reverts
+  await rpc("evm_increaseTime", [900]);
+  await rpc("evm_mine");
+  const hash = await wallet(CLIENT).sendTransaction({ to: SETTLANE, data: asked!.data as `0x${string}`, value: BigInt(asked!.value ?? "0x0"), gas: 600_000n });
+  expect((await pub.waitForTransactionReceipt({ hash })).status).toBe("reverted");
+  await page.getByRole("button", { name: "Check the chain" }).click();
+  await expect(page.getByText("Mined, but the contract reverted it.")).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByLabel("Specification")).toHaveValue("Create that reverts"); // a reverted create keeps the draft
+  await expect(page.getByRole("button", { name: "Review and create" })).toBeEnabled(); // the one request is settled
 });

@@ -64,26 +64,39 @@ export type TxEntry = {
   /** Scope (R2-B): the chain and contract this request was made for. The key also encodes them and the account. */
   chainId?: number;
   contract?: Address;
-  /** The earlier attempt this one replaced while its outcome was still unproven (it is never forgotten silently). */
-  previous?: { startedAt: number; reason: string };
+  /** The exact call handed to the wallet (calldata and value), so the chain can be searched for it (R2-C). */
+  call?: { data: Hex; value: string };
+  /** The block number read with the baseline (where a search of the account's transactions starts). */
+  blockBefore?: string;
+  /** The wallet replaced the transaction with a DIFFERENT one (its hash); `state.hash` stays the original's. */
+  replacedBy?: Hex;
+  /**
+   * Earlier requests for this action whose outcome is still unproven and which may still produce a transaction (R2-C).
+   * Kept, and stored, until the chain shows each can no longer take effect. While any is alive only the SAME call may be
+   * sent again (a submit with other evidence only with the user's explicit acknowledgment).
+   */
+  ghosts?: Ghost[];
 };
+
+export type Ghost = { startedAt: number; fn: TxAction["fn"]; data: Hex; value: string; hash?: Hex; nonceBefore?: number; blockBefore?: string };
 
 export const TERMINAL: TxPhase["phase"][] = ["confirmed", "found", "rejected", "cancelled", "reverted", "failed"];
 export const isTerminal = (s: TxPhase) => TERMINAL.includes(s.phase);
 
 /** May a new request for this action be started now? */
-export function canStart(entry: TxEntry | undefined, now: number = Date.now()): boolean {
+// `now` is accepted for call-site compatibility only: elapsed time never unlocks anything (R2-C Decision 1).
+export function canStart(entry: TxEntry | undefined, _now?: number): boolean {
+  void _now;
   if (!entry) return true;
   if (isTerminal(entry.state)) return true;
-  if (entry.state.phase !== "unknown") return false;
-  // the stated policy bound (not a proof): an unresolved record expires MAX_AGE_MS after its request started, exactly as
-  // a stored one is dropped on load; before that only a release or an override lets a new request start
-  return entry.cleared === true || now - entry.startedAt >= MAX_AGE_MS;
+  // only a proof-based release, or (milestone actions only) the user's override, lets a new request start
+  return entry.state.phase === "unknown" && entry.cleared === true;
 }
 
 /** Why not, in plain words (undefined when a request may be started). */
-export function blockReason(entry: TxEntry | undefined, now: number = Date.now()): string | undefined {
-  if (canStart(entry, now)) return undefined;
+export function blockReason(entry: TxEntry | undefined, _now?: number): string | undefined {
+  void _now;
+  if (canStart(entry)) return undefined;
   switch (entry!.state.phase) {
     case "checking":
       return "Checking with the contract.";
@@ -114,26 +127,34 @@ export const inScope = (e: Pick<TxEntry, "key" | "account">) => typeof e.account
 export const STORAGE_KEY = "settlane:tx-requests:v2";
 /** Before R2-B records were keyed by action only. They were made for this deployment (the only one this site has served). */
 export const LEGACY_STORAGE_KEY = "settlane:tx-requests:v1";
-export const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 const toJson = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? { $big: x.toString() } : x));
 const fromJson = (s: string) => JSON.parse(s, (_k, x) => (x && typeof x === "object" && typeof x.$big === "string" ? BigInt(x.$big) : x));
 
-/** Entries worth keeping across a reload, as stored. */
+/** Is the request's own outcome still unproven (so it must survive a reload)? A release by proof is not; an override is. */
+const unproven = (e: TxEntry) => !isTerminal(e.state) && !(e.state.phase === "unknown" && e.cleared && e.recovery?.verdict.kind === "released");
+
+/** Entries worth keeping across a reload, as stored: unproven requests, and any entry that still carries ghosts. */
 export function serialize(entries: TxEntry[]): string {
-  // `live` is per tab; other tabs learn that a request is open from ownerTab + a fresh heartbeatAt
-  return toJson(entries.filter((e) => !isTerminal(e.state) && !(e.state.phase === "unknown" && e.cleared)).map((e) => ({ ...e, live: false, ownerTab: e.live ? e.ownerTab : undefined })));
+  // `live` is per tab; other tabs learn that a request is open from its Web Lock, or ownerTab + a fresh heartbeatAt
+  return toJson(entries.filter((e) => unproven(e) || (e.ghosts?.length ?? 0) > 0).map((e) => ({ ...e, live: false, ownerTab: e.live ? e.ownerTab : undefined })));
 }
 
-/** How recent a heartbeat must be for another tab to count a request as still open there. */
-export const HEARTBEAT_FRESH_MS = 15_000;
+/**
+ * How recent a heartbeat must be for another tab to count a request as still open there. Only the fallback where Web Locks
+ * are unavailable: browsers run timers in hidden tabs as rarely as once a minute, so this is generous (R2-C).
+ */
+export const HEARTBEAT_FRESH_MS = 150_000;
+/** The Web Lock a tab holds while it has a live wallet request for `key` (released when the tab closes or crashes). */
+export const lockName = (key: string) => `settlane-tx:${key}`;
 export const openInAnotherTab = (e: TxEntry, tabId: string, now: number) => !e.live && e.ownerTab !== undefined && e.ownerTab !== tabId && e.heartbeatAt !== undefined && now - e.heartbeatAt < HEARTBEAT_FRESH_MS;
 
 /**
  * What a reload means for each stored entry: nothing in this tab is waiting for the wallet any more, so an
  * open request becomes "unknown (reloaded)"; a known hash is kept so the receipt can still be looked up.
  */
-export function deserialize(raw: string | null, now: number): TxEntry[] {
+export function deserialize(raw: string | null, _now?: number): TxEntry[] {
+  void _now;
   if (!raw) return [];
   let list: TxEntry[];
   try {
@@ -143,8 +164,10 @@ export function deserialize(raw: string | null, now: number): TxEntry[] {
     return [];
   }
   return list
-    .filter((e) => e && typeof e.key === "string" && inScope(e) && now - e.startedAt < MAX_AGE_MS)
+    // no age limit (R2-C): an unproven request is kept until the chain resolves it
+    .filter((e) => e && typeof e.key === "string" && inScope(e))
     .map((e) => {
+      if (isTerminal(e.state) || (e.state.phase === "unknown" && e.cleared)) return { ...e, live: false, lateHashes: e.lateHashes ?? [] };
       const hash = e.state.phase === "pending" ? e.state.hash : e.state.phase === "unknown" ? e.state.hash : undefined;
       const state: TxPhase = e.state.phase === "unknown" ? { ...e.state, reason: e.state.reason === "stopped" || e.state.reason === "wallet-error" ? e.state.reason : "reloaded" } : { phase: "unknown", reason: "reloaded", hash };
       return { ...e, live: false, state, lateHashes: e.lateHashes ?? [] };
@@ -178,7 +201,13 @@ export function migrateLegacy(raw: string | null): TxEntry[] {
 
 type Storage = { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem?(k: string): void };
 
-export function createRegistry(storage: () => Storage | undefined, now: () => number = Date.now, tabId: string = Math.random().toString(36).slice(2)) {
+/** The part of the Web Locks API the registry uses (navigator.locks), injectable for tests. */
+export type Locks = {
+  request(name: string, cb: () => Promise<void>): Promise<unknown>;
+  query(): Promise<{ held?: { name?: string }[] }>;
+};
+
+export function createRegistry(storage: () => Storage | undefined, now: () => number = Date.now, tabId: string = Math.random().toString(36).slice(2), locks?: () => Locks | undefined) {
   let entries = new Map<string, TxEntry>();
   let loaded = false;
   const listeners = new Set<() => void>();
@@ -243,10 +272,47 @@ export function createRegistry(storage: () => Storage | undefined, now: () => nu
     save();
   };
 
+  // Web Locks (R2-C): a tab holds `lockName(key)` for as long as it holds a live wallet request. The browser releases it when
+  // the tab closes, reloads or crashes, and it is not affected by timer throttling in hidden tabs.
+  const mineLocked = new Map<string, () => void>();
+  const syncLocks = () => {
+    const l = locks?.();
+    if (!l) return;
+    const live = new Set(liveHere().map((e) => e.key));
+    for (const key of live) {
+      if (mineLocked.has(key)) continue;
+      let release!: () => void;
+      const held = new Promise<void>((r) => (release = r));
+      mineLocked.set(key, release);
+      l.request(lockName(key), () => held).catch(() => mineLocked.delete(key));
+    }
+    for (const [key, release] of mineLocked) {
+      if (live.has(key)) continue;
+      release();
+      mineLocked.delete(key);
+    }
+  };
+  listeners.add(syncLocks);
+  /** Is this request still open in ANOTHER tab? Web Lock first; the heartbeat only where locks are unavailable or say no. */
+  const openElsewhere = async (e: TxEntry): Promise<boolean> => {
+    if (e.live) return false;
+    const l = locks?.();
+    if (l && !mineLocked.has(e.key)) {
+      try {
+        const q = await l.query();
+        if ((q.held ?? []).some((h) => h.name === lockName(e.key))) return true;
+      } catch {
+        /* fall back to the heartbeat */
+      }
+    }
+    return openInAnotherTab(e, tabId, now());
+  };
+
   return {
     tabId,
     syncFromStorage,
     heartbeat,
+    openElsewhere,
     subscribe(l: () => void) {
       listeners.add(l);
       return () => listeners.delete(l);
@@ -307,7 +373,9 @@ export function tabIdentity(session: { getItem(k: string): string | null; setIte
   }
 }
 
-export const registry: Registry = createRegistry(browserStorage, Date.now, tabIdentity(typeof window === "undefined" ? undefined : window.sessionStorage));
+const browserLocks = (): Locks | undefined => (typeof navigator !== "undefined" && "locks" in navigator ? (navigator.locks as unknown as Locks) : undefined);
+
+export const registry: Registry = createRegistry(browserStorage, Date.now, tabIdentity(typeof window === "undefined" ? undefined : window.sessionStorage), browserLocks);
 
 // Cross-tab: adopt other tabs' changes as they happen, and keep announcing this tab's live requests.
 if (typeof window !== "undefined") {

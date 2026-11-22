@@ -6,6 +6,8 @@ const chain = vi.hoisted(() => ({
   simulateContract: vi.fn(async () => ({ request: { functionName: "x" } })),
   estimateContractGas: vi.fn(async () => 100_000n),
   getTransactionCount: vi.fn(async () => 5),
+  getBlockNumber: vi.fn(async () => 1_000n),
+  getBlock: vi.fn(async (): Promise<unknown> => ({ number: 1_000n, timestamp: 1_000n, transactions: [] })),
   getTransaction: vi.fn(async (): Promise<unknown> => null),
   readContract: vi.fn(async () => [3, 1n, 0n, 0n, 0n, 0n, 0n, 1n] as never),
   waitForTransactionReceipt: vi.fn(async ({ hash }: { hash: string }) => ({ status: "success", blockNumber: 42n, transactionHash: hash, logs: [] })),
@@ -93,13 +95,19 @@ describe("M6: an unresolved live wallet request cannot be bypassed by Check the 
 
 describe("M5: a dropped transaction is released only with proof the original can never be mined", () => {
   const base = (id: bigint, hash: `0x${string}`) => ({ key: mk(id, 0), label: "Claim", action: { fn: "claim" as const, id, m: 0 }, account: ACCOUNT, startedAt: Date.now(), attempt: 1, state: { phase: "unknown" as const, reason: "receipt-timeout" as const, hash }, live: false, lateHashes: [], before: { kind: "milestone" as const, state: "approved" as const, revision: 1n, rejections: 0n }, nonceBefore: 5 });
-  it("released when the original's nonce has been used by another transaction and the action did not happen", async () => {
+  it("released when the transaction that used the original's nonce is identified as a different one, and the action did not happen", async () => {
     reset();
     const hash = `0x${"cc".repeat(32)}` as const;
-    registry.set({ ...base(701n, hash), txNonce: 5 } as never);
-    chain.getTransactionCount.mockResolvedValue(6); // nonce 5 consumed by something else
+    const call = { data: "0xabcdef01" as `0x${string}`, value: "0" };
+    registry.set({ ...base(701n, hash), txNonce: 5, call, blockBefore: "1000" } as never);
+    // nonce 5 was used in block 1003 by a DIFFERENT transaction (R2-C: it must be identified, not assumed)
+    chain.getTransactionCount.mockImplementation((async (a: { blockNumber?: bigint }) => (a?.blockNumber === undefined || a.blockNumber >= 1003n ? 6 : 5)) as never);
+    chain.getBlockNumber.mockResolvedValue(1_005n);
+    chain.getBlock.mockImplementation((async (a: { blockNumber?: bigint }) => (a?.blockNumber === 1003n ? { number: 1003n, timestamp: 1n, transactions: [{ hash: `0x${"ef".repeat(32)}`, from: ACCOUNT, to: ACCOUNT, input: "0x", value: 0n, nonce: 5 }] } : { number: 1005n, timestamp: 1n, transactions: [] })) as never);
     await reconcile(mk(701n, 0), () => undefined);
+    expect(registry.get(mk(701n, 0))!.recovery?.verdict).toMatchObject({ kind: "released", reason: expect.stringContaining("0xefefefef") });
     expect(canStart(registry.get(mk(701n, 0)))).toBe(true);
+    chain.getBlockNumber.mockResolvedValue(1_000n);
   });
   it("NOT released while the original's nonce is unused (the wallet could still send it)", async () => {
     reset();

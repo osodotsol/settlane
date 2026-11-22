@@ -9,6 +9,8 @@ const chain = vi.hoisted(() => ({
   readContract: vi.fn(async () => [3, 1n, 0n, 0n, 0n, 0n, 0n, 1n] as const), // Approved, revision 1
   waitForTransactionReceipt: vi.fn(async ({ hash }: { hash: string }) => ({ status: "success", blockNumber: 42n, transactionHash: hash, logs: [] })),
   getTransactionReceipt: vi.fn(async () => null),
+  getBlockNumber: vi.fn(async () => 1_000n),
+  getBlock: vi.fn(async (): Promise<unknown> => ({ number: 1_000n, timestamp: 1_000n, transactions: [] })),
   getTransaction: vi.fn(async () => null),
 }));
 vi.mock("@/chain/client", () => ({ publicClient: chain }));

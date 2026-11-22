@@ -27,17 +27,33 @@ describe("recovery verdicts, rule by rule", () => {
     expect(v.kind).toBe("cannot-prove");
     expect(releases(v)).toBe(false);
   });
-  it("8. a dropped hash is released only when its nonce has been used by another transaction", () => {
-    expect(assessRecovery(facts({ hash: HASH, txNonce: 5, latestNonce: 6 })).kind).toBe("released");
+  it("8. a dropped hash is released only when the transaction that used its nonce was identified as a different one (R2-C)", () => {
+    expect(assessRecovery(facts({ hash: HASH, txNonce: 5, latestNonce: 6, consumedBy: { nonce: 5, hash: `0x${"ef".repeat(32)}` } })).kind).toBe("released");
+    expect(assessRecovery(facts({ hash: HASH, txNonce: 5, latestNonce: 6 })).kind).toBe("cannot-prove"); // a used nonce alone identifies nothing
     expect(assessRecovery(facts({ hash: HASH, txNonce: 5, latestNonce: 5 })).kind).toBe("dropped-unproven");
     expect(assessRecovery(facts({ hash: HASH, latestNonce: 9 })).kind).toBe("dropped-unproven"); // nonce never seen
     expect(assessRecovery(facts({ hash: HASH, txNonce: 5, latestNonce: 5, attested: true })).kind).toBe("dropped-unproven"); // a confirmation is not proof here
   });
-  it("9. no hash: the outcome stays unknown; the user's confirmation is an override for a milestone action, never a release, and never unlocks a create (R2-B)", () => {
+  it("9. no hash: the outcome stays unknown; the user's confirmation is an override for a milestone action, never a release; a create is held with or without it (R2-C)", () => {
     expect(assessRecovery(facts({ latestNonce: 7 })).kind).toBe("needs-confirmation");
+    expect(assessRecovery(facts({ isCreate: true })).kind).toBe("create-held");
     expect(assessRecovery(facts({ attested: true })).kind).toBe("override");
     expect(assessRecovery(facts({ attested: true, isCreate: true })).kind).toBe("create-held");
     expect(assessRecovery(facts({ attested: true, isCreate: true, latestNonce: 9 })).kind).toBe("create-held"); // a moved nonce proves nothing
+  });
+});
+
+describe("R2-C rules: the exact call found on-chain, and requests the contract can never accept", () => {
+  it("the exact call found mined from the account settles the request, even with no hash", () => {
+    expect(assessRecovery(facts({ isCreate: true, matched: { hash: HASH, status: "success", blockNumber: 9n } }))).toEqual({ kind: "confirmed", hash: HASH });
+    expect(assessRecovery(facts({ isCreate: true, matched: { hash: HASH, status: "reverted", blockNumber: 9n } }))).toEqual({ kind: "reverted", hash: HASH });
+  });
+  it("a request the contract can permanently no longer accept is released, but never past an open request or a pending transaction", () => {
+    expect(assessRecovery(facts({ dead: "its delivery window has closed" })).kind).toBe("released");
+    expect(assessRecovery(facts({ dead: "x", live: true })).kind).toBe("open-here");
+    expect(assessRecovery(facts({ dead: "x", liveElsewhere: true })).kind).toBe("open-elsewhere");
+    expect(assessRecovery(facts({ dead: "x", pendingNonce: 6 })).kind).toBe("pending-account");
+    expect(assessRecovery(facts({ dead: "x", hasBaseline: false })).kind).toBe("cannot-prove");
   });
 });
 

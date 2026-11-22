@@ -9,14 +9,16 @@ const chain = vi.hoisted(() => ({
   readContract: vi.fn(async () => [3, 1n, 0n, 0n, 0n, 0n, 0n, 1n] as const), // Approved, revision 1
   waitForTransactionReceipt: vi.fn(async ({ hash }: { hash: string }) => ({ status: "success", blockNumber: 42n, transactionHash: hash, logs: [] })),
   getTransactionReceipt: vi.fn(async (): Promise<unknown> => null),
+  getBlockNumber: vi.fn(async () => 1_000n),
+  getBlock: vi.fn(async (): Promise<unknown> => ({ number: 1_000n, timestamp: 1_000n, transactions: [] })),
   getTransaction: vi.fn(async (): Promise<unknown> => null),
 }));
-const reads = vi.hoisted(() => ({ count: 2, agreements: new Map<bigint, { id: bigint; client: string }>() }));
+const reads = vi.hoisted(() => ({ count: 2, agreements: new Map<bigint, Record<string, unknown> & { id: bigint; client: string }>() }));
 vi.mock("@/chain/client", () => ({ publicClient: chain }));
 vi.mock("@/contract/read", () => ({ agreementCount: vi.fn(async () => reads.count), readAgreement: vi.fn(async (id: bigint) => reads.agreements.get(id) ?? null) }));
 
 const { startTx, stopWaiting, reconcile, confirmNotInWallet, milestoneKey, CREATE_KEY } = await import("@/chain/write");
-const { registry, requestKey, canStart, createRegistry, STORAGE_KEY, LEGACY_STORAGE_KEY, MAX_AGE_MS, scopeOf } = await import("@/chain/tx-registry");
+const { registry, requestKey, canStart, createRegistry, STORAGE_KEY, LEGACY_STORAGE_KEY, scopeOf } = await import("@/chain/tx-registry");
 
 const A = "0x00000000000000000000000000000000000000a1" as const;
 const B = "0x00000000000000000000000000000000000000b2" as const;
@@ -112,8 +114,9 @@ describe("the user's confirmation is intent, not proof", () => {
     await until(() => registry.get(key)?.state.phase === "awaiting");
     reload(key);
     await reconcile(key, () => undefined);
-    expect(registry.get(key)!.recovery?.verdict.kind).toBe("needs-confirmation");
-    await confirmNotInWallet(key, () => undefined);
+    // R2-C: a create is held at once; there is no confirmation step that could unlock it
+    expect(registry.get(key)!.recovery?.verdict.kind).toBe("create-held");
+    await confirmNotInWallet(key, () => undefined); // not offered for a create, and a no-op if called
     expect(registry.get(key)!.recovery?.verdict.kind).toBe("create-held");
     expect(registry.get(key)!.state.phase).toBe("unknown");
     expect(canStart(registry.get(key))).toBe(false);
@@ -129,10 +132,9 @@ describe("the user's confirmation is intent, not proof", () => {
     await until(() => registry.get(key)?.state.phase === "awaiting");
     reload(key);
     await reconcile(key, () => undefined);
-    await confirmNotInWallet(key, () => undefined);
-    // the user approves the old prompt after all: agreement #3 appears with A as client
+    // the user approves the old prompt after all: agreement #3 appears with A as client and EXACTLY these terms (R2-C)
     reads.count = 3;
-    reads.agreements.set(3n, { id: 3n, client: A });
+    reads.agreements.set(3n, { id: 3n, client: A, provider: B, verifier: "0x00000000000000000000000000000000000000c3", reviewPeriod: 3600n, n: 1, milestones: [{ amount: 1n, deliverBy: 9_999_999_999n, spec: 7n }] });
     await reconcile(key, () => undefined);
     expect(registry.get(key)!.state).toEqual({ phase: "found", createdId: 3n });
     expect(canStart(registry.get(key))).toBe(true);
@@ -151,16 +153,14 @@ describe("the user's confirmation is intent, not proof", () => {
     expect(canStart(registry.get(key))).toBe(false);
   });
 
-  it("the stated policy bound: an unresolved record stops blocking 24 hours after its request started, not before", async () => {
+  it("R2-C Decision 1: an unresolved create never stops blocking because time passed", async () => {
     const w = held();
     const key = requestKey(A, CREATE_KEY);
     void go(createReq, A, w.write);
     await until(() => registry.get(key)?.state.phase === "awaiting");
     reload(key);
     const e = registry.get(key)!;
-    expect(canStart(e, e.startedAt + MAX_AGE_MS - 1)).toBe(false);
-    expect(canStart(e, e.startedAt + MAX_AGE_MS)).toBe(true);
-    expect(canStart({ ...e, state: { phase: "awaiting", since: e.startedAt } }, e.startedAt + 10 * MAX_AGE_MS)).toBe(false); // live states never expire
+    for (const later of [24 * 3_600_000, 30 * 24 * 3_600_000]) expect(canStart(e, e.startedAt + later)).toBe(false);
   });
 
   it("a milestone action may be requested again after the confirmation (an override), the old outcome stays unknown and is remembered", async () => {
@@ -177,7 +177,7 @@ describe("the user's confirmation is intent, not proof", () => {
     const w2 = held();
     void go(claim(id, A), A, w2.write);
     await until(() => registry.get(key)?.state.phase === "awaiting");
-    expect(registry.get(key)!.previous).toMatchObject({ reason: "override" });
+    expect(registry.get(key)!.ghosts).toEqual([expect.objectContaining({ fn: "claim" })]); // the old request is a ghost of the new one
     w2.answer(HASH);
     await until(() => registry.get(key)?.state.phase === "confirmed");
   });

@@ -3,27 +3,28 @@ import type { Hex } from "viem";
 // One decision for "the page lost track of a wallet request: what is true now, and may the user send another?"
 // (R2 audit M1, M5, M6). Pure: the facts are read from the chain by `reconcile` (write.ts); this function only decides.
 //
-// The rules, in order. The first that applies wins:
-//  1. A known transaction hash with a receipt: confirmed or reverted. Final.
-//  2. The action's own effect is on-chain (compared with the state read just before signing): done. Final.
-//  3. This tab still holds the open wallet request: it can still be answered, so nothing can be released.
-//  4. Another tab of this site holds it (fresh heartbeat): same.
-//  5. A known hash the node still has pending: it is on its way; wait for the receipt.
-//  6. The account has a pending transaction: wait.
-//  7. No state was read before signing (old records, or a read that failed): the outcome cannot be proven; never released.
-//  8. A known hash the node does not know (dropped?): released only if the ORIGINAL transaction's nonce has since been used
-//     by another transaction, because then it can never be mined. Otherwise the wallet could still send it.
-//  9. No hash (the wallet never answered this page, or the page was reloaded): the chain shows nothing happened and nothing
-//     pending, but the request may still be open in MetaMask, and nothing on-chain can prove it is not. The outcome stays
-//     UNKNOWN. The user's statement that it is gone from the wallet is evidence of INTENT, never proof (R2-B):
-//      - a milestone action may then be requested again ("override"). If the old request is still approved later: a
-//        claim, refund, approve or reject is refused by the contract (a milestone is paid or refunded once; approve and
-//        reject name the submission revision), costing at most a network fee; a submit is a valid RESUBMISSION while the
-//        delivery window is open (LIFECYCLE T2) and would replace newer evidence. No ETH can move twice in either case.
-//        Holding submit instead could make a provider miss the delivery deadline, which costs them the payment;
-//      - a create is NOT released ("create-held"): an old create approved later would fund a second agreement, which no
-//        contract rule prevents. It stays blocked for this account until the chain proves the outcome (the agreement
-//        appears) or the record expires (tx-registry.ts, a stated policy bound, not a proof).
+// The rules, in order. The first that applies wins (R2-C revision):
+//  1. The known transaction hash has a receipt: confirmed or reverted. Final. (A wallet REPLACEMENT by a different
+//     transaction is never treated as this hash: write.ts keeps the original hash and records the replacement apart.)
+//  2. This request's EXACT call (same calldata, value and contract) was found mined from this account among its
+//     transactions since the baseline nonce: confirmed or reverted on that transaction. Final. A wallet request yields at
+//     most one mined transaction (replacements share its nonce), so this settles the request even when the page never saw
+//     a hash, e.g. after a reload.
+//  3. The action's own effect is on-chain and matches THIS request (a create: an agreement by this client with exactly
+//     these terms; a submit: exactly this evidence at a higher revision): done. Final.
+//  4. This tab still holds the open wallet request: nothing can be released.
+//  5. Another tab of this site holds it (its Web Lock, or a fresh heartbeat): same.
+//  6. The known hash is still pending at the node: wait for the receipt.
+//  7. The account has a pending transaction: wait.
+//  8. No state was read before signing: the outcome cannot be proven; never released.
+//  9. A milestone action the contract can PERMANENTLY no longer accept (its window closed by block time, the revision it
+//     names was superseded, the milestone was paid or refunded, ...): released. It can never take effect.
+// 10. A known hash the node does not know: released only when the transaction that used its nonce was found and is NOT
+//     this request. A used nonce whose transaction could not be identified proves nothing ("cannot prove").
+// 11. No hash: the request may still be unsigned in the wallet, and nothing on-chain can show it is not.
+//      - a create stays HELD (no override, no expiry; Decision 1): a create approved later would fund a second agreement.
+//      - a milestone action may be sent again only on the user's word ("override"), and then only as the SAME call
+//        (write.ts): a late original is then a duplicate the contract refuses, or for a submit an identical resubmission.
 // Any read that fails makes the verdict "cannot prove": uncertainty is never turned into permission.
 
 export type RecoveryFacts = {
@@ -45,11 +46,17 @@ export type RecoveryFacts = {
   attested: boolean;
   /** The lost request is a create (a duplicate would fund a second agreement). */
   isCreate?: boolean;
+  /** Rule 2: this request's exact call, found mined from this account since the baseline. */
+  matched?: { hash: Hex; status: "success" | "reverted"; blockNumber: bigint };
+  /** Rule 10: the nonce of the original (hashed) transaction was used by this DIFFERENT transaction. */
+  consumedBy?: { nonce: number; hash: Hex };
+  /** Rule 9: why the contract can never accept this request any more. */
+  dead?: string;
 };
 
 export type Verdict =
-  | { kind: "confirmed" }
-  | { kind: "reverted" }
+  | { kind: "confirmed"; hash?: Hex }
+  | { kind: "reverted"; hash?: Hex }
   | { kind: "found"; createdId?: bigint }
   | { kind: "open-here" }
   | { kind: "open-elsewhere" }
@@ -63,21 +70,22 @@ export type Verdict =
   | { kind: "released"; reason: string };
 
 export function assessRecovery(f: RecoveryFacts): Verdict {
-  if (f.hash && f.receipt) return { kind: f.receipt.status === "success" ? "confirmed" : "reverted" };
+  if (f.hash && f.receipt) return { kind: f.receipt.status === "success" ? "confirmed" : "reverted", hash: f.hash };
+  if (f.matched) return { kind: f.matched.status === "success" ? "confirmed" : "reverted", hash: f.matched.hash };
   if (f.hasBaseline && f.effectDone) return { kind: "found", createdId: f.createdId };
   if (f.live) return { kind: "open-here" };
   if (f.liveElsewhere) return { kind: "open-elsewhere" };
   if (f.hash && f.txPending) return { kind: "pending-tx" };
   if (f.pendingNonce > f.latestNonce) return { kind: "pending-account" };
   if (!f.hasBaseline) return { kind: "cannot-prove", reason: "The agreement's state was not read before the wallet was asked, so the chain cannot show whether this action happened." };
+  if (f.dead) return { kind: "released", reason: `The contract can no longer accept this request: ${f.dead}. It can never take effect.` };
   if (f.hash) {
-    if (f.txNonce !== undefined && f.latestNonce > f.txNonce) {
-      return { kind: "released", reason: `The original transaction used nonce ${f.txNonce}, which another transaction has since used, so it can never be mined, and this action did not happen.` };
-    }
+    if (f.consumedBy) return { kind: "released", reason: `The original transaction's nonce ${f.consumedBy.nonce} was used by transaction ${f.consumedBy.hash.slice(0, 10)}…, which is a different transaction, so the original can never be mined, and this action did not happen.` };
+    if (f.txNonce !== undefined && f.latestNonce > f.txNonce) return { kind: "cannot-prove", reason: `The original transaction's nonce ${f.txNonce} has been used, but the transaction that used it could not be identified, so the page cannot tell whether it was this request.` };
     return { kind: "dropped-unproven" };
   }
-  if (!f.attested) return { kind: "needs-confirmation" };
-  return f.isCreate ? { kind: "create-held" } : { kind: "override" };
+  if (f.isCreate) return { kind: "create-held" };
+  return f.attested ? { kind: "override" } : { kind: "needs-confirmation" };
 }
 
 /**

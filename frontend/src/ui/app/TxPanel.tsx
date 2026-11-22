@@ -86,9 +86,9 @@ export function TxPanel({ tx, onSuccess }: { tx: ReturnType<typeof useTx>; onSuc
   const box = "mt-4 rounded-xl border px-4 py-3 text-sm";
   const notes = (
     <>
-      {entry.previous && (
+      {(entry.ghosts?.length ?? 0) > 0 && (
         <p className="mt-2 text-ink-2" data-previous-unproven>
-          An earlier request for this action (started {formatUtc(BigInt(Math.floor(entry.previous.startedAt / 1000)))}) was never proven closed. If MetaMask still sends it, it is a separate transaction and this page cannot stop it.
+          An earlier request for this action (started {formatUtc(BigInt(Math.floor(entry.ghosts![0]!.startedAt / 1000)))}) was never proven closed. If MetaMask still sends it, it is a separate transaction this page cannot stop; until the chain shows it can no longer take effect, only the same request can be sent again.
         </p>
       )}
       {s.phase === "awaiting" && chainId !== undefined && chainId !== sepolia.id && (
@@ -182,7 +182,7 @@ export function TxPanel({ tx, onSuccess }: { tx: ReturnType<typeof useTx>; onSuc
         "wallet-error": `${s.problem?.message ?? "The wallet returned an error."} The page cannot tell whether anything was sent.`,
         "receipt-timeout": "It was sent, but no block has included it after 10 minutes.",
         reloaded: "This page was reloaded or reopened while a request for this action was open. It may still be open in MetaMask.",
-        replaced: "The wallet replaced this transaction with a different one.",
+        replaced: "The wallet replaced this transaction with a different one, so this action did not happen through it. Check the chain to confirm.",
       }[s.reason];
       const v = entry.recovery?.verdict;
       const who = shortHex(entry.account);
@@ -194,9 +194,9 @@ export function TxPanel({ tx, onSuccess }: { tx: ReturnType<typeof useTx>; onSuc
         "needs-confirmation": `The chain shows this action has not happened and nothing from ${who} is pending. The request may still be open in MetaMask, though, and nothing on-chain can show whether it is. If MetaMask no longer shows it (you rejected or closed it), say so below.`,
         override:
           entry.action.fn === "submit"
-            ? "You said the request is no longer in MetaMask. That is your decision, not proof: the outcome stays unknown. You may submit again. If the old request is still approved later, it is a valid resubmission and replaces the newer evidence (the revision goes up), so check the evidence before the verifier decides. No ETH moves on a submission."
-            : "You said the request is no longer in MetaMask. That is your decision, not proof: the outcome stays unknown. You may send a new request. If the old one is still approved later, the contract refuses the duplicate (this milestone cannot be decided, claimed or refunded twice), so it can cost a network fee but cannot move ETH twice.",
-        "create-held": `Your answer is recorded, but it cannot prove the old request is closed, and approving it later would fund a second agreement: no contract rule prevents that. A new create from ${who} stays blocked here until the chain settles it: if MetaMask shows the request, approve it (then Check the chain finds the agreement) or reject it. The block lifts by itself 24 hours after the request started. Your draft is kept.`,
+            ? "You said the request is no longer in MetaMask. That is your decision, not proof: the outcome stays unknown. You may submit the SAME evidence again; if the old request is still approved later, it only repeats it (the revision goes up). Different evidence needs your explicit acceptance that a late old request would replace it. No ETH moves on a submission."
+            : "You said the request is no longer in MetaMask. That is your decision, not proof: the outcome stays unknown. You may send the SAME request again (same payee or decision): if the old one is still approved later, the contract refuses the duplicate, so it can cost a network fee but cannot move ETH twice. A different request stays blocked until the chain shows the old one can no longer take effect.",
+        "create-held": `The chain shows no agreement with these terms from ${who} and no transaction of this request, but the request may still be waiting in MetaMask, and approving it later would fund a second agreement. A new create from ${who} stays blocked until the chain settles it; time passing does not. Open MetaMask: if the request is there, approve it (Check the chain then finds the agreement) or reject it. If it was signed and fails or succeeds, Check the chain finds that transaction too. This page cannot cancel a request in MetaMask, and it cannot see one you rejected after the page was reloaded. Your draft is kept.`,
       };
       return (
         <div role="alert" className={`${box} border-submitted bg-surface`}>
@@ -216,9 +216,7 @@ export function TxPanel({ tx, onSuccess }: { tx: ReturnType<typeof useTx>; onSuc
             )}
             {entry.cleared && v?.kind !== "override" && <Button variant="quiet" size="sm" onClick={tx.dismiss}>Dismiss</Button>}
           </div>
-          {v?.kind === "needs-confirmation" && entry.action.fn === "create" && (
-            <p className="mt-2 text-micro text-ink-3">For a create, your answer does not unlock a new create: an old request approved later would fund a second agreement.</p>
-          )}
+
           {notes}
         </div>
       );
