@@ -63,7 +63,7 @@ What the compiler does **not** guarantee, and how the gap is closed: a `recv` ar
 | `experiments/anvil/` | Production bytecode on a local Anvil with controlled block timestamps. |
 | `experiments/sepolia/` | The Sepolia plan runner, a read-only deployment verifier and a local rehearsal. |
 | `docs/` | Specification (`LIFECYCLE.md`), security model (`SECURITY.md`), decisions, Fe notes, progress. |
-| `frontend/` | Next.js app (in progress, D-030): read-only explorer and agreement pages from Sepolia, design system and plan (`frontend/DESIGN.md`, `frontend/PLAN.md`). It reads the frozen contract; it contains no contract code. |
+| `frontend/` | Next.js application (D-030): explorer and agreement pages from Sepolia, plus `/app`, which creates, funds, submits, approves, claims and refunds through a browser wallet on Sepolia. It reads and writes the frozen contract; it contains no contract code. Real-wallet acceptance: `docs/ACCEPTANCE_REAL_WALLET.md` (lifecycle passed; wallet-prompt reliability is an open observation). Design and plan: `frontend/DESIGN.md`, `frontend/PLAN.md`. |
 
 Storage: `totals` (last id, global outstanding), `agreements: StorageMap<u256, Agreement>`, `milestones: StorageMap<(u256, u8), Milestone>`. Every key includes the agreement id, so agreements are isolated. Agreement status is derived, never stored.
 
@@ -108,6 +108,8 @@ The pinned production build is deployed on Ethereum Sepolia (chain id 11155111),
 | A2 refund | 12176299 | `0xa9a25f2197a906340c285afb908959cc0952b6c1f2c019c23419a36862df398d` | after `deliver_by`, 0.001 ETH back to the client |
 
 Afterwards A1 is `Paid`, A2 is `Refunded`, `totalOutstanding` is 0 and the contract holds 0 ETH. The deployed runtime code (6,056 bytes, SHA-256 `f0965efd4e9d2a0fcfd0eae88d5e6e9c0a938b22c03949b54f015b2600f4b3a8`) is byte-identical to a clean local `fe build` with Fe 26.6.0. The hashes are pinned in `experiments/sepolia/artifact.json`.
+
+A second, owner-signed run through the application and MetaMask (Agreement #3 created and refunded, Agreement #4 created, submitted, approved and claimed; six transactions, exact accounting, `totalOutstanding` 0) is recorded in `docs/ACCEPTANCE_REAL_WALLET.md`, with the open wallet observations.
 
 ```sh
 python3 experiments/sepolia/testnet.py artifact     # the local build equals the pinned artifact
