@@ -31,7 +31,7 @@ const MARK_LABEL: Record<Mark["kind"], string> = {
   rejected: "Revision requested",
   approved: "Approved",
   claimed: "Claimed by the provider",
-  refunded: "Refunded to the client",
+  refunded: "Refunded by the client",
 };
 
 function markText(m: Mark) {

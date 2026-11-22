@@ -71,21 +71,12 @@ The unit tests (`frontend/tests/history-engine.test.ts`) pin the twelve transact
 
 ## 4. Keeping it current (a maintainer task; the owner approves committing it)
 
-The snapshot ends at a fixed block. Newer events come from the live scan, which works while a node still serves the blocks since the boundary. Because public nodes prune after roughly a day, **roll the snapshot forward at least once a day while the deployment is in use**, and before any judge-facing window:
-
-```
-cd frontend
-node scripts/build-event-snapshot.mjs          # re-verifies from the deployment block and rewrites the file
-node scripts/build-event-snapshot.mjs --check  # verifies the committed file against the chain without writing
-npm run test                                   # the pinned hashes still hold
-```
-
-If the snapshot is older than the nodes' memory and an event happened in between, the live scan cannot see it on publicnode; Tenderly or ethpandaops usually still can (they were archival when tested), and otherwise the page reports the gap instead of hiding it. Nothing in this procedure signs or sends anything.
+The snapshot ends at a fixed block. Newer events come from the live scan, which works while a node still serves the blocks since the boundary. Because publicnode prunes logs after a few thousand blocks, **advance the snapshot at least once a day while the deployment is in use, and before any judge-facing window**. The procedure is section 7 (R2-B); the full rebuild from the deployment block needs two archival sources and is the fallback, not the routine.
 
 ## 5. Remaining risks
 
 - The live part still depends on public, keyless nodes. They can fail together; the application then shows what the snapshot holds, labels the rest incomplete, and keeps every contract-state view and action working.
-- Tenderly and ethpandaops were verified archival on 2026-11-22; that can change.
+- Tenderly and ethpandaops were verified archival on 2026-11-22; that can change. On the same day, during R2-B, Tenderly stopped answering (connection timeout), so the full independent re-verification from the deployment block is not possible until it returns or another keyless archival source appears (section 7).
 - The snapshot is a point in time. A deployment with new agreements needs it rolled forward (section 4), or a nightly job and an archive-capable endpoint, which is a separate decision.
 - Event timestamps in the snapshot are block timestamps read from the same two nodes; the application does not re-verify them.
 
@@ -93,4 +84,52 @@ If the snapshot is older than the nodes' memory and an event happened in between
 
 - A node that serves logs a few blocks behind the head it reported no longer deletes events: only the blocks actually read are replaced, and the newest blocks it did not serve are read again on the next refresh (the coverage head, `scannedTo`, only advances over blocks that were read).
 - Blocks up to the snapshot's finalized boundary are never changed by a rescan. A rescan that disagrees with the snapshot is recorded as a conflict and stays visible until a later rescan of the same blocks agrees.
-- Every read the pages wait for is time-bounded (8 s on the server, 12 s per attempt in the browser). Past the budget the history shows what it holds (at least the snapshot) as "not refreshed", never "complete".
+- Every read the pages wait for is time-bounded (10 s on the server, 12 s per attempt in the browser). Past the budget the history shows what it holds (at least the snapshot) as "not refreshed", never "complete".
+
+## 7. R2-B: two kinds of verification, and the operator procedure (2026-11-22)
+
+**Two separate checks.**
+
+| Check | Command (in `frontend/`) | Network | Where it runs | Proves |
+|---|---|---|---|---|
+| Local integrity | `npm run snapshot:verify-local` | none | CI step "Snapshot integrity", and the app on every load | The file is for this deployment, unchanged since it was hashed (content hash), every log decodes, events are in chain order without duplicates, the agreement count matches, and the sequence obeys the contract's rules (ids consecutive from 1; submission revisions and rejection counts consecutive; approve and reject name the latest revision; claim only after approval; no refund after approval; nothing after a payout). |
+| Independent verification | `npm run snapshot:check` | two independent sources | an operator, by hand | The committed events equal the chain's on every source (logs, receipts, block hashes), and the event counts equal what the contract's state at the boundary requires on every source. |
+
+Local integrity cannot prove completeness: only the contract's state can. The independent check never passes with fewer than two sources on different hosts. Exit codes: 0 verified, 1 a source contradicts the snapshot, 2 cannot verify (fewer than two sources answered, or `--partial`). Nothing is written unless the exit code is 0.
+
+**Which sources work (tested 2026-11-22, not assumed from their descriptions).**
+- **ethpandaops** served logs from the deployment block, receipts, and state at old blocks.
+- **publicnode** served state at the boundary (about 1,200 blocks old), but its old logs and receipts are pruned.
+- **Tenderly** did not answer (connection timeout).
+- The others were unusable: 1rpc returned only a single-block log query; onfinality and zan returned partial results; drpc and blockpi need a paid plan or a key; blastapi rejected every request; omniatech (521), rpc.sepolia.org (404), subquery and rockx (DNS gone) are retired.
+
+So today:
+- the full re-verification from the deployment block (`--check` with the default sources) exits 2, "1 of 2 sources answered";
+- `--check --partial` re-ran every step on ethpandaops alone and found the committed snapshot consistent with the chain, but it is reported as NOT independent and exits 2;
+- `--advance` works with two independent operators, because the new segment is recent enough for publicnode.
+
+**Advancing the snapshot (routine, no archival node needed while it is done often).**
+
+```
+cd frontend
+SNAPSHOT_SOURCES=https://rpc.sepolia.ethpandaops.io,https://ethereum-sepolia-rpc.publicnode.com \
+  node scripts/build-event-snapshot.mjs --advance --dry-run    # verify only; writes nothing
+SNAPSHOT_SOURCES=... node scripts/build-event-snapshot.mjs --advance   # writes the file (exit 0 only)
+npm run snapshot:verify-local && npm run test               # offline integrity and the pinned tests
+git diff src/contract/history-snapshot.json                  # review: new events, new boundary, a new provenance segment
+```
+
+`--advance` keeps the committed events and does the following:
+1. checks that their content hash is intact and that the old boundary block still has the committed hash on every source (continuity);
+2. reads only the new blocks up to the current finalized block, comparing logs, receipts and block hashes across the sources;
+3. checks ALL events since deployment against the contract's state at the new boundary on every source;
+4. records the segment, its sources and the time in `provenance.segments`.
+
+The dry run on 2026-11-22 found 0 new events between block 12,189,223 and the finalized block 12,190,410 on both sources. The contract's state at 12,190,410 required exactly the 12 committed events, on both. The committed file was not changed; the owner decides when to advance it (just before the judging window is best).
+
+**Rules for the operator.**
+- Use two sources run by different operators. A URL that contains an API key goes only in the environment, never in a tracked file.
+- Never commit a file that `--advance` did not write with exit 0. Never edit the snapshot by hand: the content hash and the lifecycle rules reject it.
+- If `--check` or `--advance` exits 1, a source contradicts the snapshot. Stop and investigate; do not retry with other sources until one agrees.
+- If the snapshot falls further behind than publicnode keeps logs, only an archival pair can advance it (the default sources, once Tenderly answers). Until then the pages say the history may be incomplete. They never call it complete.
+- There is no scheduler and no paid service; advancing stays a deliberate, reviewed commit.

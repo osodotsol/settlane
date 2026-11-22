@@ -1,11 +1,13 @@
 import type { Address, Hex } from "viem";
+import { CHAIN, SETTLANE_ADDRESS } from "@/config/chain";
 import type { TxProblem } from "./errors";
 import type { Snapshot, TxAction } from "./tx-effect";
 import type { Verdict } from "./tx-recovery";
 
 // Every wallet request the application makes is tracked here, by ACTION (one key per milestone, one for
-// create), so the same action cannot be requested twice while an earlier request may still be open in the
-// wallet. The registry outlives the component that started the request (it is module state), and requests
+// create) WITHIN ONE SCOPE: chain id, contract address and wallet account (R2-B). The same action cannot be requested
+// twice by the same account while an earlier request may still be open in the wallet; another account's records never
+// block or unlock it, and records made for another chain or contract are kept aside and never consulted. The registry outlives the component that started the request (it is module state), and requests
 // that may still be open are also kept in localStorage, so a reload or a navigation does not forget them.
 //
 // The states, and what the interface may say about each:
@@ -59,21 +61,29 @@ export type TxEntry = {
   heartbeatAt?: number;
   /** Hashes returned late by an earlier attempt that the page had already given up on. */
   lateHashes: Hex[];
+  /** Scope (R2-B): the chain and contract this request was made for. The key also encodes them and the account. */
+  chainId?: number;
+  contract?: Address;
+  /** The earlier attempt this one replaced while its outcome was still unproven (it is never forgotten silently). */
+  previous?: { startedAt: number; reason: string };
 };
 
 export const TERMINAL: TxPhase["phase"][] = ["confirmed", "found", "rejected", "cancelled", "reverted", "failed"];
 export const isTerminal = (s: TxPhase) => TERMINAL.includes(s.phase);
 
 /** May a new request for this action be started now? */
-export function canStart(entry: TxEntry | undefined): boolean {
+export function canStart(entry: TxEntry | undefined, now: number = Date.now()): boolean {
   if (!entry) return true;
   if (isTerminal(entry.state)) return true;
-  return entry.state.phase === "unknown" && entry.cleared === true;
+  if (entry.state.phase !== "unknown") return false;
+  // the stated policy bound (not a proof): an unresolved record expires MAX_AGE_MS after its request started, exactly as
+  // a stored one is dropped on load; before that only a release or an override lets a new request start
+  return entry.cleared === true || now - entry.startedAt >= MAX_AGE_MS;
 }
 
 /** Why not, in plain words (undefined when a request may be started). */
-export function blockReason(entry: TxEntry | undefined): string | undefined {
-  if (canStart(entry)) return undefined;
+export function blockReason(entry: TxEntry | undefined, now: number = Date.now()): string | undefined {
+  if (canStart(entry, now)) return undefined;
   switch (entry!.state.phase) {
     case "checking":
       return "Checking with the contract.";
@@ -88,12 +98,23 @@ export function blockReason(entry: TxEntry | undefined): string | undefined {
 
 export const actionKey = (action: TxAction) => (action.fn === "create" ? "create" : `milestone:${action.id}:${action.m}`);
 
+/** The scope every record belongs to: this chain, this contract, one account (lower-cased). */
+export const scopeOf = (account: Address, chainId: number = CHAIN.id, contract: Address = SETTLANE_ADDRESS) => `${chainId}:${contract.toLowerCase()}:${account.toLowerCase()}`;
+/** The registry key of one action for one account on this deployment. */
+export const requestKey = (account: Address, base: string) => `${scopeOf(account)}|${base}`;
+/** The action part of a registry key (`create`, `milestone:<id>:<m>`). */
+export const baseOf = (key: string) => key.slice(key.indexOf("|") + 1);
+/** Does this record belong to this deployment and the account its key names? */
+export const inScope = (e: Pick<TxEntry, "key" | "account">) => typeof e.account === "string" && e.key.startsWith(`${scopeOf(e.account)}|`);
+
 // ---------------------------------------------------------------------------------------------------------
 // Persistence: only requests that may still be open are stored. Bigints are stored as strings.
 // ---------------------------------------------------------------------------------------------------------
 
-export const STORAGE_KEY = "settlane:tx-requests:v1";
-const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+export const STORAGE_KEY = "settlane:tx-requests:v2";
+/** Before R2-B records were keyed by action only. They were made for this deployment (the only one this site has served). */
+export const LEGACY_STORAGE_KEY = "settlane:tx-requests:v1";
+export const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 const toJson = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? { $big: x.toString() } : x));
 const fromJson = (s: string) => JSON.parse(s, (_k, x) => (x && typeof x === "object" && typeof x.$big === "string" ? BigInt(x.$big) : x));
@@ -122,7 +143,7 @@ export function deserialize(raw: string | null, now: number): TxEntry[] {
     return [];
   }
   return list
-    .filter((e) => e && typeof e.key === "string" && now - e.startedAt < MAX_AGE_MS)
+    .filter((e) => e && typeof e.key === "string" && inScope(e) && now - e.startedAt < MAX_AGE_MS)
     .map((e) => {
       const hash = e.state.phase === "pending" ? e.state.hash : e.state.phase === "unknown" ? e.state.hash : undefined;
       const state: TxPhase = e.state.phase === "unknown" ? { ...e.state, reason: e.state.reason === "stopped" || e.state.reason === "wallet-error" ? e.state.reason : "reloaded" } : { phase: "unknown", reason: "reloaded", hash };
@@ -130,7 +151,32 @@ export function deserialize(raw: string | null, now: number): TxEntry[] {
     });
 }
 
-type Storage = { getItem(k: string): string | null; setItem(k: string, v: string): void };
+/** Stored records that belong to another chain or contract: never consulted here, but written back untouched. */
+export function foreignEntries(raw: string | null): unknown[] {
+  if (!raw) return [];
+  try {
+    const list = fromJson(raw);
+    return Array.isArray(list) ? list.filter((e) => e && typeof e.key === "string" && !inScope(e)) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Converts pre-R2-B records (keyed by action only) to scoped records of this deployment. */
+export function migrateLegacy(raw: string | null): TxEntry[] {
+  if (!raw) return [];
+  try {
+    const list = fromJson(raw);
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter((e) => e && typeof e.key === "string" && typeof e.account === "string" && !e.key.includes("|"))
+      .map((e) => ({ ...e, key: requestKey(e.account, e.key), chainId: CHAIN.id, contract: SETTLANE_ADDRESS }));
+  } catch {
+    return [];
+  }
+}
+
+type Storage = { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem?(k: string): void };
 
 export function createRegistry(storage: () => Storage | undefined, now: () => number = Date.now, tabId: string = Math.random().toString(36).slice(2)) {
   let entries = new Map<string, TxEntry>();
@@ -138,18 +184,31 @@ export function createRegistry(storage: () => Storage | undefined, now: () => nu
   const listeners = new Set<() => void>();
   /** Entries this tab holds a live wallet request for: they are never replaced by another tab's copy. */
   const liveHere = () => [...entries.values()].filter((e) => e.live);
+  let foreign: unknown[] = [];
   const load = () => {
     if (loaded) return;
     loaded = true;
     try {
-      for (const e of deserialize(storage()?.getItem(STORAGE_KEY) ?? null, now())) entries.set(e.key, e);
+      const s = storage();
+      let raw = s?.getItem(STORAGE_KEY) ?? null;
+      const legacy = s?.getItem(LEGACY_STORAGE_KEY) ?? null;
+      if (legacy) {
+        // one-time migration: legacy records keep blocking exactly what they blocked, now under their account's scope
+        const merged = [...(raw ? (fromJson(raw) as TxEntry[]) : []), ...migrateLegacy(legacy)];
+        raw = toJson(merged);
+        s?.setItem(STORAGE_KEY, raw);
+        s?.removeItem?.(LEGACY_STORAGE_KEY);
+      }
+      foreign = foreignEntries(raw);
+      for (const e of deserialize(raw, now())) entries.set(e.key, e);
     } catch {
       /* storage unavailable: the registry still works in memory */
     }
   };
   const save = () => {
     try {
-      storage()?.setItem(STORAGE_KEY, serialize([...entries.values()]));
+      const mine = fromJson(serialize([...entries.values()])) as unknown[];
+      storage()?.setItem(STORAGE_KEY, toJson([...foreign, ...mine]));
     } catch {
       /* ignore */
     }
@@ -161,7 +220,9 @@ export function createRegistry(storage: () => Storage | undefined, now: () => nu
   /** Another tab changed the stored requests: adopt its view, keeping what is live in this tab. */
   const syncFromStorage = () => {
     try {
-      const stored = deserialize(storage()?.getItem(STORAGE_KEY) ?? null, now());
+      const raw = storage()?.getItem(STORAGE_KEY) ?? null;
+      foreign = foreignEntries(raw);
+      const stored = deserialize(raw, now());
       const next = new Map<string, TxEntry>();
       for (const e of stored) next.set(e.key, e);
       for (const e of liveHere()) next.set(e.key, e);
@@ -197,6 +258,11 @@ export function createRegistry(storage: () => Storage | undefined, now: () => nu
     all(): TxEntry[] {
       load();
       return [...entries.values()];
+    },
+    /** The current map; replaced (never mutated) on every change, so it is a stable snapshot for React. */
+    snapshot(): ReadonlyMap<string, TxEntry> {
+      load();
+      return entries;
     },
     set(entry: TxEntry) {
       load();

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { formatEther } from "viem";
 import { publicClient } from "@/chain/client";
 import { CREATE_KEY, useTx } from "@/chain/write";
@@ -16,11 +16,20 @@ import { ConfirmBar, TxPanel } from "./TxPanel";
 type Result = { ok: true; draft: Draft } | { ok: false; errors: FormErrors };
 
 /** The last step of Create: a summary, one confirmation, then the shared simulate, sign and receipt path. */
-export function CreateSubmit({ result, onAttempt, total }: { result: Result; onAttempt: () => void; total: bigint }) {
+export function CreateSubmit({ result, onAttempt, total, onCreated }: { result: Result; onAttempt: () => void; total: bigint; onCreated?: (request: { phase: string; startedAt: number; createdId?: bigint }) => void }) {
   const wallet = useWallet();
   const tx = useTx(CREATE_KEY);
   const busy = !tx.canStart;
   const done = tx.entry?.state.phase === "confirmed" || tx.entry?.state.phase === "found";
+  // the draft is cleared only once the chain shows the agreement exists (draft-archive.ts); every other outcome keeps it
+  const phase = tx.entry?.state.phase;
+  const startedAt = tx.entry?.startedAt;
+  const createdId = tx.entry?.state.phase === "confirmed" || tx.entry?.state.phase === "found" ? tx.entry.state.createdId : undefined;
+  useEffect(() => {
+    if (done && phase && startedAt !== undefined) onCreated?.({ phase, startedAt, createdId });
+    // onCreated is a new function on every render of the form; the request identity is what matters
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [done, phase, startedAt, createdId]);
   const [confirming, setConfirming] = useState(false);
   const [local, setLocal] = useState<string | null>(null);
   const walletActions = useWalletActions();

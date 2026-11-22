@@ -20,7 +20,7 @@ function PayoutList({ items, showRole }: { items: Payout[]; showRole: boolean })
         <a key={`${p.txHash}:${p.logIndex}`} href={txUrl(p.txHash)} target="_blank" rel="noreferrer" className="group flex flex-wrap items-center justify-between gap-x-6 gap-y-1 px-5 py-3.5 hover:bg-sunken/60">
           <div className="min-w-0">
             <p className="font-semibold">
-              {p.kind === "claimed" ? (showRole ? "Claimed" : "Claimed by the provider") : showRole ? "Refunded" : "Refunded to the client"} · agreement #{p.id.toString()}, milestone {(p.m ?? 0) + 1}
+              {p.kind === "claimed" ? (showRole ? "Claimed" : "Claimed by the provider") : showRole ? "Refunded" : "Refunded by the client"} · agreement #{p.id.toString()}, milestone {(p.m ?? 0) + 1}
             </p>
             <p className="text-sm text-ink-3">{formatUtc(p.timestamp)} · sent to <span className="text-data text-[0.8125rem]">{shortHex(p.to ?? "")}</span></p>
           </div>
@@ -53,8 +53,8 @@ export function PaymentsView() {
         <Section title="Payouts on the network" id="network" aside={<ScopeTag kind="public" />}>
           <Loaded rows={2}>
             <div className="mb-4 grid gap-3 sm:grid-cols-3">
-              <StatTile tone="paid" label="Paid to providers" value={<Amount wei={t.paid} variant="numeral" />} />
-              <StatTile tone="refunded" label="Refunded to clients" value={<Amount wei={t.refunded} variant="numeral" />} />
+              <StatTile tone="paid" label="Claimed by providers" value={<Amount wei={t.paid} variant="numeral" />} />
+              <StatTile tone="refunded" label="Refunded by clients" value={<Amount wei={t.refunded} variant="numeral" />} />
               <StatTile tone="funded" label="Still held" value={<Amount wei={t.outstanding} variant="numeral" />} />
             </div>
             {activity.isPending ? (
@@ -86,8 +86,8 @@ export function PaymentsView() {
         <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <StatTile tone="paid" label="Ready to claim" value={<Amount wei={pay.claimableTotal} variant="numeral" />} note="Approved, as provider" />
           <StatTile tone="refunded" label="Ready to refund" value={<Amount wei={pay.refundableTotal} variant="numeral" />} note="Expired, as client" />
-          <StatTile tone="paid" label="Paid out to you" value={<Amount wei={sum(asProvider, "paid")} variant="numeral" />} note="Claimed, as provider" />
-          <StatTile tone="refunded" label="Refunded to you" value={<Amount wei={sum(asClient, "refunded")} variant="numeral" />} note="Returned, as client" />
+          <StatTile tone="paid" label="Claimed as provider" value={<Amount wei={sum(asProvider, "paid")} variant="numeral" />} note="Sent to the address chosen at each claim" />
+          <StatTile tone="refunded" label="Refunded as client" value={<Amount wei={sum(asClient, "refunded")} variant="numeral" />} note="Sent to the address chosen at each refund" />
         </div>
         <Section title="Waiting to be taken out" id="payable" aside={<ScopeTag kind="yours" />}>
           {pay.claimable.length + pay.refundable.length === 0 ? (

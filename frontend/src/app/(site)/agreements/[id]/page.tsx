@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getAgreement, getHistory } from "@/contract/data";
+import { ID_PATTERN } from "@/contract/known-ids";
 import type { Activity } from "@/contract/events";
 import { formatUtc } from "@/domain/format";
 import { agreementCoverage } from "@/domain/history-coverage";
@@ -26,7 +27,7 @@ type Params = { params: Promise<{ id: string }> };
 
 /** Agreement ids are positive integers (ids start at 1; 0 is never valid). src/proxy.ts 404s the rest first. */
 function parseId(raw: string): bigint | null {
-  if (!/^[1-9]\d{0,76}$/.test(raw)) return null;
+  if (!ID_PATTERN.test(raw)) return null;
   return BigInt(raw);
 }
 

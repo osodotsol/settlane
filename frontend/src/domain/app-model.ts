@@ -188,7 +188,7 @@ export function milestoneStatusLine(state: DisplayState, role: Role, actions: re
     case "paid":
       return { text: "Paid to the provider. Nothing left to do.", act: false };
     case "refunded":
-      return { text: "Refunded to the client. Nothing left to do.", act: false };
+      return { text: "Refunded by the client. Nothing left to do.", act: false };
     case "expired":
       return { text: "Expired. Only the client can act now: a refund.", act: false };
     case "approved":

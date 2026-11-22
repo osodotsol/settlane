@@ -15,9 +15,10 @@ vi.mock("@/chain/client", () => ({ publicClient: chain }));
 vi.mock("@/contract/read", () => ({ agreementCount: vi.fn(async () => 2), readAgreement: vi.fn(async () => null) }));
 
 const { startTx, stopWaiting, reconcile, confirmNotInWallet, milestoneKey } = await import("@/chain/write");
-const { registry } = await import("@/chain/tx-registry");
+const { registry, requestKey } = await import("@/chain/tx-registry");
 
 const ACCOUNT = "0x00000000000000000000000000000000000000b2" as const;
+const mk = (id: bigint, m: number) => requestKey(ACCOUNT, milestoneKey(id, m));
 const HASH = `0x${"cd".repeat(32)}` as `0x${string}`;
 const tick = () => new Promise((r) => setTimeout(r, 0));
 let id = 100n;
@@ -71,16 +72,16 @@ describe("the request runner", () => {
   it("an unanswered request stays open: no timeout cancels it, and a new request is refused", async () => {
     const w = heldWallet();
     void run(id, w.write);
-    await until(() => registry.get(milestoneKey(id, 0))?.state.phase === "awaiting");
+    await until(() => registry.get(mk(id, 0))?.state.phase === "awaiting");
     void run(id, w.write);
     await tick();
     expect(w.write).toHaveBeenCalledTimes(1);
-    expect(registry.get(milestoneKey(id, 0))!.state.phase).toBe("awaiting");
+    expect(registry.get(mk(id, 0))!.state.phase).toBe("awaiting");
   });
 
   it("after 'Stop waiting', a late answer from the wallet is still applied and followed to its receipt", async () => {
     const w = heldWallet();
-    const key = milestoneKey(id, 0);
+    const key = mk(id, 0);
     const done = run(id, w.write);
     await until(() => registry.get(key)?.state.phase === "awaiting");
     stopWaiting(key);
@@ -95,7 +96,7 @@ describe("the request runner", () => {
 
   it("a declined signature is 'rejected' (nothing sent) and allows a new request", async () => {
     const w = heldWallet();
-    const key = milestoneKey(id, 0);
+    const key = mk(id, 0);
     const done = run(id, w.write);
     await until(() => registry.get(key)?.state.phase === "awaiting");
     w.fail(Object.assign(new Error("User rejected the request."), { code: 4001 }));
@@ -105,7 +106,7 @@ describe("the request runner", () => {
 
   it("an ambiguous wallet error is 'unknown', never 'rejected' or 'failed'", async () => {
     const w = heldWallet();
-    const key = milestoneKey(id, 0);
+    const key = mk(id, 0);
     const done = run(id, w.write);
     await until(() => registry.get(key)?.state.phase === "awaiting");
     w.fail(new Error("Internal JSON-RPC error."));
@@ -117,12 +118,12 @@ describe("the request runner", () => {
     const w = heldWallet();
     await run(id, w.write, 1);
     expect(w.write).not.toHaveBeenCalled();
-    expect(registry.get(milestoneKey(id, 0))!.state.phase).toBe("failed");
+    expect(registry.get(mk(id, 0))!.state.phase).toBe("failed");
   });
 
   it("'Check the chain' finds an action that took effect while the page was not watching", async () => {
     const w = heldWallet();
-    const key = milestoneKey(id, 0);
+    const key = mk(id, 0);
     void run(id, w.write);
     await until(() => registry.get(key)?.state.phase === "awaiting");
     stopWaiting(key);
@@ -133,7 +134,7 @@ describe("the request runner", () => {
 
   it("'Check the chain' releases a lost request only after the user confirms it is gone from the wallet, and never while something is pending", async () => {
     const w = heldWallet();
-    const key = milestoneKey(id, 0);
+    const key = mk(id, 0);
     void run(id, w.write);
     await until(() => registry.get(key)?.state.phase === "awaiting");
     stopWaiting(key);
@@ -153,7 +154,7 @@ describe("the request runner", () => {
   it("a reverted receipt is 'reverted', not 'confirmed'", async () => {
     chain.waitForTransactionReceipt.mockResolvedValueOnce({ status: "reverted", blockNumber: 43n, transactionHash: HASH, logs: [] } as never);
     const w = heldWallet();
-    const key = milestoneKey(id, 0);
+    const key = mk(id, 0);
     const done = run(id, w.write);
     await until(() => registry.get(key)?.state.phase === "awaiting");
     w.answer(HASH);

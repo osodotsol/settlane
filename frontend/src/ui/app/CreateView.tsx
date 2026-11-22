@@ -5,6 +5,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useHistory, useOverview } from "@/chain/queries";
 import { useMounted, useWallet } from "@/chain/use-wallet";
 import { commit } from "@/domain/commitment";
+import { archiveIfCreated, readArchive, type ArchivedDraft } from "@/domain/draft-archive";
 import { MAX_MILESTONES, UNIT_SECONDS, emptyForm, emptyMilestone, validateCreate, type FormErrors, type FormInput, type MilestoneInput, type Unit } from "@/domain/create-form";
 import { formatUtc } from "@/domain/format";
 import { Amount } from "../Amount";
@@ -81,7 +82,16 @@ function CreateForm({ restore }: { restore: boolean }) {
   useHistory(); // warm the event history while the form is filled in
   const [form, setForm] = useState<FormInput>(() => (restore ? loadDraft() : emptyForm()));
   const [attempts, setAttempts] = useState(0);
+  const [archived, setArchived] = useState<ArchivedDraft | null>(null);
   const summaryRef = useRef<HTMLDivElement>(null);
+  const session = () => (typeof window === "undefined" ? undefined : window.sessionStorage);
+  const onCreated = (request: { phase: string; startedAt: number; createdId?: bigint }) => {
+    const a = archiveIfCreated(session(), request, form);
+    if (!a) return;
+    setArchived(a);
+    setForm(emptyForm());
+    setAttempts(0);
+  };
 
   // Keep the saved copy in sync (browser only).
   useEffect(() => {
@@ -121,6 +131,16 @@ function CreateForm({ restore }: { restore: boolean }) {
   return (
     <>
       <PageHeader title="Create Agreement" lead="Lock test ETH for up to three milestones, each with its own amount, deadline and specification. Draft it without a wallet; you sign as the client." />
+      {archived && (
+        <div role="status" className="mt-6 rounded-xl border border-paid bg-paid-tint px-4 py-3 text-sm" data-draft-archived>
+          <p className="font-semibold text-ink">{archived.createdId ? `Agreement #${archived.createdId} was created.` : "The agreement was created."} The draft was cleared so it cannot be created twice by accident.</p>
+          <p className="mt-1 text-ink-2">To make a similar agreement, start from its terms. That is a new draft: creating it funds a new agreement.</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button size="sm" variant="secondary" onClick={() => { const a = readArchive(session()) ?? archived; setForm(a.form); setArchived(null); }}>Start a new draft from these terms</Button>
+            <Button size="sm" variant="quiet" onClick={() => setArchived(null)}>Close</Button>
+          </div>
+        </div>
+      )}
 
       <form noValidate onSubmit={(e) => e.preventDefault()} className="mt-6 grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div className="min-w-0 space-y-5">
@@ -224,7 +244,7 @@ function CreateForm({ restore }: { restore: boolean }) {
               <li>The exact deadlines are fixed when you press Create and sign, from the latest block&apos;s time. The contract stores them as given and never moves them, even if the transaction lands minutes later.</li>
             </ul>
           )}
-          <CreateSubmit result={result} onAttempt={() => setAttempts((n) => n + 1)} total={total} />
+          <CreateSubmit result={result} onAttempt={() => setAttempts((n) => n + 1)} total={total} onCreated={onCreated} />
         </aside>
       </form>
     </>

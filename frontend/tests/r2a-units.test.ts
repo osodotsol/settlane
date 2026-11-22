@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createRegistry, HEARTBEAT_FRESH_MS, openInAnotherTab, STORAGE_KEY, canStart, tabIdentity, type TxEntry } from "@/chain/tx-registry";
+import { createRegistry, HEARTBEAT_FRESH_MS, openInAnotherTab, STORAGE_KEY, canStart, requestKey, tabIdentity, type TxEntry } from "@/chain/tx-registry";
 import { assessRecovery, releases, type RecoveryFacts } from "@/chain/tx-recovery";
 import { checkAddress } from "@/domain/address";
 
@@ -33,9 +33,11 @@ describe("recovery verdicts, rule by rule", () => {
     expect(assessRecovery(facts({ hash: HASH, latestNonce: 9 })).kind).toBe("dropped-unproven"); // nonce never seen
     expect(assessRecovery(facts({ hash: HASH, txNonce: 5, latestNonce: 5, attested: true })).kind).toBe("dropped-unproven"); // a confirmation is not proof here
   });
-  it("9. no hash: released only after the user confirms the request is gone, a moved nonce changes nothing", () => {
+  it("9. no hash: the outcome stays unknown; the user's confirmation is an override for a milestone action, never a release, and never unlocks a create (R2-B)", () => {
     expect(assessRecovery(facts({ latestNonce: 7 })).kind).toBe("needs-confirmation");
-    expect(assessRecovery(facts({ attested: true })).kind).toBe("released");
+    expect(assessRecovery(facts({ attested: true })).kind).toBe("override");
+    expect(assessRecovery(facts({ attested: true, isCreate: true })).kind).toBe("create-held");
+    expect(assessRecovery(facts({ attested: true, isCreate: true, latestNonce: 9 })).kind).toBe("create-held"); // a moved nonce proves nothing
   });
 });
 
@@ -63,7 +65,7 @@ describe("EIP-55 address input", () => {
 
 describe("two tabs share the request registry", () => {
   const ACCOUNT = "0x00000000000000000000000000000000000000c1" as const;
-  const entry = (live: boolean): TxEntry => ({ key: "milestone:1:0", label: "Claim", action: { fn: "claim", id: 1n, m: 0 }, account: ACCOUNT, startedAt: 1_000, attempt: 1, state: live ? { phase: "awaiting", since: 1_000 } : { phase: "unknown", reason: "stopped" }, live, lateHashes: [] });
+  const entry = (live: boolean): TxEntry => ({ key: requestKey(ACCOUNT, "milestone:1:0"), label: "Claim", action: { fn: "claim", id: 1n, m: 0 }, account: ACCOUNT, startedAt: 1_000, attempt: 1, state: live ? { phase: "awaiting", since: 1_000 } : { phase: "unknown", reason: "stopped" }, live, lateHashes: [] });
   it("a request open in tab A blocks tab B, and B recognizes it as open elsewhere while A's heartbeat is fresh", () => {
     const store = new Map<string, string>();
     const storage = () => ({ getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) });
@@ -72,16 +74,16 @@ describe("two tabs share the request registry", () => {
     const b = createRegistry(storage, () => now, "tab-b");
     a.set(entry(true));
     b.syncFromStorage();
-    const seen = b.get("milestone:1:0")!;
-    expect(canStart(seen)).toBe(false);
+    const seen = b.get(requestKey(ACCOUNT, "milestone:1:0"))!;
+    expect(canStart(seen, now)).toBe(false);
     expect(openInAnotherTab(seen, "tab-b", now)).toBe(true);
     expect(store.get(STORAGE_KEY)).toContain("tab-a");
     now += HEARTBEAT_FRESH_MS + 1;
     b.syncFromStorage();
-    expect(openInAnotherTab(b.get("milestone:1:0")!, "tab-b", now)).toBe(false); // A went quiet (closed or crashed)
+    expect(openInAnotherTab(b.get(requestKey(ACCOUNT, "milestone:1:0"))!, "tab-b", now)).toBe(false); // A went quiet (closed or crashed)
     a.heartbeat();
     b.syncFromStorage();
-    expect(openInAnotherTab(b.get("milestone:1:0")!, "tab-b", now)).toBe(true); // A still holds it
+    expect(openInAnotherTab(b.get(requestKey(ACCOUNT, "milestone:1:0"))!, "tab-b", now)).toBe(true); // A still holds it
   });
 });
 
@@ -95,9 +97,9 @@ describe("tab identity across a reload", () => {
     const store = new Map<string, string>();
     const storage = () => ({ getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) });
     const before = createRegistry(storage, () => 1_000, first);
-    before.set({ key: "milestone:1:0", label: "x", action: { fn: "claim", id: 1n, m: 0 }, account: "0x00000000000000000000000000000000000000c1", startedAt: 1, attempt: 1, state: { phase: "awaiting", since: 1 }, live: true, lateHashes: [] });
+    before.set({ key: requestKey("0x00000000000000000000000000000000000000c1", "milestone:1:0"), label: "x", action: { fn: "claim", id: 1n, m: 0 }, account: "0x00000000000000000000000000000000000000c1", startedAt: 1, attempt: 1, state: { phase: "awaiting", since: 1 }, live: true, lateHashes: [] });
     const afterReload = createRegistry(storage, () => 2_000, tabIdentity(s));
-    const e = afterReload.get("milestone:1:0")!;
+    const e = afterReload.get(requestKey("0x00000000000000000000000000000000000000c1", "milestone:1:0"))!;
     expect(openInAnotherTab(e, afterReload.tabId, 2_000)).toBe(false);
     expect(e.state).toMatchObject({ phase: "unknown", reason: "reloaded" });
   });

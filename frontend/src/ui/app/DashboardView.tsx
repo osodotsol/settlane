@@ -59,8 +59,8 @@ export function DashboardView() {
         <Loaded rows={1}>
           <div className="reveal-stagger grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <div style={{ "--i": 0 } as React.CSSProperties}><StatTile label="Deposited" value={<Amount wei={totals.deposited} variant="numeral" />} note={`${totals.agreements} agreement${totals.agreements === 1 ? "" : "s"}, ${totals.open} open`} /></div>
-            <div style={{ "--i": 1 } as React.CSSProperties}><StatTile tone="paid" label="Paid to providers" value={<Amount wei={totals.paid} variant="numeral" />} note="Claimed after approval" /></div>
-            <div style={{ "--i": 2 } as React.CSSProperties}><StatTile tone="refunded" label="Refunded to clients" value={<Amount wei={totals.refunded} variant="numeral" />} note="Returned after a deadline" /></div>
+            <div style={{ "--i": 1 } as React.CSSProperties}><StatTile tone="paid" label="Claimed by providers" value={<Amount wei={totals.paid} variant="numeral" />} note="After approval, to the address each provider chose" /></div>
+            <div style={{ "--i": 2 } as React.CSSProperties}><StatTile tone="refunded" label="Refunded by clients" value={<Amount wei={totals.refunded} variant="numeral" />} note="After a deadline, to the address each client chose" /></div>
             <div style={{ "--i": 3 } as React.CSSProperties}><StatTile tone="funded" label="Held by the contract" value={<Amount wei={totals.outstanding} variant="numeral" />} note="Not yet claimed or refunded" /></div>
           </div>
           <FundsBar paid={totals.paid} refunded={totals.refunded} outstanding={totals.outstanding} />

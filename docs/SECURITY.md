@@ -7,6 +7,18 @@ Settlane is an unaudited hackathon prototype for simulated ETH only. Passing tes
 - **Timestamp.** Block producers can skew it by a few seconds near a deadline.
 - **Off-chain artifacts.** `spec` and `evidence` are commitments. Settlane does not check the content.
 
+## Frontend: accepted limitations (R2-B, 2026-11-22)
+
+Reviewed and consciously accepted, not fixed. None of them can move funds without the user signing in their own wallet, and every write is simulated against the contract with the connected account first.
+- **The Content-Security-Policy allows inline scripts** (`'unsafe-inline'`, needed by Next.js bootstrap scripts without per-request nonces; nonces would make every page dynamic). Mitigations: no `dangerouslySetInnerHTML`, `innerHTML` or `eval` in the code; every link target is static configuration; `connect-src` is limited to the configured RPC hosts; `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`.
+- **Third-party RPC privacy.** The browser reads Sepolia from public nodes (publicnode, Tenderly, ethpandaops), which see the visitor's IP address and the accounts and agreements the page looks up. This is stated on the contract page. There are no analytics.
+- **An unanswered MetaMask request cannot be proven closed** by the page (D-035). For a create, a new create stays blocked until the chain settles it or for 24 hours (a policy bound, not a proof). For a milestone action, the user may proceed on their own word: the contract refuses a late duplicate claim, refund, approve or reject; a late duplicate submit would replace newer evidence.
+- **The deadline is not re-checked while MetaMask waits.** A signature given after a window closed reverts on-chain and costs the fee. The explicit gas limit (estimate + 25%) may also stop MetaMask from warning that the transaction will fail.
+- **One injected wallet** (EIP-6963 discovery off): with several extensions, the one that controls `window.ethereum` is used.
+- **Server state is per instance.** The history engine, the agreement-count knowledge and the caches live in each server process's memory and are rebuilt after a cold start.
+- **Dependencies.** `npm audit --omit=dev`: 0 vulnerabilities. Two moderate advisories affect only the dev tool eslint (its minimatch dependency). No major upgrade was made.
+- **Simulated wallet in the browser tests.** The e2e suites use a stand-in EIP-1193 wallet, not the MetaMask extension. The R1, R2-A and R2-B wallet behavior has not been re-verified with real MetaMask.
+
 ## Lost keys lock funds permanently (review S-3)
 Settlane has no admin, owner, sweep, or recovery path, by design. The consequences:
 - **Approved milestone, provider key lost.** `Approved` never expires and only the stored provider can `Claim`. The amount stays locked in the contract forever. The client cannot recover it, because refunding an approved milestone is forbidden (RA).

@@ -145,6 +145,9 @@ jobs:
       - name: Type check
         working-directory: frontend
         run: npm run typecheck
+      - name: Snapshot integrity (offline, deterministic; the independent archival check needs the network and is run by an operator)
+        working-directory: frontend
+        run: npm run snapshot:verify-local
       - name: Unit tests
         working-directory: frontend
         run: npm run test

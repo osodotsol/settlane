@@ -22,11 +22,13 @@ vi.mock("@/contract/read", () => ({
 }));
 
 const { startTx, stopWaiting, reconcile, CREATE_KEY, milestoneKey } = await import("@/chain/write");
-const { registry, canStart } = await import("@/chain/tx-registry");
+const { registry, canStart, requestKey } = await import("@/chain/tx-registry");
 const { createHistory } = await import("@/contract/history");
 const { validateCreate } = await import("@/domain/create-form");
 
 const ACCOUNT = "0x00000000000000000000000000000000000000c1" as const;
+const mk = (id: bigint, m: number) => requestKey(ACCOUNT, milestoneKey(id, m));
+const CK = requestKey(ACCOUNT, CREATE_KEY);
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const until = async (p: () => boolean) => {
   for (let i = 0; i < 80 && !p(); i++) await tick();
@@ -53,21 +55,21 @@ describe("M1: a missing before-signing read never justifies releasing a request"
     const w = held();
     await startTx({ req: createReq, label: "Create", account: ACCOUNT, walletChainId: 11155111, write: w.write, refresh: () => undefined });
     expect(w.write).not.toHaveBeenCalled();
-    expect(registry.get(CREATE_KEY)!.state.phase).toBe("failed");
+    expect(registry.get(CK)!.state.phase).toBe("failed");
   });
 
   it("a moved account nonce does not unlock a second create: the request stays blocked without the user's confirmation", async () => {
     reset();
-    registry.remove(CREATE_KEY);
+    registry.remove(CK);
     const w = held();
     void startTx({ req: createReq, label: "Create", account: ACCOUNT, walletChainId: 11155111, write: w.write, refresh: () => undefined });
-    await until(() => registry.get(CREATE_KEY)?.state.phase === "awaiting");
-    stopWaiting(CREATE_KEY);
+    await until(() => registry.get(CK)?.state.phase === "awaiting");
+    stopWaiting(CK);
     // simulate a reload: the page's promise is gone (not live), the wallet may still hold the request
-    registry.set({ ...registry.get(CREATE_KEY)!, live: false, state: { phase: "unknown", reason: "reloaded" } });
+    registry.set({ ...registry.get(CK)!, live: false, state: { phase: "unknown", reason: "reloaded" } });
     chain.getTransactionCount.mockResolvedValue(6); // the account sent something; no new agreement by it
     await reconcile(CREATE_KEY, () => undefined);
-    expect(canStart(registry.get(CREATE_KEY))).toBe(false);
+    expect(canStart(registry.get(CK))).toBe(false);
   });
 });
 
@@ -77,7 +79,7 @@ describe("M6: an unresolved live wallet request cannot be bypassed by Check the 
     const w = held();
     const req = { fn: "claim" as const, args: [700n, 0, ACCOUNT] as const };
     void startTx({ req, label: "Claim", account: ACCOUNT, walletChainId: 11155111, write: w.write, refresh: () => undefined });
-    const key = milestoneKey(700n, 0);
+    const key = mk(700n, 0);
     await until(() => registry.get(key)?.state.phase === "awaiting");
     stopWaiting(key);
     await reconcile(key, () => undefined);
@@ -90,22 +92,22 @@ describe("M6: an unresolved live wallet request cannot be bypassed by Check the 
 });
 
 describe("M5: a dropped transaction is released only with proof the original can never be mined", () => {
-  const base = (id: bigint, hash: `0x${string}`) => ({ key: milestoneKey(id, 0), label: "Claim", action: { fn: "claim" as const, id, m: 0 }, account: ACCOUNT, startedAt: Date.now(), attempt: 1, state: { phase: "unknown" as const, reason: "receipt-timeout" as const, hash }, live: false, lateHashes: [], before: { kind: "milestone" as const, state: "approved" as const, revision: 1n, rejections: 0n }, nonceBefore: 5 });
+  const base = (id: bigint, hash: `0x${string}`) => ({ key: mk(id, 0), label: "Claim", action: { fn: "claim" as const, id, m: 0 }, account: ACCOUNT, startedAt: Date.now(), attempt: 1, state: { phase: "unknown" as const, reason: "receipt-timeout" as const, hash }, live: false, lateHashes: [], before: { kind: "milestone" as const, state: "approved" as const, revision: 1n, rejections: 0n }, nonceBefore: 5 });
   it("released when the original's nonce has been used by another transaction and the action did not happen", async () => {
     reset();
     const hash = `0x${"cc".repeat(32)}` as const;
     registry.set({ ...base(701n, hash), txNonce: 5 } as never);
     chain.getTransactionCount.mockResolvedValue(6); // nonce 5 consumed by something else
-    await reconcile(milestoneKey(701n, 0), () => undefined);
-    expect(canStart(registry.get(milestoneKey(701n, 0)))).toBe(true);
+    await reconcile(mk(701n, 0), () => undefined);
+    expect(canStart(registry.get(mk(701n, 0)))).toBe(true);
   });
   it("NOT released while the original's nonce is unused (the wallet could still send it)", async () => {
     reset();
     const hash = `0x${"cd".repeat(32)}` as const;
     registry.set({ ...base(702n, hash), txNonce: 5 } as never);
     chain.getTransactionCount.mockResolvedValue(5);
-    await reconcile(milestoneKey(702n, 0), () => undefined);
-    expect(canStart(registry.get(milestoneKey(702n, 0)))).toBe(false);
+    await reconcile(mk(702n, 0), () => undefined);
+    expect(canStart(registry.get(mk(702n, 0)))).toBe(false);
   });
   it("a known hash that is still pending goes back to waiting for its receipt", async () => {
     reset();
@@ -113,8 +115,8 @@ describe("M5: a dropped transaction is released only with proof the original can
     registry.set(base(703n, hash) as never);
     chain.getTransaction.mockResolvedValue({ hash, nonce: 5, blockNumber: null });
     chain.waitForTransactionReceipt.mockImplementationOnce(() => new Promise(() => {}) as never);
-    await reconcile(milestoneKey(703n, 0), () => undefined);
-    expect(registry.get(milestoneKey(703n, 0))!.state.phase).toBe("pending");
+    await reconcile(mk(703n, 0), () => undefined);
+    expect(registry.get(mk(703n, 0))!.state.phase).toBe("pending");
   });
 });
 

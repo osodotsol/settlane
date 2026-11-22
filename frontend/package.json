@@ -17,6 +17,9 @@
     "check-abi": "node scripts/sync-abi.mjs --check",
     "check": "npm run check-abi && npm run lint && npm run typecheck && npm run test && npm run build",
     "test:live": "SETTLANE_LIVE=1 vitest run tests/live.sepolia.test.ts",
+    "snapshot:verify-local": "vitest run tests/snapshot-integrity.test.ts",
+    "snapshot:check": "node scripts/build-event-snapshot.mjs --check",
+    "snapshot:advance": "node scripts/build-event-snapshot.mjs --advance",
     "e2e": "node e2e/run.mjs"
   },
   "dependencies": {

@@ -1,7 +1,7 @@
 import { ExternalLink } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { CI_URL, DEPLOY_BLOCK, DEPLOY_TX, FE_VERSION, REPOSITORY, RUNTIME_SHA256, SETTLANE_ADDRESS, txUrl } from "@/config/chain";
+import { CI_URL, DEPLOY_BLOCK, DEPLOY_TX, FE_VERSION, HISTORY_RPC_URLS, REPOSITORY, RPC_URLS, RUNTIME_SHA256, SETTLANE_ADDRESS, txUrl } from "@/config/chain";
 import { settlaneAbi } from "@/contract/abi";
 import { getDeployedCodeHash, getHistory } from "@/contract/data";
 import { HistoryNotice } from "@/ui/HistoryNotice";
@@ -203,7 +203,10 @@ export default async function ContractPage() {
             </li>
           ))}
         </ol>
-        <p className="mt-6 text-sm text-ink-3">
+        <p className="mt-6 text-sm text-ink-2" id="privacy">
+          Reading the chain: your browser reads Sepolia directly from public, keyless nodes ({[...new Set([...RPC_URLS, ...HISTORY_RPC_URLS].map((u) => new URL(u).hostname))].join(", ")}). Their operators can see your IP address and which accounts and agreements the page asks about. Settlane adds no analytics or tracking of its own, and your wallet signs only in the wallet.
+        </p>
+        <p className="mt-3 text-sm text-ink-3">
           Source, tests and the full security model:{" "}
           <a href={REPOSITORY} className="draw-link text-ink-2 hover:text-ink">github.com/osodotsol/settlane</a> · Continuous integration:{" "}
           <a href={CI_URL} className="draw-link text-ink-2 hover:text-ink">GitHub Actions</a>

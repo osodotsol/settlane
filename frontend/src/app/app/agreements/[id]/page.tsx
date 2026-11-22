@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { ID_PATTERN } from "@/contract/known-ids";
 import { AgreementWorkspace } from "@/ui/app/AgreementWorkspace";
 
 type Params = { params: Promise<{ id: string }> };
@@ -10,6 +11,6 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
 
 export default async function Page({ params }: Params) {
   const { id } = await params;
-  if (!/^[1-9]\d{0,76}$/.test(id)) notFound();
+  if (!ID_PATTERN.test(id)) notFound(); // same rule as src/proxy.ts: no read for malformed or absurd ids
   return <AgreementWorkspace id={BigInt(id)} />;
 }

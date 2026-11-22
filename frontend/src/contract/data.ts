@@ -5,7 +5,8 @@ import { SERVER_BUDGET_MS } from "@/chain/budget";
 import { cached, type Cached } from "./cache";
 import { history } from "./history-instance";
 import type { History } from "./history";
-import { latestBlockTime, readAgreement, readOverview, type Agreement } from "./read";
+import { createKnownIds } from "./known-ids";
+import { agreementCount, latestBlockTime, readAgreement, readOverview, type Agreement } from "./read";
 
 // Cached server-side reads used by the pages (see cache.ts). TTLs are short so a new agreement or a new
 // event appears within seconds; Sepolia produces a block about every 12 s.
@@ -25,16 +26,28 @@ export async function getHistory(): Promise<Cached<History>> {
   }
 }
 
-export const getAgreement = (id: bigint): Promise<Cached<{ agreement: Agreement | null; blockTime: bigint }>> =>
-  cached(
+/** Which ids exist, from one shared, rarely re-read count (known-ids.ts). Shared by src/proxy.ts and the pages. */
+export const knownIds = createKnownIds((from) => agreementCount(16, from));
+
+/**
+ * One agreement. Only ids known to exist are read (and cached) per id; an id above the count costs no read of its own,
+ * so the per-id cache holds real agreements only (R2-B).
+ */
+export async function getAgreement(id: bigint): Promise<Cached<{ agreement: Agreement | null; blockTime: bigint }>> {
+  const known = await knownIds.check(id, SERVER_BUDGET_MS);
+  if (known === "missing") return { value: { agreement: null, blockTime: 0n }, fetchedAt: Date.now(), stale: false };
+  if (known === "unknown") throw new Error("The Sepolia endpoints did not answer.");
+  return cached(
     `agreement:${id}`,
     TTL,
     async () => {
       const [agreement, blockTime] = await Promise.all([readAgreement(id), latestBlockTime()]);
+      if (agreement) knownIds.saw(agreement.id);
       return { agreement, blockTime };
     },
     SERVER_BUDGET_MS,
   );
+}
 
 /** SHA-256 of the code deployed at the contract address (checked against the pinned build hash). */
 export const getDeployedCodeHash = (): Promise<Cached<{ sha256: string; bytes: number }>> =>

@@ -14,7 +14,16 @@ import type { Hex } from "viem";
 //  8. A known hash the node does not know (dropped?): released only if the ORIGINAL transaction's nonce has since been used
 //     by another transaction, because then it can never be mined. Otherwise the wallet could still send it.
 //  9. No hash (the wallet never answered this page, or the page was reloaded): the chain shows nothing happened and nothing
-//     pending, but the request may still be open in MetaMask. Only the user can say it is not: released after they confirm.
+//     pending, but the request may still be open in MetaMask, and nothing on-chain can prove it is not. The outcome stays
+//     UNKNOWN. The user's statement that it is gone from the wallet is evidence of INTENT, never proof (R2-B):
+//      - a milestone action may then be requested again ("override"). If the old request is still approved later: a
+//        claim, refund, approve or reject is refused by the contract (a milestone is paid or refunded once; approve and
+//        reject name the submission revision), costing at most a network fee; a submit is a valid RESUBMISSION while the
+//        delivery window is open (LIFECYCLE T2) and would replace newer evidence. No ETH can move twice in either case.
+//        Holding submit instead could make a provider miss the delivery deadline, which costs them the payment;
+//      - a create is NOT released ("create-held"): an old create approved later would fund a second agreement, which no
+//        contract rule prevents. It stays blocked for this account until the chain proves the outcome (the agreement
+//        appears) or the record expires (tx-registry.ts, a stated policy bound, not a proof).
 // Any read that fails makes the verdict "cannot prove": uncertainty is never turned into permission.
 
 export type RecoveryFacts = {
@@ -32,8 +41,10 @@ export type RecoveryFacts = {
   hasBaseline: boolean;
   effectDone: boolean;
   createdId?: bigint;
-  /** The user confirmed the request is no longer open in their wallet. */
+  /** The user confirmed the request is no longer open in their wallet (intent, not proof). */
   attested: boolean;
+  /** The lost request is a create (a duplicate would fund a second agreement). */
+  isCreate?: boolean;
 };
 
 export type Verdict =
@@ -47,6 +58,8 @@ export type Verdict =
   | { kind: "cannot-prove"; reason: string }
   | { kind: "dropped-unproven" }
   | { kind: "needs-confirmation" }
+  | { kind: "override" }
+  | { kind: "create-held" }
   | { kind: "released"; reason: string };
 
 export function assessRecovery(f: RecoveryFacts): Verdict {
@@ -63,9 +76,12 @@ export function assessRecovery(f: RecoveryFacts): Verdict {
     }
     return { kind: "dropped-unproven" };
   }
-  if (f.attested) return { kind: "released", reason: "You confirmed the request is no longer open in your wallet, and the chain shows this action did not happen and nothing is pending." };
-  return { kind: "needs-confirmation" };
+  if (!f.attested) return { kind: "needs-confirmation" };
+  return f.isCreate ? { kind: "create-held" } : { kind: "override" };
 }
 
-/** May a new request start under this verdict? */
-export const releases = (v: Verdict | undefined) => v?.kind === "released";
+/**
+ * May a new request start under this verdict? "released" is proof that the old request can no longer take effect;
+ * "override" is the user's informed decision for an action the contract cannot apply twice. The old outcome stays unknown.
+ */
+export const releases = (v: Verdict | undefined) => v?.kind === "released" || v?.kind === "override";

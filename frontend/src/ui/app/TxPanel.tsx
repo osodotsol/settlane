@@ -9,7 +9,7 @@ import { describeTrace, traceStore } from "@/chain/wallet-trace";
 import type { TxEntry } from "@/chain/tx-registry";
 import type { useTx } from "@/chain/write";
 import { txUrl } from "@/config/chain";
-import { shortHex } from "@/domain/format";
+import { formatUtc, shortHex } from "@/domain/format";
 import { Button } from "../Button";
 
 // The life of one wallet request, stated exactly: what the page knows, and what it does not. A wallet that has
@@ -66,20 +66,29 @@ function Guidance() {
   );
 }
 
+/** Requests for the same action by other accounts in this browser: they do not block this account, and are not hidden. */
+function OtherAccounts({ others }: { others: TxEntry[] }) {
+  if (others.length === 0) return null;
+  return (
+    <p className="mt-4 rounded-lg border border-submitted bg-submitted-tint px-3 py-2 text-sm text-ink" data-other-accounts>
+      {others.map((o) => shortHex(o.account)).join(", ")} {others.length === 1 ? "has" : "have"} an unfinished request for this action in this browser. It belongs to that account: switch back to it to follow or check it. It does not block this account.
+    </p>
+  );
+}
+
 export function TxPanel({ tx, onSuccess }: { tx: ReturnType<typeof useTx>; onSuccess?: (createdId: bigint | undefined) => ReactNode }) {
-  const { entry } = tx;
-  const { address, chainId } = useConnection();
+  const { entry, others } = tx;
+  const { chainId } = useConnection();
   const open = entry !== undefined && (entry.state.phase === "awaiting" || entry.state.phase === "pending" || entry.state.phase === "checking");
   const now = useNow(open);
-  if (!entry) return null;
+  if (!entry) return <OtherAccounts others={others} />;
   const s = entry.state;
   const box = "mt-4 rounded-xl border px-4 py-3 text-sm";
-  const otherAccount = address && address.toLowerCase() !== entry.account.toLowerCase() && (s.phase === "awaiting" || s.phase === "pending" || s.phase === "unknown");
   const notes = (
     <>
-      {otherAccount && (
-        <p className="mt-2 rounded-lg border border-submitted bg-submitted-tint px-3 py-2 text-ink">
-          This request belongs to {shortHex(entry.account)}. You are now connected as {shortHex(address!)}. If it is approved in MetaMask it is still signed by {shortHex(entry.account)}; the page will not send it again.
+      {entry.previous && (
+        <p className="mt-2 text-ink-2" data-previous-unproven>
+          An earlier request for this action (started {formatUtc(BigInt(Math.floor(entry.previous.startedAt / 1000)))}) was never proven closed. If MetaMask still sends it, it is a separate transaction and this page cannot stop it.
         </p>
       )}
       {s.phase === "awaiting" && chainId !== undefined && chainId !== sepolia.id && (
@@ -91,6 +100,7 @@ export function TxPanel({ tx, onSuccess }: { tx: ReturnType<typeof useTx>; onSuc
         </p>
       )}
       <WalletActivity entry={entry} now={now} />
+      <OtherAccounts others={others} />
     </>
   );
   const dismiss = <div className="mt-3"><Button variant="secondary" size="sm" onClick={tx.dismiss}>Dismiss</Button></div>;
@@ -181,7 +191,12 @@ export function TxPanel({ tx, onSuccess }: { tx: ReturnType<typeof useTx>; onSuc
         "open-elsewhere": "Another tab of this site is still waiting for MetaMask on this action. Finish it in that tab or in MetaMask.",
         "pending-account": `A transaction from ${who} is waiting for a block. Do not send another; check again shortly.`,
         "dropped-unproven": "The node no longer knows this transaction, but its nonce has not been used, so the wallet could still send it. Cancel it in MetaMask (which replaces it), or wait; once its nonce is used by another transaction it is released automatically.",
-        "needs-confirmation": `The chain shows this action has not happened and nothing from ${who} is pending. The request may still be open in MetaMask, though. If MetaMask no longer shows it (you rejected or closed it), say so below.`,
+        "needs-confirmation": `The chain shows this action has not happened and nothing from ${who} is pending. The request may still be open in MetaMask, though, and nothing on-chain can show whether it is. If MetaMask no longer shows it (you rejected or closed it), say so below.`,
+        override:
+          entry.action.fn === "submit"
+            ? "You said the request is no longer in MetaMask. That is your decision, not proof: the outcome stays unknown. You may submit again. If the old request is still approved later, it is a valid resubmission and replaces the newer evidence (the revision goes up), so check the evidence before the verifier decides. No ETH moves on a submission."
+            : "You said the request is no longer in MetaMask. That is your decision, not proof: the outcome stays unknown. You may send a new request. If the old one is still approved later, the contract refuses the duplicate (this milestone cannot be decided, claimed or refunded twice), so it can cost a network fee but cannot move ETH twice.",
+        "create-held": `Your answer is recorded, but it cannot prove the old request is closed, and approving it later would fund a second agreement: no contract rule prevents that. A new create from ${who} stays blocked here until the chain settles it: if MetaMask shows the request, approve it (then Check the chain finds the agreement) or reject it. The block lifts by itself 24 hours after the request started. Your draft is kept.`,
       };
       return (
         <div role="alert" className={`${box} border-submitted bg-surface`}>
@@ -189,7 +204,7 @@ export function TxPanel({ tx, onSuccess }: { tx: ReturnType<typeof useTx>; onSuc
           <p className="mt-1 text-ink-2">{what} {s.hash && <Tx hash={s.hash} />}</p>
           {v && (
             <p className="mt-2 text-ink-2" data-recovery={v.kind}>
-              {v.kind === "released" ? `Checked: ${v.reason} You can now send a new request.` : v.kind === "cannot-prove" ? `Checked: ${v.reason}` : `Checked: ${said[v.kind] ?? ""}`}
+              {v.kind === "released" ? `Checked: ${v.reason} You can now send a new request.` : v.kind === "cannot-prove" ? `Checked: ${v.reason}` : `${v.kind === "override" || v.kind === "create-held" ? "" : "Checked: "}${said[v.kind] ?? ""}`}
             </p>
           )}
           <div className="mt-3 flex flex-wrap gap-2">
@@ -199,10 +214,10 @@ export function TxPanel({ tx, onSuccess }: { tx: ReturnType<typeof useTx>; onSuc
                 It is no longer in MetaMask
               </Button>
             )}
-            {entry.cleared && <Button variant="quiet" size="sm" onClick={tx.dismiss}>Dismiss</Button>}
+            {entry.cleared && v?.kind !== "override" && <Button variant="quiet" size="sm" onClick={tx.dismiss}>Dismiss</Button>}
           </div>
           {v?.kind === "needs-confirmation" && entry.action.fn === "create" && (
-            <p className="mt-2 text-micro text-ink-3">Only confirm if MetaMask really shows no pending request: approving an old request later would fund a second agreement.</p>
+            <p className="mt-2 text-micro text-ink-3">For a create, your answer does not unlock a new create: an old request approved later would fund a second agreement.</p>
           )}
           {notes}
         </div>

@@ -12,7 +12,26 @@ export type Cached<T> = { value: T; fetchedAt: number; stale: boolean };
 
 type Entry = { value?: unknown; fetchedAt?: number; inflight?: Promise<unknown> };
 
+/**
+ * Bounded (R2-B): at most MAX_ENTRIES keys, least recently used evicted first (an entry with a read in flight is kept until
+ * it settles). Keys are a few fixed reads plus one per EXISTING agreement (known-ids.ts keeps made-up ids out), so the
+ * bound is a safety net, not the normal case.
+ */
+export const MAX_ENTRIES = 256;
 const entries = new Map<string, Entry>();
+
+function touch(key: string): Entry {
+  const entry = entries.get(key) ?? {};
+  entries.delete(key);
+  entries.set(key, entry); // most recently used last
+  if (entries.size > MAX_ENTRIES) {
+    for (const [k, e] of entries) {
+      if (entries.size <= MAX_ENTRIES) break;
+      if (k !== key && !e.inflight) entries.delete(k);
+    }
+  }
+  return entry;
+}
 
 /**
  * `budgetMs` bounds how long a CALLER waits (R2 H1): past it, the last good value is served as stale, or the call fails
@@ -21,8 +40,7 @@ const entries = new Map<string, Entry>();
  */
 export async function cached<T>(key: string, ttlMs: number, fetcher: () => Promise<T>, budgetMs?: number): Promise<Cached<T>> {
   const now = Date.now();
-  const entry = entries.get(key) ?? {};
-  entries.set(key, entry);
+  const entry = touch(key);
   if (entry.fetchedAt !== undefined && now - entry.fetchedAt < ttlMs) {
     return { value: entry.value as T, fetchedAt: entry.fetchedAt, stale: false };
   }
@@ -45,6 +63,9 @@ export async function cached<T>(key: string, ttlMs: number, fetcher: () => Promi
     throw error;
   }
 }
+
+/** Number of keys held (tests, diagnostics). */
+export const cacheSize = () => entries.size;
 
 /** Test helper: forget everything. */
 export function clearCache() {

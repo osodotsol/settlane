@@ -102,7 +102,7 @@ test("agreement 2: refunded in full after its delivery deadline", async ({ page 
   await expect(history).toHaveCount(2);
   await expect(history.nth(1)).toContainText("Client refunded 0.001 ETH for milestone 1");
   // the lane's text equivalent states the refund event and that no refund is still possible
-  await expect(page.locator("figure ol.sr-only")).toContainText("Refunded to the client at 2026-11-20");
+  await expect(page.locator("figure ol.sr-only")).toContainText("Refunded by the client at 2026-11-20");
   await expect(page.locator("figure ol.sr-only")).toContainText("It cannot be refunded.");
 });
 
@@ -367,7 +367,7 @@ test.describe("application, no wallet", () => {
     await visit(page, "/app/payments");
     // the payout list comes from the event scan, which reads Sepolia in the browser
     await expect(page.getByText("Claimed by the provider · agreement #1, milestone 1")).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText("Refunded to the client · agreement #2, milestone 1")).toBeVisible();
+    await expect(page.getByText("Refunded by the client · agreement #2, milestone 1")).toBeVisible();
     // Activity is public: every real event, newest first, filterable
     await visit(page, "/app/activity");
     const events = await networkEvents();

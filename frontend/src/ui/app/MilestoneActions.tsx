@@ -41,7 +41,7 @@ export function MilestoneActions({ a, m, now }: { a: Agreement; m: Milestone; no
   const [confirm, setConfirm] = useState<ActionKind | "reject" | null>(null);
 
   const can = milestoneActions(a, m, wallet.address, now);
-  if (can.length === 0 && !tx.entry) return null;
+  if (can.length === 0 && !tx.entry && tx.others.length === 0) return null;
   const me = wallet.address;
   // The payee is validated before anything is simulated or signed: EIP-55 checksum, no zero address (R2 M2).
   const payeeCheck = payee.trim() === "" ? (me ? ({ ok: true, address: me } as const) : undefined) : checkAddress(payee, "payee address");

@@ -3,13 +3,13 @@ import { UserRejectedRequestError } from "viem";
 import { walletErrorKind } from "@/chain/errors";
 import { GAS_MARGIN_PERCENT, TX_GAS_CAP, gasWithMargin } from "@/chain/gas";
 import { milestoneEffect, type MilestoneSnap } from "@/chain/tx-effect";
-import { blockReason, canStart, createRegistry, deserialize, serialize, STORAGE_KEY, type TxEntry, type TxPhase } from "@/chain/tx-registry";
+import { baseOf, blockReason, canStart, createRegistry, deserialize, requestKey, serialize, STORAGE_KEY, type TxEntry, type TxPhase } from "@/chain/tx-registry";
 import { describeTrace, traceProvider, traceStore, traced } from "@/chain/wallet-trace";
 import { milestoneStatusLine } from "@/domain/app-model";
 
 const ACCOUNT = "0x00000000000000000000000000000000000000b2" as const;
 const entry = (state: TxPhase, extra: Partial<TxEntry> = {}): TxEntry => ({
-  key: "milestone:1:0", label: "Claim", action: { fn: "claim", id: 1n, m: 0 }, account: ACCOUNT, startedAt: 1_000, attempt: 1, state, live: true, lateHashes: [], ...extra,
+  key: requestKey(ACCOUNT, "milestone:1:0"), label: "Claim", action: { fn: "claim", id: 1n, m: 0 }, account: ACCOUNT, startedAt: 1_000, attempt: 1, state, live: true, lateHashes: [], ...extra,
 });
 const HASH = `0x${"ab".repeat(32)}` as const;
 
@@ -94,8 +94,8 @@ describe("the request registry: one open request per action", () => {
   it("blocks a new request while one is checking, awaiting, pending or unresolved", () => {
     expect(canStart(undefined)).toBe(true);
     for (const s of [{ phase: "checking" }, { phase: "awaiting", since: 1 }, { phase: "pending", hash: HASH, since: 1 }, { phase: "unknown", reason: "stopped" }] as TxPhase[]) {
-      expect(canStart(entry(s))).toBe(false);
-      expect(blockReason(entry(s))).toBeTruthy();
+      expect(canStart(entry(s), 1_000)).toBe(false);
+      expect(blockReason(entry(s), 1_000)).toBeTruthy();
     }
   });
   it("allows a new request after a final outcome, or after the chain check cleared an unknown one", () => {
@@ -106,14 +106,14 @@ describe("the request registry: one open request per action", () => {
   });
   it("after a reload, an open request becomes 'unknown (reloaded)', keeping a known hash; finished ones are not kept", () => {
     const raw = serialize([
-      entry({ phase: "awaiting", since: 5 }, { key: "a" }),
-      entry({ phase: "pending", hash: HASH, since: 5 }, { key: "b", before: { kind: "milestone", state: "approved", revision: 1n, rejections: 0n } }),
-      entry({ phase: "confirmed", hash: HASH, blockNumber: 9n }, { key: "c" }),
-      entry({ phase: "unknown", reason: "stopped" }, { key: "d", cleared: true }),
-      entry({ phase: "unknown", reason: "stopped" }, { key: "e" }),
+      entry({ phase: "awaiting", since: 5 }, { key: requestKey(ACCOUNT, "a") }),
+      entry({ phase: "pending", hash: HASH, since: 5 }, { key: requestKey(ACCOUNT, "b"), before: { kind: "milestone", state: "approved", revision: 1n, rejections: 0n } }),
+      entry({ phase: "confirmed", hash: HASH, blockNumber: 9n }, { key: requestKey(ACCOUNT, "c") }),
+      entry({ phase: "unknown", reason: "stopped" }, { key: requestKey(ACCOUNT, "d"), cleared: true }),
+      entry({ phase: "unknown", reason: "stopped" }, { key: requestKey(ACCOUNT, "e") }),
     ]);
     const back = deserialize(raw, 2_000);
-    expect(back.map((e) => e.key)).toEqual(["a", "b", "e"]);
+    expect(back.map((e) => baseOf(e.key))).toEqual(["a", "b", "e"]);
     expect(back[0]!.state).toEqual({ phase: "unknown", reason: "reloaded", hash: undefined });
     expect(back[1]!.state).toEqual({ phase: "unknown", reason: "reloaded", hash: HASH });
     expect(back[1]!.before).toEqual({ kind: "milestone", state: "approved", revision: 1n, rejections: 0n }); // bigints survive
@@ -129,12 +129,12 @@ describe("the request registry: one open request per action", () => {
     const store = new Map<string, string>();
     const reg = createRegistry(() => ({ getItem: (k) => store.get(k) ?? null, setItem: (k, v) => void store.set(k, v) }));
     reg.set(entry({ phase: "awaiting", since: 1 }, { attempt: 2 }));
-    expect(reg.update("milestone:1:0", 1, (e) => ({ ...e, state: { phase: "rejected" } }))).toBe(false);
-    expect(reg.get("milestone:1:0")!.state.phase).toBe("awaiting");
+    expect(reg.update(requestKey(ACCOUNT, "milestone:1:0"), 1, (e) => ({ ...e, state: { phase: "rejected" } }))).toBe(false);
+    expect(reg.get(requestKey(ACCOUNT, "milestone:1:0"))!.state.phase).toBe("awaiting");
     expect(store.get(STORAGE_KEY)).toContain("awaiting");
     const broken = createRegistry(() => ({ getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("blocked"); } }));
     broken.set(entry({ phase: "checking" }));
-    expect(broken.get("milestone:1:0")!.state.phase).toBe("checking");
+    expect(broken.get(requestKey(ACCOUNT, "milestone:1:0"))!.state.phase).toBe("checking");
   });
 });
 
@@ -157,7 +157,7 @@ describe("finding out from the chain whether a lost request took effect", () => 
 describe("queue labels never suggest an action on a finished milestone", () => {
   it("terminal and expired milestones say who can act, or that nothing is left", () => {
     expect(milestoneStatusLine("paid", "provider", [])).toEqual({ text: "Paid to the provider. Nothing left to do.", act: false });
-    expect(milestoneStatusLine("refunded", "verifier", [])).toEqual({ text: "Refunded to the client. Nothing left to do.", act: false });
+    expect(milestoneStatusLine("refunded", "verifier", [])).toEqual({ text: "Refunded by the client. Nothing left to do.", act: false });
     expect(milestoneStatusLine("expired", "provider", []).text).toBe("Expired. Only the client can act now: a refund.");
     expect(milestoneStatusLine("approved", "verifier", []).text).toMatch(/Your part is done/);
     for (const s of ["paid", "refunded", "expired", "approved"] as const) expect(milestoneStatusLine(s, "provider", []).text).not.toMatch(/Waiting on/);

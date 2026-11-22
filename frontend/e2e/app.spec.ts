@@ -73,6 +73,9 @@ test("create: the form enforces the contract's rules, then creates and funds an 
   await confirmed(page);
   await expect(page.getByRole("link", { name: "Open agreement #3" })).toBeVisible();
   expect(await sentTransactions(page)).toBe(1);
+  // only now, with the agreement confirmed, is the draft cleared (archived), so it cannot be created twice by accident (R2-B)
+  await expect(page.getByText("Agreement #3 was created. The draft was cleared so it cannot be created twice by accident.")).toBeVisible();
+  await expect(page.getByLabel("Specification")).toHaveValue("");
 
   // what the chain actually holds equals what the form said
   const head = await pub.readContract({ address: SETTLANE, abi: settlaneAbi, functionName: "getAgreement", args: [3n] });
@@ -336,6 +339,8 @@ test("declining the signature in the wallet sends nothing and says so", async ({
   await expect(page.getByText("You declined the request in MetaMask.")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("Nothing was sent. You can try again when you are ready.")).toBeVisible();
   await expect(page.getByText(/Confirmed in block/)).toHaveCount(0);
+  await expect(page.getByLabel("Specification")).toHaveValue("Declined test"); // a refused request keeps the draft (R2-B)
+  await expect(page.locator("[data-draft-archived]")).toHaveCount(0);
   expect(await pub.readContract({ address: SETTLANE, abi: settlaneAbi, functionName: "totalOutstanding" })).toBe(count);
 });
 
@@ -445,7 +450,7 @@ test("a double click sends one request", async ({ page }) => {
   expect((await milestone(id))[7]).toBe(1n); // revision 1: submitted once
 });
 
-test("account and network changes while a request is open neither resend it nor lose it", async ({ page }) => {
+test("account and network changes while a request is open neither resend it nor lose it; the request stays with its own account (R2-B)", async ({ page }) => {
   const id = await newAgreement("funded");
   const nonceBefore = await nonceOf(PROVIDER);
   await openAs(page, PROVIDER, `/app/agreements/${id}`);
@@ -455,12 +460,15 @@ test("account and network changes while a request is open neither resend it nor 
   await panel(page).getByRole("button", { name: "Submit evidence" }).click();
   await expect(panel(page).getByText(/Waiting for your signature in MetaMask/)).toBeVisible({ timeout: 15_000 });
   await switchAccount(page, CLIENT);
-  await expect(page.getByText(/This request belongs to 0x7099…79C8\. You are now connected as 0xf39F…2266/)).toBeVisible();
+  // the client sees that another account has a request open here, and it neither blocks nor belongs to the client
+  await expect(panel(page).getByText(/0x7099…79C8 has an unfinished request for this action in this browser/)).toBeVisible();
+  await expect(panel(page).getByText(/Waiting for your signature/)).toHaveCount(0);
+  await switchAccount(page, PROVIDER);
+  await expect(panel(page).getByText(/Waiting for your signature in MetaMask/)).toBeVisible();
+  await expect(panel(page).locator("[data-other-accounts]")).toHaveCount(0);
   await setWalletChain(page, 1);
   await expect(page.getByText("Your wallet switched network while this request was open.", { exact: false })).toBeVisible();
   await setWalletChain(page, 11155111);
-  await switchAccount(page, PROVIDER);
-  await expect(page.getByText(/This request belongs to/)).toHaveCount(0);
   expect((await walletCalls(page)).filter((c) => c === "eth_sendTransaction")).toHaveLength(1);
   await releaseSignature(page);
   await confirmed(page);
@@ -489,7 +497,7 @@ test("after a reload the open request is remembered, a duplicate is refused, and
   await expect(panel(page).getByText("Replace your submission")).toBeVisible({ timeout: 20_000 });
 });
 
-test("after a reload, when nothing was sent, one new request is allowed only after the user confirms the old one is gone", async ({ page }) => {
+test("after a reload, when nothing was sent, a new submission is allowed only on the user's word, and the old outcome stays unknown (R2-B)", async ({ page }) => {
   const id = await newAgreement("funded");
   const nonceBefore = await nonceOf(PROVIDER);
   await openAs(page, PROVIDER, `/app/agreements/${id}`);
@@ -505,11 +513,59 @@ test("after a reload, when nothing was sent, one new request is allowed only aft
   await expect(panel(page).getByText(/The chain shows this action has not happened and nothing from 0x7099…79C8 is pending/)).toBeVisible({ timeout: 20_000 });
   await expect(panel(page).getByRole("button", { name: "Submit evidence" })).toBeDisabled();
   await panel(page).getByRole("button", { name: "It is no longer in MetaMask" }).click();
-  await expect(panel(page).getByText(/You confirmed the request is no longer open in your wallet/)).toBeVisible({ timeout: 20_000 });
+  // the user's word is a decision, not proof: the outcome stays unknown and the page says what a late approval would do
+  await expect(panel(page).getByText(/That is your decision, not proof: the outcome stays unknown/)).toBeVisible({ timeout: 20_000 });
+  await expect(panel(page).getByText(/it is a valid resubmission and replaces the newer evidence/)).toBeVisible();
+  await expect(panel(page).getByText("Outcome not known yet")).toBeVisible();
   await panel(page).getByLabel("Evidence").fill("sent again");
   await panel(page).getByRole("button", { name: "Submit evidence" }).click();
   await confirmed(page);
+  await expect(panel(page).locator("[data-previous-unproven]")).toContainText("was never proven closed");
   expect(await nonceOf(PROVIDER)).toBe(nonceBefore + 1);
+});
+
+test("a lost create is never unlocked by the user's word; another account is not blocked; only the create found on-chain clears the draft (R2-B)", async ({ page }) => {
+  test.setTimeout(150_000);
+  const outstanding = () => pub.readContract({ address: SETTLANE, abi: settlaneAbi, functionName: "totalOutstanding" });
+  const before = await outstanding();
+  await openAs(page, CLIENT, "/app/create");
+  await page.getByLabel("Provider", { exact: true }).fill(PROVIDER);
+  await page.getByLabel("Verifier", { exact: true }).fill(VERIFIER);
+  await page.getByLabel("Amount (ETH)").fill("0.01");
+  await page.getByLabel("Deliver within").fill("2");
+  await page.getByLabel("Specification").fill("Lost create");
+  await holdSignatures(page);
+  await page.getByRole("button", { name: "Review and create" }).click();
+  await page.getByRole("button", { name: "Create and sign" }).click();
+  await expect(page.getByText(/Waiting for your signature in MetaMask/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "Review and create" })).toBeDisabled();
+  // another account in this browser is neither blocked nor shown the client's request as its own
+  await switchAccount(page, STRANGER);
+  await expect(page.getByText(/0xf39F…2266 has an unfinished request for this action in this browser/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Review and create" })).toBeEnabled();
+  await switchAccount(page, CLIENT);
+  await expect(page.getByText(/Waiting for your signature in MetaMask/)).toBeVisible();
+  // a reload: the page's promise is gone, the wallet could still answer
+  await page.reload();
+  await expect(page.getByRole("button", { name: /^Connected as/ })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("Outcome not known yet")).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Check the chain" }).click();
+  await expect(page.getByText(/The chain shows this action has not happened and nothing from 0xf39F…2266 is pending/)).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name: "It is no longer in MetaMask" }).click();
+  await expect(page.getByText(/Your answer is recorded, but it cannot prove the old request is closed/)).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole("button", { name: "Review and create" })).toBeDisabled();
+  await expect(page.getByLabel("Specification")).toHaveValue("Lost create"); // the draft is kept
+  expect(await outstanding()).toBe(before);
+  // the old request is approved in MetaMask after all (simulated outside the page): the chain settles it
+  const t = await now();
+  await chainSend(CLIENT, "create", [PROVIDER, VERIFIER, 86_400n, 1, [parseEther("0.01"), 0n, 0n], [t + 7_200n, 0n, 0n], [BigInt(keccak256(stringToBytes("Lost create"))), 0n, 0n]], parseEther("0.01"));
+  await page.getByRole("button", { name: "Check the chain" }).click();
+  await expect(page.getByText("Done on-chain: the contract shows this action took effect.")).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText(/was created\. The draft was cleared so it cannot be created twice by accident\./)).toBeVisible();
+  await expect(page.getByLabel("Specification")).toHaveValue("");
+  await page.getByRole("button", { name: "Start a new draft from these terms" }).click();
+  await expect(page.getByLabel("Specification")).toHaveValue("Lost create");
+  expect(await outstanding()).toBe(before + parseEther("0.01")); // exactly one agreement was funded
 });
 
 test("an unanswered connection request: guidance, Stop waiting, MetaMask's 'already pending', and a late approval connects", async ({ page }) => {
@@ -542,4 +598,20 @@ test("a mistyped payee address (checksum fails) is refused before anything is si
   await expect(panel(page).getByText(/carries no checksum/)).toBeVisible();
   await expect(panel(page).getByRole("button", { name: "Claim payout" })).toBeEnabled();
   expect(await sentTransactions(page)).toBe(0);
+});
+
+test("payments: personal totals say what the account claimed or refunded in its role, not what it received (R2-B)", async ({ page }) => {
+  await openAs(page, PROVIDER, "/app/payments");
+  await expect(page.getByText("Claimed as provider", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("Sent to the address chosen at each claim")).toBeVisible();
+  await expect(page.getByText("Paid out to you")).toHaveCount(0);
+});
+
+test("made-up agreement ids get a 404 from one shared count, malformed ids never reach the chain, real ids open (R2-B)", async ({ request }) => {
+  const t0 = Date.now();
+  const made = await Promise.all(Array.from({ length: 40 }, (_, i) => request.get(`/agreements/${900_000 + i * 7}`)));
+  expect(made.map((r) => r.status())).toEqual(Array(40).fill(404));
+  expect(Date.now() - t0).toBeLessThan(20_000);
+  for (const bad of ["0", "01", "abc", "1".repeat(25)]) expect((await request.get(`/agreements/${bad}`)).status()).toBe(404);
+  expect((await request.get("/agreements/1")).status()).toBe(200);
 });

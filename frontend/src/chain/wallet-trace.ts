@@ -62,20 +62,31 @@ export async function traced<T>(method: string, run: () => Promise<T>, now: () =
 const wrapped = new WeakMap<object, unknown>();
 
 /**
- * The same provider, with `request` recorded. Every other property and method is the original, bound to the
- * original object (wallet providers depend on `this`). The wrapper is created once per provider, so wagmi sees
- * one stable object.
+ * The same provider, with `request` recorded. Every other property and method is the original, read from the ORIGINAL
+ * object (R2-B: getters and setters run with `this` = the provider, never the wrapper, so a provider that keeps state in
+ * private class fields or checks `this` keeps working), and methods are bound to it once (the same function on every
+ * read, so identity checks and add/remove listener pairs behave). `window.ethereum` itself is never replaced or changed;
+ * only the object handed to wagmi's one connector is wrapped. The wrapper is created once per provider, so wagmi sees one
+ * stable object.
  */
 export function traceProvider<P extends Eip1193>(provider: P): P {
   const existing = wrapped.get(provider);
   if (existing) return existing as P;
+  const bound = new Map<PropertyKey, { original: unknown; fn: unknown }>();
+  const request = (args: { method: string; params?: unknown }) => traced(args.method, () => provider.request(args));
   const proxy = new Proxy(provider, {
-    get(target, prop, receiver) {
-      if (prop === "request") {
-        return (args: { method: string; params?: unknown }) => traced(args.method, () => target.request(args));
-      }
-      const value = Reflect.get(target, prop, receiver);
-      return typeof value === "function" ? value.bind(target) : value;
+    get(target, prop) {
+      if (prop === "request") return request;
+      const value = Reflect.get(target, prop, target);
+      if (typeof value !== "function") return value;
+      const cachedFn = bound.get(prop);
+      if (cachedFn && cachedFn.original === value) return cachedFn.fn;
+      const fn = (value as (...a: unknown[]) => unknown).bind(target);
+      bound.set(prop, { original: value, fn });
+      return fn;
+    },
+    set(target, prop, value) {
+      return Reflect.set(target, prop, value, target);
     },
   });
   wrapped.set(provider, proxy);

@@ -1,6 +1,7 @@
 import { encodeAbiParameters, encodeEventTopics, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import { settlaneAbi } from "@/contract/abi";
+import { decodeActivity } from "@/contract/events";
 import { createHistory, type LogSource } from "@/contract/history";
 import { snapshotContentHash, snapshotFile, verifySnapshot, type SnapshotFile } from "@/contract/snapshot";
 import { agreementCoverage, aggregateCoverage, describeHistory } from "@/domain/history-coverage";
@@ -334,10 +335,11 @@ describe("a node that lags the head it reported", () => {
 describe("coverage: complete only when the events match the contract's state", () => {
   const ms = (state: string, revision = 0n, rejections = 0n) => ({ index: 0, state: state as never, amount: 5n, deliverBy: 0n, decideBy: 0n, spec: 1n, evidence: 0n, rejections, revision });
   const events = (spec: [Parameters<typeof log>[0], bigint][]) => spec.map(([k, id], i) => ({ ...(verify(log(k, id, 100n + BigInt(i)))) }));
+  /** Decodes one fake log (the snapshot verifier now checks whole sequences, R2-B, so single events are decoded directly). */
   function verify(l: Fake) {
-    const r = verifySnapshot(snap([l], 200n), { chainId: 11155111, address: ADDR, deployBlock: DEPLOY });
-    if (!r.ok) throw new Error(r.reason);
-    return r.snapshot.events[0]!;
+    const a = decodeActivity({ topics: l.topics, data: l.data, blockNumber: l.blockNumber, logIndex: l.logIndex, transactionHash: l.transactionHash, blockHash: l.blockHash }, l.blockNumber * 12n);
+    if (!a) throw new Error("not a Settlane event");
+    return a;
   }
   it("a paid agreement needs created, one submission, one approval and one claim", () => {
     const a = { id: 1n, milestones: [ms("paid", 1n)] };

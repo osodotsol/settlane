@@ -49,8 +49,9 @@ export async function latestBlockTime(): Promise<bigint> {
  * Number of agreements: ids start at 1 and are consecutive (LIFECYCLE, D-018), so probe
  * `getAgreement` in batches until the first "unknown agreement" revert.
  */
-export async function agreementCount(batch = 16): Promise<number> {
-  let start = 1;
+export async function agreementCount(batch = 16, from = 0n): Promise<number> {
+  // ids up to `from` are known to exist (ids are never deleted), so probing starts after them
+  let start = Number(from) + 1;
   for (;;) {
     const ids = Array.from({ length: batch }, (_, i) => BigInt(start + i));
     const results = await publicClient.multicall({

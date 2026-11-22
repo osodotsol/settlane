@@ -5,7 +5,7 @@ import { decodeEventLog, type Address, type Hex, type TransactionReceipt } from 
 import { useConnection, useWriteContract } from "wagmi";
 import { sepolia } from "wagmi/chains";
 import { publicClient } from "@/chain/client";
-import { SETTLANE_ADDRESS } from "@/config/chain";
+import { CHAIN, SETTLANE_ADDRESS } from "@/config/chain";
 import { settlaneAbi } from "@/contract/abi";
 import { describeTxError, walletErrorKind } from "./errors";
 import { checkAddress } from "@/domain/address";
@@ -13,7 +13,7 @@ import { gasWithMargin } from "./gas";
 import { useRefreshChainData } from "./queries";
 import { effectNow, readSnapshot, type Snapshot, type TxAction } from "./tx-effect";
 import { assessRecovery, releases, type RecoveryFacts } from "./tx-recovery";
-import { actionKey, blockReason, canStart, openInAnotherTab, registry, type TxEntry } from "./tx-registry";
+import { actionKey, baseOf, blockReason, canStart, isTerminal, openInAnotherTab, registry, requestKey, type TxEntry } from "./tx-registry";
 
 // Every write goes through one path: pin the network, SIMULATE the exact call against the contract with the
 // connected account, estimate gas and add a margin (gas.ts), record the request in the registry
@@ -80,11 +80,14 @@ type StartParams = { req: TxRequest; label: string; account: Address; walletChai
  */
 export async function startTx({ req, label, account, walletChainId, write, refresh }: StartParams): Promise<void> {
   const action = actionOf(req);
-  const key = actionKey(action);
+  // one record per action PER ACCOUNT on this chain and contract (R2-B): another account's request never blocks this one
+  const key = requestKey(account, actionKey(action));
   const previous = registry.get(key);
   if (!canStart(previous)) return;
   const attempt = (previous?.attempt ?? 0) + 1;
-  registry.set({ key, label, action, account, startedAt: Date.now(), attempt, state: { phase: "checking" }, live: true, lateHashes: previous?.lateHashes ?? [] });
+  // an earlier attempt whose outcome was never proven is remembered on the new one, so the interface keeps saying so
+  const unproven = previous?.state.phase === "unknown" ? { startedAt: previous.startedAt, reason: previous.recovery?.verdict.kind ?? "unknown" } : previous?.previous;
+  registry.set({ key, label, action, account, chainId: CHAIN.id, contract: SETTLANE_ADDRESS, startedAt: Date.now(), attempt, state: { phase: "checking" }, live: true, lateHashes: previous?.lateHashes ?? [], previous: unproven });
   const set = (patch: (e: TxEntry) => TxEntry) => registry.update(key, attempt, patch);
 
   // Last line of defence for addresses (R2 M2): every address argument must pass the EIP-55 check (checksummed or one
@@ -242,6 +245,7 @@ export async function reconcile(key: string, refresh: () => unknown): Promise<vo
       effectDone: effect.done,
       createdId: effect.createdId,
       attested: e.attested === true,
+      isCreate: e.action.fn === "create",
     };
     if (tx && e.txNonce === undefined) record({ txNonce: tx.nonce });
   } catch (error) {
@@ -287,14 +291,20 @@ export function dismiss(key: string) {
   if (canStart(registry.get(key))) registry.remove(key);
 }
 
-/** The registry key for a milestone's requests (one per milestone: its actions can never run concurrently). */
+/** The action part of the registry key for a milestone's requests (one per milestone per account). */
 export const milestoneKey = (id: bigint, m: number) => actionKey({ fn: "submit", id, m });
 export const CREATE_KEY = actionKey({ fn: "create" });
 
-/** One action's request state, and the controls the interface offers for it. */
-export function useTx(key: string) {
-  const entry = useSyncExternalStore(registry.subscribe, () => registry.get(key), () => undefined);
+const NO_ENTRIES: ReadonlyMap<string, TxEntry> = new Map();
+
+/** One action's request state for the CONNECTED account, and the controls the interface offers for it. */
+export function useTx(base: string) {
   const { address, chainId } = useConnection();
+  const key = address ? requestKey(address, base) : `disconnected|${base}`;
+  const all = useSyncExternalStore(registry.subscribe, registry.snapshot, () => NO_ENTRIES);
+  const entry = all.get(key);
+  // other accounts' open requests for the same action in this browser: shown, never blocking (R2-B)
+  const others = [...all.values()].filter((e) => e.key !== key && baseOf(e.key) === base && !isTerminal(e.state));
   const { mutateAsync } = useWriteContract();
   const refresh = useRefreshChainData();
   const start = useCallback(
@@ -307,6 +317,7 @@ export function useTx(key: string) {
   return {
     key,
     entry,
+    others,
     start,
     canStart: canStart(entry),
     blockReason: blockReason(entry),
