@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { createPublicClient, createWalletClient, http, keccak256, parseEther, stringToBytes, type Address } from "viem";
+import { createPublicClient, createWalletClient, getAddress, http, isAddress, keccak256, parseEther, stringToBytes, type Address } from "viem";
 import { sepolia } from "viem/chains";
 import { settlaneAbi } from "../src/contract/abi";
 import { holdConnection, holdSignatures, installWallet, rejectNextSignature, releaseConnection, releaseSignature, sentTransactions as sentParams, setWalletChain, switchAccount, walletCalls } from "./wallet";
@@ -415,6 +415,11 @@ test("an unanswered signature: elapsed guidance, no duplicate, Stop waiting keep
   await expect(panel(page).getByText(/may still be open in your wallet. Check the chain before sending another/)).toBeVisible();
   await expect(panel(page).getByRole("button", { name: "Claim payout" })).toBeDisabled();
   expect((await walletCalls(page)).filter((c) => c === "eth_sendTransaction")).toHaveLength(1);
+  // Check the chain cannot bypass the open request (R2 M6)
+  await panel(page).getByRole("button", { name: "Check the chain" }).click();
+  await expect(panel(page).getByText(/MetaMask still has this request open from this tab/)).toBeVisible({ timeout: 20_000 });
+  await expect(panel(page).getByRole("button", { name: "It is no longer in MetaMask" })).toHaveCount(0);
+  await expect(panel(page).getByRole("button", { name: "Claim payout" })).toBeDisabled();
 
   // the user approves in MetaMask much later: the page still follows it to the receipt
   await releaseSignature(page);
@@ -484,7 +489,7 @@ test("after a reload the open request is remembered, a duplicate is refused, and
   await expect(panel(page).getByText("Replace your submission")).toBeVisible({ timeout: 20_000 });
 });
 
-test("after a reload, when nothing was sent, Check the chain clears the way for one new request", async ({ page }) => {
+test("after a reload, when nothing was sent, one new request is allowed only after the user confirms the old one is gone", async ({ page }) => {
   const id = await newAgreement("funded");
   const nonceBefore = await nonceOf(PROVIDER);
   await openAs(page, PROVIDER, `/app/agreements/${id}`);
@@ -496,7 +501,11 @@ test("after a reload, when nothing was sent, Check the chain clears the way for 
   await page.reload();
   await loaded(page);
   await panel(page).getByRole("button", { name: "Check the chain" }).click();
-  await expect(panel(page).getByText(/nothing from 0x7099…79C8 is pending and this action has not happened/)).toBeVisible({ timeout: 20_000 });
+  // the chain shows nothing, but the request may still be open in MetaMask: the page asks, it does not assume (R2 M1/M6)
+  await expect(panel(page).getByText(/The chain shows this action has not happened and nothing from 0x7099…79C8 is pending/)).toBeVisible({ timeout: 20_000 });
+  await expect(panel(page).getByRole("button", { name: "Submit evidence" })).toBeDisabled();
+  await panel(page).getByRole("button", { name: "It is no longer in MetaMask" }).click();
+  await expect(panel(page).getByText(/You confirmed the request is no longer open in your wallet/)).toBeVisible({ timeout: 20_000 });
   await panel(page).getByLabel("Evidence").fill("sent again");
   await panel(page).getByRole("button", { name: "Submit evidence" }).click();
   await confirmed(page);
@@ -515,4 +524,22 @@ test("an unanswered connection request: guidance, Stop waiting, MetaMask's 'alre
   await expect(page.getByText("MetaMask already has a request from this page waiting.", { exact: false })).toBeVisible();
   await releaseConnection(page); // the user approves the first request in MetaMask
   await expect(page.getByRole("button", { name: /^Connected as/ })).toBeVisible();
+});
+
+test("a mistyped payee address (checksum fails) is refused before anything is simulated or signed (R2 M2)", async ({ page }) => {
+  const id = await newAgreement("approved");
+  await openAs(page, PROVIDER, `/app/agreements/${id}`);
+  await loaded(page);
+  // PAYEE (checksummed) with its last character changed, capitalization kept: the EIP-55 checksum no longer matches
+  const good = getAddress(PAYEE);
+  const typo = good.slice(0, -1) + (good.endsWith("0") ? "1" : "0");
+  expect(isAddress(typo, { strict: true })).toBe(false);
+  await panel(page).getByLabel("Send the ETH to").fill(typo);
+  await expect(panel(page).getByText(/fails its checksum \(EIP-55\)/)).toBeVisible();
+  await expect(panel(page).getByRole("button", { name: "Claim payout" })).toBeDisabled();
+  // the same address in lowercase is accepted, with a warning that no checksum protects it
+  await panel(page).getByLabel("Send the ETH to").fill(PAYEE.toLowerCase());
+  await expect(panel(page).getByText(/carries no checksum/)).toBeVisible();
+  await expect(panel(page).getByRole("button", { name: "Claim payout" })).toBeEnabled();
+  expect(await sentTransactions(page)).toBe(0);
 });

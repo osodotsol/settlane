@@ -40,6 +40,8 @@ export default async function AgreementPage({ params }: Params) {
   const id = parseId(raw);
   if (id === null) notFound();
 
+  // state and history are read in parallel, each time-bounded, so the page waits for at most one budget
+  const historyRead = getHistory().catch(() => null);
   let view;
   try {
     view = await getAgreement(id);
@@ -59,12 +61,10 @@ export default async function AgreementPage({ params }: Params) {
   // History never blocks the page: state, accounting and the lanes are live, and the event list says if it is incomplete.
   let history: Activity[] | null = null;
   let historyStatus: Awaited<ReturnType<typeof getHistory>>["value"]["status"] | undefined;
-  try {
-    const all = await getHistory();
+  const all = await historyRead;
+  if (all) {
     history = all.value.events.filter((a) => a.id === id);
     historyStatus = all.value.status;
-  } catch {
-    history = null;
   }
   const coverage = history ? agreementCoverage(agreement, history) : undefined;
   const created = history?.find((a) => a.kind === "created");

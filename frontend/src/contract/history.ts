@@ -79,7 +79,7 @@ export function createHistory(opts: HistoryOptions) {
   let known: Activity[] = snapshot ? [...snapshot.events] : [];
   let scannedTo: bigint | null = snapshot ? snapshot.lastVerifiedBlock : null;
   let gaps: Gap[] = [];
-  let conflicts: string[] = [];
+  const conflictMap = new Map<string, { block: bigint; message: string }>();
   let refreshError: string | null = null;
   let started = false;
   let inflight: Promise<History> | null = null;
@@ -95,7 +95,7 @@ export function createHistory(opts: HistoryOptions) {
     let upper = to;
     for (let attempt = 0; ; attempt++) {
       try {
-        return await opts.source.getLogs({ fromBlock: from, toBlock: upper });
+        return { logs: await opts.source.getLogs({ fromBlock: from, toBlock: upper }), upper };
       } catch (error) {
         const lag = /beyond (the )?current head|header not found|unknown block|block .* not found|not yet (available|indexed)/i.test(message(error));
         if (!lag || attempt >= 3 || upper - 3n < from) throw error;
@@ -105,8 +105,9 @@ export function createHistory(opts: HistoryOptions) {
   }
 
   /** Reads and decodes every Settlane log in [from, to] from the source, with block timestamps. Throws on any failure. */
-  async function scanRange(from: bigint, to: bigint): Promise<Activity[]> {
-    const logs = (await getLogsTolerant(from, to)).filter((l) => l.blockNumber !== null && l.logIndex !== null && l.transactionHash !== null && !l.removed);
+  async function scanRange(from: bigint, to: bigint): Promise<{ events: Activity[]; upper: bigint }> {
+    const read = await getLogsTolerant(from, to);
+    const logs = read.logs.filter((l) => l.blockNumber !== null && l.logIndex !== null && l.transactionHash !== null && !l.removed);
     const times = new Map<bigint, bigint>();
     await pool([...new Set(logs.map((l) => l.blockNumber!))], 4, async (blockNumber) => {
       times.set(blockNumber, (await opts.source.getBlock({ blockNumber })).timestamp);
@@ -116,24 +117,31 @@ export function createHistory(opts: HistoryOptions) {
       const a = decodeActivity({ topics: l.topics, data: l.data, blockNumber: l.blockNumber!, logIndex: l.logIndex!, transactionHash: l.transactionHash!, blockHash: l.blockHash }, times.get(l.blockNumber!) ?? 0n);
       if (a) out.push(a);
     }
-    return out;
+    return { events: out, upper: read.upper };
   }
 
-  /** Replaces what is known in [from, to] by `incoming`, noting any disagreement with the finalized snapshot. */
-  function replaceRange(from: bigint, to: bigint, incoming: readonly Activity[]) {
-    const before = known.filter((a) => a.blockNumber >= from && a.blockNumber <= to);
-    const inKeys = new Set(incoming.map(eventKey));
-    for (const old of before) {
-      // only finalized (snapshot) events are expected to be identical; newer ones may legitimately change in a reorg
-      if (old.blockNumber <= snapshotCeiling && !inKeys.has(eventKey(old))) conflicts.push(`snapshot event ${old.txHash.slice(0, 10)}…:${old.logIndex} at block ${old.blockNumber} is not in the chain's logs now`);
+  /**
+   * Applies a successful read of [from, to]. Blocks up to the snapshot's finalized boundary are NEVER changed: a read of
+   * them only confirms or contradicts the snapshot, and a contradiction is kept as a conflict until a later read of the
+   * same blocks agrees (R2 M4). Newer blocks are replaced by what the chain returned (reorg-safe). Only the blocks that
+   * were actually read are touched (R2 M3).
+   */
+  function applyRead(from: bigint, to: bigint, incoming: readonly Activity[]) {
+    if (from <= snapshotCeiling) {
+      const zoneTo = to < snapshotCeiling ? to : snapshotCeiling;
+      for (const [k, c] of conflictMap) if (c.block >= from && c.block <= zoneTo) conflictMap.delete(k);
+      const held = known.filter((a) => a.blockNumber >= from && a.blockNumber <= zoneTo);
+      const got = incoming.filter((a) => a.blockNumber <= zoneTo);
+      const gotKeys = new Set(got.map(eventKey));
+      const heldKeys = new Set(held.map(eventKey));
+      for (const h of held) if (!gotKeys.has(eventKey(h))) conflictMap.set(`missing:${eventKey(h)}`, { block: h.blockNumber, message: `snapshot event ${h.txHash.slice(0, 10)}…:${h.logIndex} at block ${h.blockNumber} is not in the chain's logs now` });
+      for (const g of got) if (!heldKeys.has(eventKey(g))) conflictMap.set(`extra:${eventKey(g)}`, { block: g.blockNumber, message: `the chain has an event at block ${g.blockNumber} (${g.txHash.slice(0, 10)}…:${g.logIndex}) that the snapshot does not` });
     }
-    if (snapshot) {
-      const oldKeys = new Set(before.map(eventKey));
-      for (const inc of incoming) if (inc.blockNumber <= snapshotCeiling && !oldKeys.has(eventKey(inc))) conflicts.push(`the chain has an event at block ${inc.blockNumber} (${inc.txHash.slice(0, 10)}…:${inc.logIndex}) that the snapshot does not`);
-    }
+    const liveFrom = from > snapshotCeiling ? from : snapshotCeiling + 1n;
+    if (liveFrom > to) return;
     const byKey = new Map<string, Activity>();
-    for (const a of known) if (a.blockNumber < from || a.blockNumber > to) byKey.set(eventKey(a), a);
-    for (const a of incoming) byKey.set(eventKey(a), a);
+    for (const a of known) if (a.blockNumber < liveFrom || a.blockNumber > to) byKey.set(eventKey(a), a);
+    for (const a of incoming) if (a.blockNumber >= liveFrom && a.blockNumber <= to) byKey.set(eventKey(a), a);
     known = [...byKey.values()].sort(compareActivity);
   }
 
@@ -157,22 +165,26 @@ export function createHistory(opts: HistoryOptions) {
       refreshError = message(error);
       return view();
     }
-    conflicts = [];
     // 1. ranges to read: earlier gaps, plus everything from a bounded overlap behind the last scan to the newest block
     const windowFrom = scannedTo === null ? opts.deployBlock : scannedTo - reorgWindow + 1n > opts.deployBlock ? scannedTo - reorgWindow + 1n : opts.deployBlock;
     const wanted = mergeRanges([...gaps.map((g) => ({ from: g.from, to: g.to })), ...(windowFrom <= latest ? [{ from: windowFrom, to: latest }] : [])]);
     const todo = wanted.flatMap((r) => chunkRanges(r.from, r.to, chunk));
     // 2. read every chunk; a chunk that fails becomes a gap (with the node's error), never an empty result
     const failed: Gap[] = [];
+    let unreadFrom: bigint | null = null; // the lowest block a lagging node did not serve yet (re-read next time)
     await pool(todo, 3, async ([from, to]) => {
       try {
-        replaceRange(from, to, await scanRange(from, to));
+        const r = await scanRange(from, to);
+        applyRead(from, r.upper, r.events);
+        if (r.upper < to && (unreadFrom === null || r.upper + 1n < unreadFrom)) unreadFrom = r.upper + 1n;
       } catch (error) {
         failed.push({ from, to, error: message(error) });
       }
     });
     gaps = mergeRanges(failed).map((g) => ({ ...g, error: failed.find((f) => f.from >= g.from && f.to <= g.to)?.error ?? "unreadable" }));
-    if (scannedTo === null || latest > scannedTo) scannedTo = latest;
+    // scannedTo is the newest block read contiguously; blocks a lagging node did not serve are inside the next window
+    const reached = unreadFrom !== null ? (unreadFrom as bigint) - 1n : latest;
+    if (scannedTo === null || reached > scannedTo) scannedTo = reached;
     started = true;
     return view();
   }
@@ -182,9 +194,9 @@ export function createHistory(opts: HistoryOptions) {
       snapshot: { used: snapshot !== null, lastVerifiedBlock: snapshot?.lastVerifiedBlock ?? null, events: snapshot?.events.length ?? 0, generatedAt: snapshot?.generatedAt ?? null, problem: snapshotProblem },
       scannedTo,
       gaps: gaps.map((g) => ({ ...g })),
-      conflicts: [...conflicts],
+      conflicts: [...conflictMap.values()].map((c) => c.message),
       refreshError,
-      complete: started && gaps.length === 0 && conflicts.length === 0 && refreshError === null && snapshotProblem === null,
+      complete: started && gaps.length === 0 && conflictMap.size === 0 && refreshError === null && snapshotProblem === null,
       readAt: now(),
     };
     return { events: [...known], status };
@@ -217,6 +229,11 @@ export function createHistory(opts: HistoryOptions) {
     },
     /** What is known now, without reading anything. */
     peek: view,
+    /** What is known now, marked as not refreshed (the caller gave up waiting); never reported complete. */
+    peekStale(reason: string): History {
+      const h = view();
+      return { events: h.events, status: { ...h.status, refreshError: reason, complete: false } };
+    },
   };
 }
 

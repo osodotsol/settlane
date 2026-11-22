@@ -88,3 +88,9 @@ If the snapshot is older than the nodes' memory and an event happened in between
 - Tenderly and ethpandaops were verified archival on 2026-11-22; that can change.
 - The snapshot is a point in time. A deployment with new agreements needs it rolled forward (section 4), or a nightly job and an archive-capable endpoint, which is a separate decision.
 - Event timestamps in the snapshot are block timestamps read from the same two nodes; the application does not re-verify them.
+
+## 6. R2-A changes (2026-11-22)
+
+- A node that serves logs a few blocks behind the head it reported no longer deletes events: only the blocks actually read are replaced, and the newest blocks it did not serve are read again on the next refresh (the coverage head, `scannedTo`, only advances over blocks that were read).
+- Blocks up to the snapshot's finalized boundary are never changed by a rescan. A rescan that disagrees with the snapshot is recorded as a conflict and stays visible until a later rescan of the same blocks agrees.
+- Every read the pages wait for is time-bounded (8 s on the server, 12 s per attempt in the browser). Past the budget the history shows what it holds (at least the snapshot) as "not refreshed", never "complete".

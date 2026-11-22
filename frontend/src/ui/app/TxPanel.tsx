@@ -174,24 +174,36 @@ export function TxPanel({ tx, onSuccess }: { tx: ReturnType<typeof useTx>; onSuc
         reloaded: "This page was reloaded or reopened while a request for this action was open. It may still be open in MetaMask.",
         replaced: "The wallet replaced this transaction with a different one.",
       }[s.reason];
-      const c = entry.check;
+      const v = entry.recovery?.verdict;
+      const who = shortHex(entry.account);
+      const said: Record<string, string> = {
+        "open-here": "MetaMask still has this request open from this tab. Approve or reject it there; this page follows the answer.",
+        "open-elsewhere": "Another tab of this site is still waiting for MetaMask on this action. Finish it in that tab or in MetaMask.",
+        "pending-account": `A transaction from ${who} is waiting for a block. Do not send another; check again shortly.`,
+        "dropped-unproven": "The node no longer knows this transaction, but its nonce has not been used, so the wallet could still send it. Cancel it in MetaMask (which replaces it), or wait; once its nonce is used by another transaction it is released automatically.",
+        "needs-confirmation": `The chain shows this action has not happened and nothing from ${who} is pending. The request may still be open in MetaMask, though. If MetaMask no longer shows it (you rejected or closed it), say so below.`,
+      };
       return (
         <div role="alert" className={`${box} border-submitted bg-surface`}>
           <p className="font-semibold text-ink">Outcome not known yet</p>
           <p className="mt-1 text-ink-2">{what} {s.hash && <Tx hash={s.hash} />}</p>
-          {c && (
-            <p className="mt-2 text-ink-2">
-              {c.pendingInMempool
-                ? `Checked: a transaction from ${shortHex(entry.account)} is waiting for a block. Do not send another; check again shortly.`
-                : entry.cleared
-                  ? `Checked: nothing from ${shortHex(entry.account)} is pending and this action has not happened. If MetaMask still shows the old request, reject it there first. You can now send a new request.`
-                  : `Checked: this action has not happened yet.`}
+          {v && (
+            <p className="mt-2 text-ink-2" data-recovery={v.kind}>
+              {v.kind === "released" ? `Checked: ${v.reason} You can now send a new request.` : v.kind === "cannot-prove" ? `Checked: ${v.reason}` : `Checked: ${said[v.kind] ?? ""}`}
             </p>
           )}
           <div className="mt-3 flex flex-wrap gap-2">
             <Button variant="secondary" size="sm" onClick={() => void tx.reconcile()}>Check the chain</Button>
+            {v?.kind === "needs-confirmation" && (
+              <Button variant="secondary" size="sm" onClick={() => void tx.confirmNotInWallet()}>
+                It is no longer in MetaMask
+              </Button>
+            )}
             {entry.cleared && <Button variant="quiet" size="sm" onClick={tx.dismiss}>Dismiss</Button>}
           </div>
+          {v?.kind === "needs-confirmation" && entry.action.fn === "create" && (
+            <p className="mt-2 text-micro text-ink-3">Only confirm if MetaMask really shows no pending request: approving an old request later would fund a second agreement.</p>
+          )}
           {notes}
         </div>
       );

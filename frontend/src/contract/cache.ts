@@ -6,13 +6,20 @@
 // key, and on an RPC failure the last good value is served with its age ("stale"). Only when nothing
 // was ever read does the failure surface. The cache lives in one server process; a cold start reads fresh.
 
+import { withBudget } from "@/chain/budget";
+
 export type Cached<T> = { value: T; fetchedAt: number; stale: boolean };
 
 type Entry = { value?: unknown; fetchedAt?: number; inflight?: Promise<unknown> };
 
 const entries = new Map<string, Entry>();
 
-export async function cached<T>(key: string, ttlMs: number, fetcher: () => Promise<T>): Promise<Cached<T>> {
+/**
+ * `budgetMs` bounds how long a CALLER waits (R2 H1): past it, the last good value is served as stale, or the call fails
+ * fast. The read itself keeps running in the background and refreshes the entry when it finishes, so a hanging node
+ * does not spawn a new hanging read on every request.
+ */
+export async function cached<T>(key: string, ttlMs: number, fetcher: () => Promise<T>, budgetMs?: number): Promise<Cached<T>> {
   const now = Date.now();
   const entry = entries.get(key) ?? {};
   entries.set(key, entry);
@@ -31,7 +38,7 @@ export async function cached<T>(key: string, ttlMs: number, fetcher: () => Promi
       });
   }
   try {
-    const value = (await entry.inflight) as T;
+    const value = (await (budgetMs ? withBudget(entry.inflight, budgetMs, key) : entry.inflight)) as T;
     return { value, fetchedAt: entry.fetchedAt ?? Date.now(), stale: false };
   } catch (error) {
     if (entry.fetchedAt !== undefined) return { value: entry.value as T, fetchedAt: entry.fetchedAt, stale: true };

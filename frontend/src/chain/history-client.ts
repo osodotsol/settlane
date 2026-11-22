@@ -8,5 +8,5 @@ import { CHAIN, HISTORY_RPC_URLS } from "@/config/chain";
  */
 export const historyClient = createPublicClient({
   chain: CHAIN,
-  transport: fallback(HISTORY_RPC_URLS.map((url) => http(url, { timeout: 10_000, retryCount: 0 })), { retryCount: 0 }),
+  transport: fallback(HISTORY_RPC_URLS.map((url) => http(url, { timeout: 6_000, retryCount: 0 })), { retryCount: 0 }),
 });

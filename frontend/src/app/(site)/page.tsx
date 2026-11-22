@@ -335,7 +335,10 @@ export default async function Home() {
                   <div><dt className="text-label">Held for open milestones</dt><dd className="mt-2"><Amount wei={figures.totalOutstanding} variant="numeral" /></dd></div>
                 </>
               ) : (
-                <p className="col-span-2 text-ink-2 sm:col-span-3">Live figures are unavailable right now: the public Sepolia endpoints did not answer.</p>
+                <div className="col-span-2 sm:col-span-3">
+                  <dt className="text-label">Live figures</dt>
+                  <dd className="mt-2 text-ink-2">Unavailable right now: the public Sepolia endpoints did not answer in time.</dd>
+                </div>
               )}
               <div className="col-span-2 sm:col-span-1">
                 <dt className="text-label">Deployed bytecode</dt>

@@ -37,33 +37,19 @@ export async function readSnapshot(action: TxAction): Promise<Snapshot> {
   return { kind: "milestone", state: storedState(m[0]), revision: m[7], rejections: m[6] };
 }
 
-export type ChainCheck = {
-  /** The action has taken effect on-chain. */
-  done: boolean;
-  /** For a create: the agreement this account created after the snapshot, if any. */
-  createdId?: bigint;
-  /** The account has a transaction the node knows of but no block has included yet. */
-  pendingInMempool: boolean;
-  /** The account's confirmed transaction count went up since the request started. */
-  nonceMoved: boolean;
-};
-
-/** Reads the chain now and compares it with the snapshot taken before the wallet was asked. */
-export async function checkChain(action: TxAction, account: Address, before: Snapshot | undefined, nonceBefore: number | undefined): Promise<ChainCheck> {
-  const [latest, pending] = await Promise.all([
-    publicClient.getTransactionCount({ address: account, blockTag: "latest" }),
-    publicClient.getTransactionCount({ address: account, blockTag: "pending" }),
-  ]);
-  const base = { pendingInMempool: pending > latest, nonceMoved: nonceBefore !== undefined && latest > nonceBefore };
-  if (!before) return { done: false, ...base };
+/**
+ * Has the action taken effect, compared with the snapshot read before the wallet was asked? Throws if the chain cannot be
+ * read (the caller must then treat the outcome as unproven).
+ */
+export async function effectNow(action: TxAction, account: Address, before: Snapshot): Promise<{ done: boolean; createdId?: bigint }> {
   const after = await readSnapshot(action);
   if (action.fn === "create" && before.kind === "count" && after.kind === "count") {
     for (let id = before.count + 1; id <= after.count; id++) {
       const a = await readAgreement(BigInt(id));
-      if (a && a.client.toLowerCase() === account.toLowerCase()) return { done: true, createdId: a.id, ...base };
+      if (a && a.client.toLowerCase() === account.toLowerCase()) return { done: true, createdId: a.id };
     }
-    return { done: false, ...base };
+    return { done: false };
   }
-  if (action.fn !== "create" && before.kind === "milestone" && after.kind === "milestone") return { done: milestoneEffect(action.fn, before, after), ...base };
-  return { done: false, ...base };
+  if (action.fn !== "create" && before.kind === "milestone" && after.kind === "milestone") return { done: milestoneEffect(action.fn, before, after) };
+  return { done: false };
 }

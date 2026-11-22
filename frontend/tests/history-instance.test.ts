@@ -17,5 +17,5 @@ describe("the application's history engine", () => {
     const { history } = await import("@/contract/history-instance");
     await history.refresh();
     expect(calls.blockNumber[0]).toEqual({ cacheTime: 0 });
-  });
+  }, 20_000); // verifying the bundled snapshot is CPU work: under a loaded machine 5 s was not always enough
 });

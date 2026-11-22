@@ -26,6 +26,7 @@ function nextText(a: Agreement, now: bigint): string {
 }
 
 export default async function ExplorerPage() {
+  const historyRead = getHistory().catch(() => null); // in parallel with the overview, each time-bounded
   let overview;
   try {
     overview = await getOverview();
@@ -34,8 +35,8 @@ export default async function ExplorerPage() {
   }
   let createdAt = new Map<string, bigint>();
   try {
-    const history = await getHistory();
-    createdAt = new Map(history.value.events.filter((a) => a.kind === "created").map((a) => [a.id.toString(), a.timestamp]));
+    const history = await historyRead;
+    if (history) createdAt = new Map(history.value.events.filter((a) => a.kind === "created").map((a) => [a.id.toString(), a.timestamp]));
   } catch {
     /* creation times are optional */
   }

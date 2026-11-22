@@ -1,7 +1,8 @@
 "use client";
 
 import { useId, useState } from "react";
-import { isAddress, getAddress, toHex, type Address } from "viem";
+import { toHex } from "viem";
+import { checkAddress } from "@/domain/address";
 import { useWallet } from "@/chain/use-wallet";
 import { milestoneKey, useTx } from "@/chain/write";
 import { useWalletActions } from "@/chain/wallet-actions";
@@ -14,7 +15,7 @@ import { ConfirmBar, TxPanel } from "./TxPanel";
 
 const field = "h-11 w-full rounded-xl border border-line bg-surface px-3.5 text-[0.9375rem] placeholder:text-ink-3 hover:border-line-control focus-visible:border-cobalt";
 
-function Payee({ id, value, onChange, error }: { id: string; value: string; onChange: (v: string) => void; error?: string }) {
+function Payee({ id, value, onChange, error, warning }: { id: string; value: string; onChange: (v: string) => void; error?: string; warning?: string }) {
   return (
     <div>
       <label htmlFor={id} className="text-sm font-semibold">Send the ETH to</label>
@@ -23,6 +24,7 @@ function Payee({ id, value, onChange, error }: { id: string; value: string; onCh
         Defaults to your own account. The payout forwards only the 2,300-gas stipend, so some smart-contract wallets cannot receive it: choose a plain account if it fails.
       </p>
       {error && <p role="alert" className="mt-1 text-sm text-danger">{error}</p>}
+      {!error && warning && <p className="mt-1 text-sm text-submitted">{warning}</p>}
     </div>
   );
 }
@@ -41,8 +43,11 @@ export function MilestoneActions({ a, m, now }: { a: Agreement; m: Milestone; no
   const can = milestoneActions(a, m, wallet.address, now);
   if (can.length === 0 && !tx.entry) return null;
   const me = wallet.address;
-  const to = payee.trim() === "" ? me : payee.trim();
-  const payeeError = to === undefined ? undefined : !isAddress(to, { strict: false }) ? "Enter a valid address." : /^0x0{40}$/i.test(to) ? "The payee cannot be the zero address." : undefined;
+  // The payee is validated before anything is simulated or signed: EIP-55 checksum, no zero address (R2 M2).
+  const payeeCheck = payee.trim() === "" ? (me ? ({ ok: true, address: me } as const) : undefined) : checkAddress(payee, "payee address");
+  const to = payeeCheck?.ok ? payeeCheck.address : undefined;
+  const payeeError = payeeCheck && !payeeCheck.ok ? payeeCheck.error : undefined;
+  const payeeWarning = payeeCheck?.ok && "warning" in payeeCheck ? payeeCheck.warning : undefined;
   const ev = commit(evidence);
   const run = (req: Parameters<typeof tx.start>[0], label: string) => {
     setConfirm(null);
@@ -110,17 +115,17 @@ export function MilestoneActions({ a, m, now }: { a: Agreement; m: Milestone; no
           {(can.includes("claim") || can.includes("refund")) && (
             <div className="space-y-3">
               <p className="font-semibold">{can.includes("claim") ? `Claim ${formatEth(m.amount)} ETH` : `Refund ${formatEth(m.amount)} ETH`}</p>
-              <Payee id={`${uid}-to`} value={payee} onChange={setPayee} error={payeeError} />
+              <Payee id={`${uid}-to`} value={payee} onChange={setPayee} error={payeeError} warning={payeeWarning} />
               {confirm === null && (
                 <Button size="sm" disabled={busy || payeeError !== undefined || to === undefined} onClick={() => setConfirm(can.includes("claim") ? "claim" : "refund")}>
                   {can.includes("claim") ? "Claim payout" : "Refund to client"}
                 </Button>
               )}
-              {(confirm === "claim" || confirm === "refund") && to !== undefined && !payeeError && (
+              {(confirm === "claim" || confirm === "refund") && to !== undefined && (
                 <ConfirmBar
                   busy={busy}
                   onCancel={() => setConfirm(null)}
-                  onConfirm={() => run({ fn: confirm, args: [a.id, m.index, getAddress(to) as Address] }, confirm === "claim" ? "Claim payout" : "Refund to client")}
+                  onConfirm={() => run({ fn: confirm, args: [a.id, m.index, to] }, confirm === "claim" ? "Claim payout" : "Refund to client")}
                   label={confirm === "claim" ? "Claim and sign" : "Refund and sign"}
                 >
                   {formatEth(m.amount)} ETH will be sent from the contract to <span className="text-data text-[0.8125rem]">{shortHex(to, 8, 6)}</span>. It is paid once and cannot be repeated.

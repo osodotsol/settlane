@@ -34,9 +34,9 @@ const nextConfig: NextConfig = {
   distDir: process.env.SETTLANE_DIST_DIR ?? ".next",
   // e2e builds use a generated tsconfig (e2e/run.mjs), so Next never rewrites the committed one.
   typescript: { tsconfigPath: process.env.SETTLANE_DIST_DIR ? "tsconfig.e2e.json" : "tsconfig.json" },
-  // Resolve metadata before streaming for every client (not only bots), so a missing agreement gets a
-  // real HTTP 404 and pages are complete without JavaScript (Next streams metadata to browsers by default).
-  htmlLimitedBots: /.*/,
+  // Next's default metadata streaming for browsers is kept (R2 H1: forcing blocking rendering for every client made a
+  // slow node hold the whole response). Unknown agreements still get a real HTTP 404 from src/proxy.ts before rendering,
+  // and every server read is time-bounded (src/chain/budget.ts), so pages stay complete without JavaScript.
   poweredByHeader: false,
   async headers() {
     return [

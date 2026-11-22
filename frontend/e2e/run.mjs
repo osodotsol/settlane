@@ -5,8 +5,10 @@
 //      agreements, then e2e/anvil.spec.ts creates more, advances time and finally stops the node.
 //   3. The same, on a fresh node: e2e/app.spec.ts drives the application with a stand-in wallet (e2e/wallet.ts):
 //      create, submit, approve, request a revision, claim, refund, with role, deadline and error checks.
-// Nothing is ever sent to a public network. Usage: npm run e2e [-- sepolia|anvil|app]  (E2E_SKIP_BUILD=1 reuses .next-e2e-anvil)
+//   4. A node that never answers (a local socket that accepts and stays silent): e2e/hang.spec.ts.
+// Nothing is ever sent to a public network. Usage: npm run e2e [-- sepolia|anvil|app|hang]  (E2E_SKIP_BUILD=1 reuses .next-e2e-anvil)
 import { spawn, spawnSync } from "node:child_process";
+import net from "node:net";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -139,6 +141,39 @@ if (!only || only === "anvil" || only === "app") {
   } finally {
     stop(server);
     stop(node);
+  }
+}
+
+if (!only || only === "hang") {
+  // 4. A node that accepts connections and never answers (R2 H1/H2): the production build must still finish quickly,
+  //    server pages must answer within their time budget, and browser pages must reach a clear state.
+  const BLACKHOLE = "http://127.0.0.1:8699";
+  const sockets = new Set();
+  const hole = net.createServer((sock) => {
+    sockets.add(sock);
+    sock.on("close", () => sockets.delete(sock));
+    sock.on("error", () => {});
+  });
+  await new Promise((r) => hole.listen(8699, "127.0.0.1", r));
+  const dist = { SETTLANE_DIST_DIR: ".next-e2e-hang", NEXT_PUBLIC_RPC_URLS: BLACKHOLE, NEXT_PUBLIC_HISTORY_RPC_URLS: BLACKHOLE };
+  let server;
+  try {
+    const t0 = Date.now();
+    const b = spawnSync("npx", ["next", "build"], { cwd: app, env: { ...env, ...dist }, encoding: "utf8" });
+    const seconds = (Date.now() - t0) / 1000;
+    const out = `${b.stdout}\n${b.stderr}`;
+    console.log(`hang build: exit ${b.status} in ${seconds.toFixed(0)} s`);
+    if (b.status !== 0) throw new Error("build failed with a hanging RPC:\n" + out.slice(-2000));
+    if (/took more than 60 seconds/.test(out)) throw new Error("a page's static generation waited on the hanging RPC for more than 60 s");
+    server = await serve(3923, dist);
+    failures += run("npx", ["playwright", "test", "e2e/hang.spec.ts"], { E2E_BASE_URL: "http://127.0.0.1:3923" }) === 0 ? 0 : 1;
+  } catch (error) {
+    console.error(String(error));
+    failures += 1;
+  } finally {
+    stop(server);
+    for (const s of sockets) s.destroy();
+    hole.close();
   }
 }
 

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { BaseError, ContractFunctionRevertedError } from "viem";
+import { PROXY_BUDGET_MS, withBudget } from "@/chain/budget";
 import { publicClient } from "@/chain/client";
 import { SETTLANE_ADDRESS } from "@/config/chain";
 import { settlaneAbi } from "@/contract/abi";
@@ -19,7 +20,8 @@ function notFoundResponse(request: NextRequest) {
 async function exists(id: bigint): Promise<boolean | null> {
   if (id <= highestKnown) return true;
   try {
-    await publicClient.readContract({ address: SETTLANE_ADDRESS, abi: settlaneAbi, functionName: "getAgreement", args: [id] });
+    // bounded (R2 H1): a hanging node must not hold the request; on timeout the page renders and says so itself
+    await withBudget(publicClient.readContract({ address: SETTLANE_ADDRESS, abi: settlaneAbi, functionName: "getAgreement", args: [id] }), PROXY_BUDGET_MS, "agreement check");
     if (id > highestKnown) highestKnown = id;
     return true;
   } catch (error) {

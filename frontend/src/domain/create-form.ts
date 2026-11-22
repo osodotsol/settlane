@@ -1,4 +1,5 @@
-import { getAddress, isAddress, parseEther, type Address } from "viem";
+import { parseEther, type Address } from "viem";
+import { checkAddress } from "./address";
 import { commit } from "./commitment";
 
 // Validation of the Create form, mirroring the contract's stage order (docs/LIFECYCLE.md: parties, count,
@@ -14,6 +15,8 @@ export type FormInput = { provider: string; verifier: string; review: string; re
 export type FormErrors = {
   provider?: string;
   verifier?: string;
+  /** Non-blocking: an address without a checksum (all one case). */
+  warnings?: { provider?: string; verifier?: string };
   review?: string;
   milestones: { amount?: string; deadline?: string; spec?: string }[];
 };
@@ -53,19 +56,18 @@ function parseAmount(text: string): bigint | null {
   return v > 0n ? v : null;
 }
 
-export function validateCreate(input: FormInput, client: Address | undefined): { ok: true; draft: Draft } | { ok: false; errors: FormErrors } {
+export function validateCreate(input: FormInput, client: Address | undefined): { ok: true; draft: Draft; warnings: NonNullable<FormErrors["warnings"]> } | { ok: false; errors: FormErrors } {
   const errors: FormErrors = { milestones: input.milestones.map(() => ({})) };
   const same = (a: string, b: string | undefined) => b !== undefined && a.toLowerCase() === b.toLowerCase();
 
-  const provider = input.provider.trim();
-  const verifier = input.verifier.trim();
-  if (!isAddress(provider, { strict: false })) errors.provider = "Enter the provider's address (0x followed by 40 hexadecimal characters).";
-  else if (/^0x0{40}$/i.test(provider)) errors.provider = "The provider cannot be the zero address.";
-  else if (same(provider, client)) errors.provider = "The provider must be a different account from you, the client.";
-  if (!isAddress(verifier, { strict: false })) errors.verifier = "Enter the verifier's address (0x followed by 40 hexadecimal characters).";
-  else if (/^0x0{40}$/i.test(verifier)) errors.verifier = "The verifier cannot be the zero address.";
-  else if (same(verifier, client)) errors.verifier = "The verifier must be a different account from you, the client.";
-  else if (!errors.provider && same(verifier, provider)) errors.verifier = "The verifier must be a different account from the provider.";
+  const p = checkAddress(input.provider, "provider's address");
+  const v = checkAddress(input.verifier, "verifier's address");
+  if (!p.ok) errors.provider = p.error;
+  else if (same(p.address, client)) errors.provider = "The provider must be a different account from you, the client.";
+  if (!v.ok) errors.verifier = v.error;
+  else if (same(v.address, client)) errors.verifier = "The verifier must be a different account from you, the client.";
+  else if (p.ok && same(v.address, p.address)) errors.verifier = "The verifier must be a different account from the provider.";
+  const warnings = { provider: p.ok ? p.warning : undefined, verifier: v.ok ? v.warning : undefined };
 
   const reviewPeriod = durationSeconds(input.review, input.reviewUnit);
   if (reviewPeriod === null) errors.review = "Enter a review period above zero.";
@@ -84,10 +86,11 @@ export function validateCreate(input: FormInput, client: Address | undefined): {
   });
 
   const bad = errors.provider || errors.verifier || errors.review || errors.milestones.some((e) => e.amount || e.deadline || e.spec);
-  if (bad || input.milestones.length < 1 || input.milestones.length > MAX_MILESTONES || reviewPeriod === null) return { ok: false, errors };
+  if (bad || !p.ok || !v.ok || input.milestones.length < 1 || input.milestones.length > MAX_MILESTONES || reviewPeriod === null) return { ok: false, errors: { ...errors, warnings } };
   return {
     ok: true,
-    draft: { provider: getAddress(provider), verifier: getAddress(verifier), reviewPeriod, items, total: items.reduce((s, x) => s + x.amount, 0n) },
+    draft: { provider: p.address, verifier: v.address, reviewPeriod, items, total: items.reduce((s, x) => s + x.amount, 0n) },
+    warnings,
   };
 }
 

@@ -97,6 +97,8 @@ function CreateForm({ restore }: { restore: boolean }) {
   const result = validateCreate(form, wallet.address);
   const errors = result.ok ? null : result.errors;
   const shown = attempts > 0 ? errors : null;
+  // Non-blocking checksum warnings are shown as soon as an address is complete (they do not wait for an attempt).
+  const warnings = result.ok ? result.warnings : (result.errors.warnings ?? {});
   const list = shown ? errorList(shown, uid) : [];
 
   useEffect(() => {
@@ -144,9 +146,11 @@ function CreateForm({ restore }: { restore: boolean }) {
             <div className="grid gap-5 md:grid-cols-2">
               <Field label="Provider" hint="Delivers the work and claims the payout." error={shown?.provider} htmlFor={`${uid}-provider`}>
                 <input id={`${uid}-provider`} value={form.provider} onChange={(e) => set({ provider: e.target.value })} spellCheck={false} autoComplete="off" aria-invalid={!!shown?.provider} aria-describedby={shown?.provider ? `${uid}-provider-error` : `${uid}-provider-hint`} className={`${input} text-data`} placeholder="0x…" />
+                {!shown?.provider && warnings.provider && <p className="mt-1.5 text-sm text-submitted">{warnings.provider}</p>}
               </Field>
               <Field label="Verifier" hint="Trusted third party. Decides; cannot move funds." error={shown?.verifier} htmlFor={`${uid}-verifier`}>
                 <input id={`${uid}-verifier`} value={form.verifier} onChange={(e) => set({ verifier: e.target.value })} spellCheck={false} autoComplete="off" aria-invalid={!!shown?.verifier} aria-describedby={shown?.verifier ? `${uid}-verifier-error` : `${uid}-verifier-hint`} className={`${input} text-data`} placeholder="0x…" />
+                {!shown?.verifier && warnings.verifier && <p className="mt-1.5 text-sm text-submitted">{warnings.verifier}</p>}
               </Field>
             </div>
             <div className="md:max-w-[calc(50%-0.625rem)]">

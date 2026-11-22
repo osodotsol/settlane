@@ -9,11 +9,12 @@ const chain = vi.hoisted(() => ({
   readContract: vi.fn(async () => [3, 1n, 0n, 0n, 0n, 0n, 0n, 1n] as const), // Approved, revision 1
   waitForTransactionReceipt: vi.fn(async ({ hash }: { hash: string }) => ({ status: "success", blockNumber: 42n, transactionHash: hash, logs: [] })),
   getTransactionReceipt: vi.fn(async () => null),
+  getTransaction: vi.fn(async () => null),
 }));
 vi.mock("@/chain/client", () => ({ publicClient: chain }));
 vi.mock("@/contract/read", () => ({ agreementCount: vi.fn(async () => 2), readAgreement: vi.fn(async () => null) }));
 
-const { startTx, stopWaiting, reconcile, milestoneKey } = await import("@/chain/write");
+const { startTx, stopWaiting, reconcile, confirmNotInWallet, milestoneKey } = await import("@/chain/write");
 const { registry } = await import("@/chain/tx-registry");
 
 const ACCOUNT = "0x00000000000000000000000000000000000000b2" as const;
@@ -130,17 +131,22 @@ describe("the request runner", () => {
     expect(registry.get(key)!.state.phase).toBe("found");
   });
 
-  it("'Check the chain' clears an unknown request only when nothing is pending and the action did not happen", async () => {
+  it("'Check the chain' releases a lost request only after the user confirms it is gone from the wallet, and never while something is pending", async () => {
     const w = heldWallet();
     const key = milestoneKey(id, 0);
     void run(id, w.write);
     await until(() => registry.get(key)?.state.phase === "awaiting");
     stopWaiting(key);
+    // as after a reload: the page no longer holds the request (it may still be open in the wallet)
+    registry.set({ ...registry.get(key)!, live: false, state: { phase: "unknown", reason: "reloaded" } });
     chain.getTransactionCount.mockResolvedValueOnce(5).mockResolvedValueOnce(6); // latest 5, pending 6
     await reconcile(key, () => undefined);
+    expect(registry.get(key)!.recovery?.verdict.kind).toBe("pending-account");
     expect(registry.get(key)!.cleared).toBe(false);
-    expect(registry.get(key)!.check?.pendingInMempool).toBe(true);
     await reconcile(key, () => undefined); // nothing pending now
+    expect(registry.get(key)!.recovery?.verdict.kind).toBe("needs-confirmation");
+    expect(registry.get(key)!.cleared).toBe(false);
+    await confirmNotInWallet(key, () => undefined);
     expect(registry.get(key)!.cleared).toBe(true);
   });
 

@@ -8,5 +8,5 @@ import { CHAIN, RPC_URLS } from "@/config/chain";
 export const publicClient = createPublicClient({
   chain: CHAIN,
   batch: { multicall: true },
-  transport: fallback(RPC_URLS.map((url) => http(url, { timeout: 10_000, retryCount: 1 }))),
+  transport: fallback(RPC_URLS.map((url) => http(url, { timeout: 5_000, retryCount: 1 }))),
 });

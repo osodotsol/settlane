@@ -428,3 +428,20 @@ test.describe("application on a phone", () => {
     await expect(page).toHaveURL(/\/app\/activity$/);
   });
 });
+
+test.describe("application when the nodes hang, then recover", () => {
+  test.use({ reducedMotion: "reduce", viewport: { width: 1280, height: 900 } });
+  test("a bounded failure state, then live data again when a node answers (R2 H2)", async ({ page }) => {
+    test.setTimeout(150_000);
+    const RPC = /publicnode|tenderly|ethpandaops/;
+    await page.route(RPC, () => {}); // requests are held and never answered: a genuine hang
+    const t0 = Date.now();
+    await page.goto("/app");
+    await expect(page.getByText("The Sepolia endpoints did not answer").first()).toBeVisible({ timeout: 45_000 });
+    expect((Date.now() - t0) / 1000).toBeLessThan(45);
+    await page.unroute(RPC);
+    await page.getByRole("button", { name: "Try again" }).first().click();
+    await expect(page.locator('section[aria-labelledby="funds"]').getByText("Deposited", { exact: true })).toBeVisible({ timeout: 45_000 });
+    await expect(page.getByText("The Sepolia endpoints did not answer")).toHaveCount(0);
+  });
+});

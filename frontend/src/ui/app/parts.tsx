@@ -173,11 +173,28 @@ export function EmptyState({ title, children, action }: { title: string; childre
   );
 }
 
+/**
+ * Shown above data that is still on screen after a refresh failed (R2 H2): the data is not presented as live. The
+ * queries keep retrying on their interval, so this clears by itself when a node answers again.
+ */
+export function StaleNotice({ updatedAt, retry }: { updatedAt: number; retry: () => void }) {
+  const t = new Date(updatedAt);
+  const hhmmss = `${String(t.getUTCHours()).padStart(2, "0")}:${String(t.getUTCMinutes()).padStart(2, "0")}:${String(t.getUTCSeconds()).padStart(2, "0")}`;
+  return (
+    <div role="status" data-stale className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-submitted bg-submitted-tint px-4 py-2.5 text-sm">
+      <p className="text-ink">
+        <span className="font-semibold">Not live.</span> The Sepolia nodes are not answering; this is the data read at {hhmmss} UTC. It refreshes by itself when they answer.
+      </p>
+      <Button variant="secondary" size="sm" onClick={retry}>Try now</Button>
+    </div>
+  );
+}
+
 export function ErrorState({ retry }: { retry: () => void }) {
   return (
     <div role="alert" className="card flex flex-col items-start gap-3 border-danger p-6">
       <p className="flex items-center gap-2 text-heading"><TriangleAlert aria-hidden size={18} className="text-danger" />The Sepolia endpoints did not answer</p>
-      <p className="text-ink-2">Nothing is wrong with your funds; this page just could not read the chain. Try again in a moment.</p>
+      <p className="text-ink-2">They did not answer in time. Nothing is wrong with your funds; this page just could not read the chain. It keeps retrying by itself, or try now.</p>
       <Button variant="secondary" size="sm" onClick={retry}>Try again</Button>
     </div>
   );
@@ -187,7 +204,12 @@ export function ErrorState({ retry }: { retry: () => void }) {
 export function Loaded({ children, rows }: { children: ReactNode; rows?: number }) {
   const { q, loaded } = useAppData();
   if (!loaded) return q.isError ? <ErrorState retry={() => void q.refetch()} /> : <LoadingRows rows={rows} />;
-  return <>{children}</>;
+  return (
+    <>
+      {q.isRefetchError && <StaleNotice updatedAt={q.dataUpdatedAt} retry={() => void q.refetch()} />}
+      {children}
+    </>
+  );
 }
 
 // ---------------------------------------------------------------------------------------------------

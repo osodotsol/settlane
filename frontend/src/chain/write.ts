@@ -8,10 +8,12 @@ import { publicClient } from "@/chain/client";
 import { SETTLANE_ADDRESS } from "@/config/chain";
 import { settlaneAbi } from "@/contract/abi";
 import { describeTxError, walletErrorKind } from "./errors";
+import { checkAddress } from "@/domain/address";
 import { gasWithMargin } from "./gas";
 import { useRefreshChainData } from "./queries";
-import { checkChain, readSnapshot, type TxAction } from "./tx-effect";
-import { actionKey, blockReason, canStart, registry, type TxEntry } from "./tx-registry";
+import { effectNow, readSnapshot, type Snapshot, type TxAction } from "./tx-effect";
+import { assessRecovery, releases, type RecoveryFacts } from "./tx-recovery";
+import { actionKey, blockReason, canStart, openInAnotherTab, registry, type TxEntry } from "./tx-registry";
 
 // Every write goes through one path: pin the network, SIMULATE the exact call against the contract with the
 // connected account, estimate gas and add a margin (gas.ts), record the request in the registry
@@ -85,6 +87,17 @@ export async function startTx({ req, label, account, walletChainId, write, refre
   registry.set({ key, label, action, account, startedAt: Date.now(), attempt, state: { phase: "checking" }, live: true, lateHashes: previous?.lateHashes ?? [] });
   const set = (patch: (e: TxEntry) => TxEntry) => registry.update(key, attempt, patch);
 
+  // Last line of defence for addresses (R2 M2): every address argument must pass the EIP-55 check (checksummed or one
+  // case) and must not be zero. The forms already enforce this; nothing invalid may reach simulation or the wallet.
+  const addresses = req.fn === "create" ? [req.args[0], req.args[1]] : req.fn === "claim" || req.fn === "refund" ? [req.args[2]] : [];
+  for (const a of addresses) {
+    const c = checkAddress(a);
+    if (!c.ok) {
+      set((e) => ({ ...e, live: false, state: { phase: "failed", problem: { message: c.error, recovery: "Correct the address. Nothing was sent." } } }));
+      return;
+    }
+  }
+
   if (walletChainId !== sepolia.id) {
     set((e) => ({ ...e, live: false, state: { phase: "failed", problem: { message: "Your wallet is not on Sepolia.", recovery: "Switch the wallet to Sepolia, then try again. Nothing was sent." } } }));
     return;
@@ -101,8 +114,14 @@ export async function startTx({ req, label, account, walletChainId, write, refre
     return;
   }
 
-  // 2. What the chain looks like before the wallet is asked, so "Check the chain" can tell later what happened.
-  const [before, nonceBefore] = await Promise.all([readSnapshot(action).catch(() => undefined), publicClient.getTransactionCount({ address: account }).catch(() => undefined)]);
+  // 2. What the chain looks like before the wallet is asked, so "Check the chain" can tell later what happened. This is
+  //    REQUIRED (R2 M1): without it a lost request could never be resolved safely, so the wallet is not asked at all.
+  const baseline = await readBaseline(action, account);
+  if (!baseline) {
+    set((e) => ({ ...e, live: false, state: { phase: "failed", problem: { message: "The agreement's current state could not be read from Sepolia, so the request was not sent.", recovery: "Nothing was sent. Try again in a moment." } } }));
+    return;
+  }
+  const { before, nonceBefore } = baseline;
 
   // 3. Ask the wallet. No timeout here: an unanswered request stays open (the user may still answer it).
   if (!set((e) => ({ ...e, before, nonceBefore, state: { phase: "awaiting", since: Date.now() } }))) return;
@@ -128,7 +147,37 @@ export async function startTx({ req, label, account, walletChainId, write, refre
     const current = registry.get(key);
     if (current) registry.set({ ...current, lateHashes: [...current.lateHashes, hash] });
   }
+  void captureNonce(key, attempt, hash);
   await followReceipt(key, attempt, hash, req.fn === "create", refresh);
+}
+
+/** The state and the account's confirmed nonce just before signing, read with a few retries; null if unreadable. */
+async function readBaseline(action: TxAction, account: Address): Promise<{ before: Snapshot; nonceBefore: number } | null> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const [before, nonceBefore] = await Promise.all([readSnapshot(action), publicClient.getTransactionCount({ address: account })]);
+      return { before, nonceBefore };
+    } catch {
+      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+    }
+  }
+  return null;
+}
+
+/**
+ * Records the original transaction's nonce as soon as the node shows the transaction (R2 M5): if it is ever dropped,
+ * "its nonce has been used by another transaction" is the proof that it can never be mined.
+ */
+async function captureNonce(key: string, attempt: number, hash: Hex) {
+  for (let i = 0; i < 10; i++) {
+    try {
+      const tx = await publicClient.getTransaction({ hash });
+      registry.update(key, attempt, (e) => ({ ...e, txNonce: tx.nonce }));
+      return;
+    } catch {
+      await new Promise((r) => setTimeout(r, 3_000));
+    }
+  }
 }
 
 /** Waits for the receipt of `hash` (following a speed-up) and records the outcome. */
@@ -161,27 +210,76 @@ export function stopWaiting(key: string) {
   registry.update(key, e.attempt, (x) => ({ ...x, state: { phase: "unknown", reason: "stopped" } }));
 }
 
-/** Reads the chain to resolve a request the page lost track of. Never sends anything. */
+/** Reads the chain to resolve a request the page lost track of (tx-recovery.ts decides). Never sends anything. */
 export async function reconcile(key: string, refresh: () => unknown): Promise<void> {
   const e = registry.get(key);
   if (!e || e.state.phase !== "unknown") return;
   const hash = e.state.hash;
-  if (hash) {
-    const receipt = await publicClient.getTransactionReceipt({ hash }).catch(() => null);
-    if (receipt) {
-      registry.update(key, e.attempt, (x) => ({ ...x, state: receipt.status === "success" ? { phase: "confirmed", hash, blockNumber: receipt.blockNumber, createdId: x.action.fn === "create" ? createdAgreementId(receipt) : undefined } : { phase: "reverted", hash } }));
+  const at = Date.now();
+  const record = (patch: Partial<TxEntry>) => registry.update(key, e.attempt, (x) => (x.state.phase === "unknown" ? { ...x, ...patch } : x));
+  let facts: RecoveryFacts;
+  try {
+    // A missing receipt or transaction is a fact ("not found"); any other failure means the chain could not be read.
+    const notFound = (err: unknown) => /not found|could not be found/i.test(err instanceof Error ? err.message : String(err));
+    const [receipt, tx, latestNonce, pendingNonce] = await Promise.all([
+      hash ? publicClient.getTransactionReceipt({ hash }).catch((err) => (notFound(err) ? null : Promise.reject(err))) : null,
+      hash ? publicClient.getTransaction({ hash }).catch((err) => (notFound(err) ? null : Promise.reject(err))) : null,
+      publicClient.getTransactionCount({ address: e.account, blockTag: "latest" }),
+      publicClient.getTransactionCount({ address: e.account, blockTag: "pending" }),
+    ]);
+    const hasBaseline = e.before !== undefined && e.nonceBefore !== undefined;
+    const effect = hasBaseline ? await effectNow(e.action, e.account, e.before!) : { done: false };
+    facts = {
+      live: e.live,
+      liveElsewhere: openInAnotherTab(e, registry.tabId, at),
+      hash,
+      receipt: receipt ? { status: receipt.status === "success" ? "success" : "reverted", blockNumber: receipt.blockNumber } : null,
+      txPending: !!tx && tx.blockNumber === null,
+      txNonce: tx?.nonce ?? e.txNonce,
+      latestNonce,
+      pendingNonce,
+      hasBaseline,
+      effectDone: effect.done,
+      createdId: effect.createdId,
+      attested: e.attested === true,
+    };
+    if (tx && e.txNonce === undefined) record({ txNonce: tx.nonce });
+  } catch (error) {
+    record({ recovery: { verdict: { kind: "cannot-prove", reason: `The chain could not be read (${error instanceof Error ? error.message.slice(0, 80) : "error"}). Nothing is released until it can.` }, at }, cleared: false });
+    return;
+  }
+  const verdict = assessRecovery(facts);
+  switch (verdict.kind) {
+    case "confirmed":
+    case "reverted": {
+      const receipt = await publicClient.getTransactionReceipt({ hash: hash! }).catch(() => null);
+      registry.update(key, e.attempt, (x) => ({ ...x, recovery: { verdict, at }, state: verdict.kind === "confirmed" ? { phase: "confirmed", hash: hash!, blockNumber: facts.receipt!.blockNumber, createdId: x.action.fn === "create" && receipt ? createdAgreementId(receipt) : undefined } : { phase: "reverted", hash: hash! } }));
       await refresh();
       return;
     }
+    case "found":
+      registry.update(key, e.attempt, (x) => ({ ...x, recovery: { verdict, at }, state: { phase: "found", createdId: verdict.createdId } }));
+      await refresh();
+      return;
+    case "pending-tx":
+      // the transaction is on its way: watch it again until its receipt
+      registry.update(key, e.attempt, (x) => ({ ...x, recovery: { verdict, at }, live: true, state: { phase: "pending", hash: hash!, since: at } }));
+      void followReceipt(key, e.attempt, hash!, e.action.fn === "create", refresh);
+      return;
+    default:
+      record({ recovery: { verdict, at }, cleared: releases(verdict) });
   }
-  const check = await checkChain(e.action, e.account, e.before, e.nonceBefore);
-  registry.update(key, e.attempt, (x) => {
-    if (x.state.phase !== "unknown") return x; // a late answer arrived meanwhile
-    if (check.done) return { ...x, check: { ...check, at: Date.now() }, state: { phase: "found", createdId: check.createdId } };
-    // Safe to start again only when nothing from this account is pending and there is no known hash.
-    return { ...x, check: { ...check, at: Date.now() }, cleared: !check.pendingInMempool && !hash };
-  });
-  if (check.done) await refresh();
+}
+
+/**
+ * The user says the wallet request is no longer open in their wallet (they rejected or closed it). Accepted only when
+ * the last check found nothing sent, nothing pending and the action not done; the chain is then checked again.
+ */
+export async function confirmNotInWallet(key: string, refresh: () => unknown): Promise<void> {
+  const e = registry.get(key);
+  if (!e || e.state.phase !== "unknown" || e.recovery?.verdict.kind !== "needs-confirmation") return;
+  registry.update(key, e.attempt, (x) => ({ ...x, attested: true }));
+  await reconcile(key, refresh);
 }
 
 /** Removes a finished (or cleared) entry. */
@@ -214,6 +312,7 @@ export function useTx(key: string) {
     blockReason: blockReason(entry),
     stopWaiting: () => stopWaiting(key),
     reconcile: () => reconcile(key, refresh),
+    confirmNotInWallet: () => confirmNotInWallet(key, refresh),
     dismiss: () => dismiss(key),
   };
 }

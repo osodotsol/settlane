@@ -1,6 +1,7 @@
 import type { Address, Hex } from "viem";
 import type { TxProblem } from "./errors";
-import type { ChainCheck, Snapshot, TxAction } from "./tx-effect";
+import type { Snapshot, TxAction } from "./tx-effect";
+import type { Verdict } from "./tx-recovery";
 
 // Every wallet request the application makes is tracked here, by ACTION (one key per milestone, one for
 // create), so the same action cannot be requested twice while an earlier request may still be open in the
@@ -45,10 +46,17 @@ export type TxEntry = {
   /** The account's confirmed nonce and the contract state just before the wallet was asked. */
   nonceBefore?: number;
   before?: Snapshot;
-  /** Last "Check the chain" result. */
-  check?: ChainCheck & { at: number };
-  /** After a check found nothing sent and nothing pending, a new request may be started. */
+  /** The original transaction's nonce, once the node has shown the transaction. */
+  txNonce?: number;
+  /** The last recovery verdict ("Check the chain"), tx-recovery.ts. */
+  recovery?: { verdict: Verdict; at: number };
+  /** The user confirmed the request is no longer open in their wallet (only accepted when the chain shows nothing). */
+  attested?: boolean;
+  /** Set only by a "released" recovery verdict: a new request may be started. */
   cleared?: boolean;
+  /** The tab that holds the live wallet request, and when it last said so (cross-tab safety). */
+  ownerTab?: string;
+  heartbeatAt?: number;
   /** Hashes returned late by an earlier attempt that the page had already given up on. */
   lateHashes: Hex[];
 };
@@ -92,8 +100,13 @@ const fromJson = (s: string) => JSON.parse(s, (_k, x) => (x && typeof x === "obj
 
 /** Entries worth keeping across a reload, as stored. */
 export function serialize(entries: TxEntry[]): string {
-  return toJson(entries.filter((e) => !isTerminal(e.state) && !(e.state.phase === "unknown" && e.cleared)).map((e) => ({ ...e, live: false })));
+  // `live` is per tab; other tabs learn that a request is open from ownerTab + a fresh heartbeatAt
+  return toJson(entries.filter((e) => !isTerminal(e.state) && !(e.state.phase === "unknown" && e.cleared)).map((e) => ({ ...e, live: false, ownerTab: e.live ? e.ownerTab : undefined })));
 }
+
+/** How recent a heartbeat must be for another tab to count a request as still open there. */
+export const HEARTBEAT_FRESH_MS = 15_000;
+export const openInAnotherTab = (e: TxEntry, tabId: string, now: number) => !e.live && e.ownerTab !== undefined && e.ownerTab !== tabId && e.heartbeatAt !== undefined && now - e.heartbeatAt < HEARTBEAT_FRESH_MS;
 
 /**
  * What a reload means for each stored entry: nothing in this tab is waiting for the wallet any more, so an
@@ -119,10 +132,12 @@ export function deserialize(raw: string | null, now: number): TxEntry[] {
 
 type Storage = { getItem(k: string): string | null; setItem(k: string, v: string): void };
 
-export function createRegistry(storage: () => Storage | undefined, now: () => number = Date.now) {
+export function createRegistry(storage: () => Storage | undefined, now: () => number = Date.now, tabId: string = Math.random().toString(36).slice(2)) {
   let entries = new Map<string, TxEntry>();
   let loaded = false;
   const listeners = new Set<() => void>();
+  /** Entries this tab holds a live wallet request for: they are never replaced by another tab's copy. */
+  const liveHere = () => [...entries.values()].filter((e) => e.live);
   const load = () => {
     if (loaded) return;
     loaded = true;
@@ -143,7 +158,34 @@ export function createRegistry(storage: () => Storage | undefined, now: () => nu
     save();
     listeners.forEach((l) => l());
   };
+  /** Another tab changed the stored requests: adopt its view, keeping what is live in this tab. */
+  const syncFromStorage = () => {
+    try {
+      const stored = deserialize(storage()?.getItem(STORAGE_KEY) ?? null, now());
+      const next = new Map<string, TxEntry>();
+      for (const e of stored) next.set(e.key, e);
+      for (const e of liveHere()) next.set(e.key, e);
+      // a finished request shown in this tab (not stored, by design) stays until it is dismissed here
+      for (const e of entries.values()) if (isTerminal(e.state) && !next.has(e.key)) next.set(e.key, e);
+      entries = next;
+      listeners.forEach((l) => l());
+    } catch {
+      /* ignore */
+    }
+  };
+  /** Keeps other tabs informed that this tab still holds its live requests. */
+  const heartbeat = () => {
+    const mine = liveHere();
+    if (mine.length === 0) return;
+    entries = new Map(entries);
+    for (const e of mine) entries.set(e.key, { ...e, ownerTab: tabId, heartbeatAt: now() });
+    save();
+  };
+
   return {
+    tabId,
+    syncFromStorage,
+    heartbeat,
     subscribe(l: () => void) {
       listeners.add(l);
       return () => listeners.delete(l);
@@ -158,7 +200,7 @@ export function createRegistry(storage: () => Storage | undefined, now: () => nu
     },
     set(entry: TxEntry) {
       load();
-      entries = new Map(entries).set(entry.key, entry);
+      entries = new Map(entries).set(entry.key, entry.live ? { ...entry, ownerTab: tabId, heartbeatAt: now() } : entry);
       emit();
     },
     /** Applies `patch` only while `attempt` is still the current attempt for `key`. Returns whether it applied. */
@@ -182,4 +224,29 @@ export function createRegistry(storage: () => Storage | undefined, now: () => nu
 export type Registry = ReturnType<typeof createRegistry>;
 
 const browserStorage = () => (typeof window === "undefined" ? undefined : window.localStorage);
-export const registry: Registry = createRegistry(browserStorage);
+
+/**
+ * This tab's identity. Kept in sessionStorage so it SURVIVES a reload of the same tab (a reloaded page must not see its
+ * own earlier request as "open in another tab") while other tabs get their own. Falls back to a fresh id.
+ */
+export function tabIdentity(session: { getItem(k: string): string | null; setItem(k: string, v: string): void } | undefined): string {
+  try {
+    const existing = session?.getItem("settlane:tab-id");
+    if (existing) return existing;
+    const id = Math.random().toString(36).slice(2);
+    session?.setItem("settlane:tab-id", id);
+    return id;
+  } catch {
+    return Math.random().toString(36).slice(2);
+  }
+}
+
+export const registry: Registry = createRegistry(browserStorage, Date.now, tabIdentity(typeof window === "undefined" ? undefined : window.sessionStorage));
+
+// Cross-tab: adopt other tabs' changes as they happen, and keep announcing this tab's live requests.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (ev) => {
+    if (ev.key === STORAGE_KEY) registry.syncFromStorage();
+  });
+  setInterval(registry.heartbeat, 5_000);
+}

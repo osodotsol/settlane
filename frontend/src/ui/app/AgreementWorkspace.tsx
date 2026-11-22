@@ -15,7 +15,7 @@ import { LedgerStrip } from "../LedgerStrip";
 import { MilestoneDetail } from "../MilestoneDetail";
 import { MilestoneActions } from "./MilestoneActions";
 import { SettlementLane } from "../SettlementLane";
-import { EmptyState, ErrorState, LoadingRows, RoleChip, useAppData } from "./parts";
+import { EmptyState, ErrorState, LoadingRows, RoleChip, StaleNotice, useAppData } from "./parts";
 import { ButtonLink } from "../Button";
 import { useWallet } from "@/chain/use-wallet";
 
@@ -34,14 +34,15 @@ export function AgreementWorkspace({ id }: { id: bigint }) {
   const q = useAgreementData(id);
   const activity = useHistory();
   useAppData();
-  if (q.isPending || q.isError || q.data.agreement === null) {
+  // the error screen only when nothing was ever read; after a failed refresh the last good data stays, marked not live
+  if (q.data === undefined || q.data.agreement === null) {
     return (
       <>
         <h1 className="text-page">Agreement #{id.toString()}</h1>
         <div className="mt-8">
-          {q.isPending ? (
+          {q.data === undefined && !q.isError ? (
             <LoadingRows rows={3} />
-          ) : q.isError ? (
+          ) : q.data === undefined ? (
             <ErrorState retry={() => void q.refetch()} />
           ) : (
             <EmptyState title={`There is no agreement #${id}`} action={<ButtonLink href="/app/agreements" size="sm">Back to My Agreements</ButtonLink>}>
@@ -61,6 +62,7 @@ export function AgreementWorkspace({ id }: { id: bigint }) {
   const open = isOpen(agreement, now);
   return (
     <>
+      {q.isRefetchError && <StaleNotice updatedAt={q.dataUpdatedAt} retry={() => void q.refetch()} />}
       <p className="text-sm">
         <Link href="/app/agreements" className="draw-link text-ink-2 hover:text-ink">My Agreements</Link>
       </p>
