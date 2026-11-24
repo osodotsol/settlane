@@ -4,11 +4,11 @@ import { txUrl } from "@/config/chain";
 import type { Activity, ActivityKind } from "@/contract/events";
 import { formatEth, formatUtc, shortHex } from "@/domain/format";
 
-// The agreement's history, decoded from the contract's own events (chain order: block, then log index),
-// drawn as a timeline: a spine, one node per event, and the same text and links as before.
-// One coloured dot per event on the timeline's spine (no pictograms): the text says what happened.
+// The agreement's history, decoded from the contract's own events (in the order the caller gives), drawn as a
+// ledger: one hairline-separated row per event with a small status dot, the UTC time, the description and the
+// block, which links to the transaction. The text says what happened; the dot only echoes it.
 const NODE: Record<ActivityKind, string> = {
-  created: "bg-ink",
+  created: "bg-funded",
   submitted: "bg-submitted",
   approved: "bg-approved",
   rejected: "bg-submitted",
@@ -37,35 +37,33 @@ function describe(a: Activity): string {
 export function ActivityList({ items, showAgreement = false, empty = "No events recorded for this agreement yet." }: { items: readonly Activity[]; showAgreement?: boolean; empty?: string }) {
   if (items.length === 0) return <p className="text-ink-2">{empty}</p>;
   return (
-    <ol className="reveal-stagger relative">
-      {items.map((a, i) => {
-        return (
-          <li
-            key={`${a.txHash}:${a.logIndex}`}
-            style={{ "--i": Math.min(i, 6) } as React.CSSProperties}
-            className="group relative grid grid-cols-[1.5rem_1fr] gap-x-4 pb-7 last:pb-0 sm:grid-cols-[1.5rem_1fr_auto]"
+    <div className="@container">
+    <ol className="reveal-stagger divide-y divide-line">
+      {items.map((a, i) => (
+        <li
+          key={`${a.txHash}:${a.logIndex}`}
+          style={{ "--i": Math.min(i, 6) } as React.CSSProperties}
+          className="grid grid-cols-[0.625rem_minmax(0,1fr)_auto] items-baseline gap-x-3 gap-y-0.5 py-3 first:pt-0 last:pb-0 @2xl:grid-cols-[0.625rem_9.5rem_minmax(0,1fr)_auto] @2xl:gap-x-4"
+        >
+          <span aria-hidden className={`col-start-1 row-start-1 size-1.5 -translate-y-px rounded-full ${NODE[a.kind]}`} />
+          <span className="col-start-2 row-start-1 text-data text-[0.75rem] text-ink-3">{formatUtc(a.timestamp)}</span>
+          <p className="col-span-2 col-start-2 row-start-2 text-[0.9375rem] leading-snug text-ink-2 @2xl:col-span-1 @2xl:col-start-3 @2xl:row-start-1">
+            {showAgreement && <span className="text-ink">Agreement #{a.id.toString()} · </span>}
+            {describe(a)}
+          </p>
+          <a
+            href={txUrl(a.txHash)}
+            target="_blank"
+            rel="noreferrer"
+            className="col-start-3 row-start-1 inline-flex items-center gap-1 justify-self-end whitespace-nowrap text-data text-[0.75rem] text-ink-3 hover:text-ink @2xl:col-start-4"
           >
-            {i < items.length - 1 && <span aria-hidden className="absolute bottom-0 left-[0.6875rem] top-5 w-px bg-line" />}
-            <span aria-hidden className="relative z-10 mt-1.5 grid size-6 place-items-center rounded-full border border-line bg-surface transition-[transform,border-color] duration-[var(--dur-hover)] ease-out group-hover:scale-110 group-hover:border-line-control">
-              <span className={`size-2.5 rounded-full ${NODE[a.kind]}`} />
-            </span>
-            <div className="min-w-0 pt-0.5">
-              <p className="text-data text-[0.8125rem] text-ink-3">{formatUtc(a.timestamp)}</p>
-              <p className="mt-0.5">{showAgreement && <span className="font-semibold">Agreement #{a.id.toString()} · </span>}{describe(a)}</p>
-            </div>
-            <a
-              href={txUrl(a.txHash)}
-              target="_blank"
-              rel="noreferrer"
-              className="col-start-2 mt-2 inline-flex items-center gap-1 self-start text-sm text-ink-2 hover:text-ink sm:col-start-3 sm:mt-1"
-            >
-              <span className="draw-link">Block {a.blockNumber.toString()}</span>
-              <ExternalLink aria-hidden size={14} />
-              <span className="sr-only">(transaction on Sepolia Etherscan, opens in a new tab)</span>
-            </a>
-          </li>
-        );
-      })}
+            <span className="draw-link">Block {a.blockNumber.toString()}</span>
+            <ExternalLink aria-hidden size={11} />
+            <span className="sr-only">(transaction on Sepolia Etherscan, opens in a new tab)</span>
+          </a>
+        </li>
+      ))}
     </ol>
+    </div>
   );
 }

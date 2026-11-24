@@ -9,7 +9,7 @@ import { formatUtc, shortHex } from "@/domain/format";
 import { aggregateCoverage, describeHistory } from "@/domain/history-coverage";
 import { Amount } from "../Amount";
 import { HistoryNotice } from "../HistoryNotice";
-import { AttentionRow, ConnectPrompt, EmptyState, Loaded, PageHeader, ScopeTag, Section, StatTile, useAppData } from "./parts";
+import { AttentionRow, ConnectPrompt, EmptyState, Loaded, PageHeader, ScopeTag, Section, StatGroup, StatTile, useAppData } from "./parts";
 
 type Payout = Activity & { role?: Role };
 
@@ -52,11 +52,11 @@ export function PaymentsView() {
         </div>
         <Section title="Payouts on the network" id="network" aside={<ScopeTag kind="public" />}>
           <Loaded rows={2}>
-            <div className="mb-4 grid gap-3 sm:grid-cols-3">
+            <StatGroup className="mb-4 sm:grid-cols-3">
               <StatTile tone="paid" label="Claimed by providers" value={<Amount wei={t.paid} variant="numeral" />} />
               <StatTile tone="refunded" label="Refunded by clients" value={<Amount wei={t.refunded} variant="numeral" />} />
               <StatTile tone="funded" label="Still held" value={<Amount wei={t.outstanding} variant="numeral" />} />
-            </div>
+            </StatGroup>
             {activity.isPending ? (
               <p role="status" className="text-ink-2">Reading events from Sepolia…</p>
             ) : (
@@ -83,12 +83,12 @@ export function PaymentsView() {
         <ConnectPrompt>Switch to Sepolia to claim or refund.</ConnectPrompt>
       </div>
       <Loaded rows={3}>
-        <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <StatGroup personal className="mt-6 sm:grid-cols-2 lg:grid-cols-4">
           <StatTile tone="paid" label="Ready to claim" value={<Amount wei={pay.claimableTotal} variant="numeral" />} note="Approved, as provider" />
           <StatTile tone="refunded" label="Ready to refund" value={<Amount wei={pay.refundableTotal} variant="numeral" />} note="Expired, as client" />
           <StatTile tone="paid" label="Claimed as provider" value={<Amount wei={sum(asProvider, "paid")} variant="numeral" />} note="Sent to the address chosen at each claim" />
           <StatTile tone="refunded" label="Refunded as client" value={<Amount wei={sum(asClient, "refunded")} variant="numeral" />} note="Sent to the address chosen at each refund" />
-        </div>
+        </StatGroup>
         <Section title="Waiting to be taken out" id="payable" aside={<ScopeTag kind="yours" />}>
           {pay.claimable.length + pay.refundable.length === 0 ? (
             <EmptyState title="Nothing to claim or refund">An approved milestone can be claimed by its provider at any time. An expired one can be refunded by its client.</EmptyState>

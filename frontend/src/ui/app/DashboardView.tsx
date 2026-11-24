@@ -8,7 +8,7 @@ import { ActivityList } from "../ActivityList";
 import { HistoryNotice } from "../HistoryNotice";
 import { Amount } from "../Amount";
 import { ButtonLink } from "../Button";
-import { AgreementRow, AttentionRow, ConnectPrompt, EmptyState, Loaded, PageHeader, ScopeTag, Section, StatTile, useAppData } from "./parts";
+import { AgreementRow, AttentionRow, ConnectPrompt, EmptyState, Loaded, PageHeader, ScopeTag, Section, StatGroup, StatTile, useAppData } from "./parts";
 
 function FundsBar({ paid, refunded, outstanding }: { paid: bigint; refunded: bigint; outstanding: bigint }) {
   const total = paid + refunded + outstanding;
@@ -55,14 +55,14 @@ export function DashboardView() {
         <ConnectPrompt>Connect a wallet to turn this into your dashboard: your agreements, what is waiting for you, and your payouts.</ConnectPrompt>
       </div>
 
-      <Section title="Funds" id="funds" aside={tag}>
+      <Section title={address ? "Your funds" : "Network funds"} id="funds" aside={tag}>
         <Loaded rows={1}>
-          <div className="reveal-stagger grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <div style={{ "--i": 0 } as React.CSSProperties}><StatTile label="Deposited" value={<Amount wei={totals.deposited} variant="numeral" />} note={`${totals.agreements} agreement${totals.agreements === 1 ? "" : "s"}, ${totals.open} open`} /></div>
-            <div style={{ "--i": 1 } as React.CSSProperties}><StatTile tone="paid" label="Claimed by providers" value={<Amount wei={totals.paid} variant="numeral" />} note="After approval, to the address each provider chose" /></div>
-            <div style={{ "--i": 2 } as React.CSSProperties}><StatTile tone="refunded" label="Refunded by clients" value={<Amount wei={totals.refunded} variant="numeral" />} note="After a deadline, to the address each client chose" /></div>
-            <div style={{ "--i": 3 } as React.CSSProperties}><StatTile tone="funded" label="Held by the contract" value={<Amount wei={totals.outstanding} variant="numeral" />} note="Not yet claimed or refunded" /></div>
-          </div>
+          <StatGroup personal={address !== undefined} className="sm:grid-cols-2 lg:grid-cols-4">
+            <StatTile label="Deposited" value={<Amount wei={totals.deposited} variant="numeral" />} note={`${totals.agreements} agreement${totals.agreements === 1 ? "" : "s"}, ${totals.open} open`} />
+            <StatTile tone="paid" label="Claimed by providers" value={<Amount wei={totals.paid} variant="numeral" />} note="After approval, to the address each provider chose" />
+            <StatTile tone="refunded" label="Refunded by clients" value={<Amount wei={totals.refunded} variant="numeral" />} note="After a deadline, to the address each client chose" />
+            <StatTile tone="funded" label="Held by the contract" value={<Amount wei={totals.outstanding} variant="numeral" />} note="Not yet claimed or refunded" />
+          </StatGroup>
           <FundsBar paid={totals.paid} refunded={totals.refunded} outstanding={totals.outstanding} />
           <p className="mt-2.5 text-micro text-ink-3">Deposited equals paid plus refunded plus held, for every agreement.</p>
         </Loaded>

@@ -40,7 +40,7 @@ export function ActivityView() {
           {KINDS.map(([id, label]) => <button key={id} type="button" aria-pressed={kind === id} onClick={() => setKind(id)} className={pill(kind === id)}>{label}</button>)}
         </div>
       </div>
-      <div className="mt-5 flex flex-wrap items-start justify-between gap-3"><div className="min-w-0 flex-1"><HistoryNotice status={q.data?.status} /></div><ScopeTag kind={scope === "mine" ? "yours" : "public"} /></div>
+      <div className="mt-5 flex flex-col-reverse items-start gap-3 sm:flex-row sm:justify-between"><div className="min-w-0 sm:flex-1"><HistoryNotice status={q.data?.status} /></div><ScopeTag kind={scope === "mine" ? "yours" : "public"} /></div>
       <div className="card mt-3 p-5 sm:p-7">
         {q.isPending ? <LoadingRows rows={4} /> : q.isError && !q.data ? <ErrorState retry={() => void q.refetch()} /> : <ActivityList items={items} showAgreement empty={scope === "mine" ? "No events in your agreements yet." : "No events match."} />}
       </div>

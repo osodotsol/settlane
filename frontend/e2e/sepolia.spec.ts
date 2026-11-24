@@ -346,7 +346,7 @@ test.describe("public site structure", () => {
   test("the homepage tells the story in order and keeps limitations off the promotional page", async ({ page }) => {
     await page.goto("/");
     const headings = await page.locator("main h2").allTextContents();
-    const order = ["Today, one side always goes first.", "Fund. Submit. Approve. Claim.", "Every window is set before the work starts.", "Paid and refunded, on Sepolia.", "Escrow rules the compiler helps enforce.", "See value move by the rules."];
+    const order = ["Today, one side always goes first.", "Fund. Submit. Verify. Settle.", "Every window is set before the work starts.", "Paid and refunded, on Sepolia.", "Escrow rules the compiler helps enforce.", "See value move by the rules."];
     expect(headings.filter((h) => order.includes(h))).toEqual(order);
     await expect(page.getByText("What Settlane does not do")).toHaveCount(0);
     await expect(page.getByText("Illustration, not a live clock.", { exact: false })).toBeVisible();

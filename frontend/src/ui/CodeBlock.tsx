@@ -4,20 +4,15 @@ import type { ReactNode } from "react";
 // Tokens: k = keyword, t = type, f = function, c = comment. Always a dark panel, in both themes.
 export type Tok = [kind: "k" | "t" | "f" | "c" | "p", text: string];
 
-const COLOR: Record<Tok[0], string> = { k: "text-[#93a5ff]", t: "text-[#7fd0c0]", f: "text-[#e2a54a]", c: "text-[#8c919b] italic", p: "text-[#ecedef]" };
+const COLOR: Record<Tok[0], string> = { k: "text-[#b7a8ff]", t: "text-[#7fd0c0]", f: "text-[#e2a54a]", c: "text-[#8c919b] italic", p: "text-[#ecedef]" };
 
 export function CodeBlock({ lines, label, footer }: { lines: Tok[][]; label: string; footer?: ReactNode }) {
   return (
     <figure className="code-panel m-0 min-w-0 overflow-hidden rounded-2xl">
       <figcaption className="flex items-center justify-between border-b border-line px-5 py-3 text-micro text-ink-3">
-        <span>{label}</span>
-        <span aria-hidden className="flex gap-1.5">
-          <span className="size-2.5 rounded-full bg-line-control/50" />
-          <span className="size-2.5 rounded-full bg-line-control/50" />
-          <span className="size-2.5 rounded-full bg-line-control/50" />
-        </span>
+        <span className="text-data text-[0.75rem]">{label}</span>
       </figcaption>
-      <pre className="overflow-x-auto p-5 text-[0.875rem] leading-[1.75]" tabIndex={0} aria-label={label}>
+      <pre className="overflow-x-auto p-5 text-[0.75rem] leading-[1.7] sm:text-[0.8125rem]" tabIndex={0} aria-label={label}>
         <code className="font-mono">
           {lines.map((line, i) => (
             <span key={i} className="block">

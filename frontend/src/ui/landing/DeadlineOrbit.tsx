@@ -38,11 +38,11 @@ export function DeadlineOrbit() {
           <circle cx={C} cy={C} r={R - 26} fill="none" stroke="var(--line)" strokeDasharray="1 6" />
           {marks.map(([deg, label, color]) => {
             const [x, y] = polar(deg);
-            const [lx, ly] = polar(deg, R + 30);
+            const [lx, ly] = polar(deg, deg === 0 ? R + 24 : R + 18);
             return (
               <g key={label}>
                 <circle cx={x} cy={y} r="7" fill="var(--paper)" stroke={color} strokeWidth="3" />
-                <text x={lx} y={ly + 4} textAnchor="middle" fill="var(--ink-2)" fontSize="11.5" fontFamily="var(--font-mono)">{label}</text>
+                <text x={lx} y={ly + 4} textAnchor={deg > 20 && deg < 160 ? "start" : deg > 200 && deg < 340 ? "end" : "middle"} fill="var(--ink-2)" fontSize="11.5" fontFamily="var(--font-mono)">{label}</text>
               </g>
             );
           })}

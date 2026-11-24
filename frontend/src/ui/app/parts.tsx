@@ -227,16 +227,25 @@ export function RoleChip({ role }: { role: Role }) {
   );
 }
 
-export function StatTile({ label, value, note, tone }: { label: string; value: ReactNode; note?: string; tone?: "paid" | "refunded" | "funded" }) {
-  const dot = tone === "paid" ? "bg-paid" : tone === "refunded" ? "bg-refunded" : tone === "funded" ? "border border-funded bg-funded-tint" : "bg-ink";
+/** A row of figures in one panel, separated by hairlines. `personal` marks figures of the connected account. */
+export function StatGroup({ children, className = "", personal = false }: { children: ReactNode; className?: string; personal?: boolean }) {
   return (
-    <div className="card card-hover p-5">
-      <p className="flex items-center gap-2 text-sm text-ink-2">
-        <span aria-hidden className={`size-2 rounded-full ${dot}`} />
+    <div className={`grid gap-px overflow-hidden rounded-2xl border bg-line ${personal ? "border-cobalt/35" : "border-line"} ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+export function StatTile({ label, value, note, tone }: { label: string; value: ReactNode; note?: string; tone?: "paid" | "refunded" | "funded" }) {
+  const dot = tone === "paid" ? "bg-paid" : tone === "refunded" ? "bg-refunded" : tone === "funded" ? "border border-funded bg-funded-tint" : "bg-ink-3";
+  return (
+    <div className="min-w-0 bg-surface px-5 py-4">
+      <p className="flex items-center gap-2 text-sm text-ink-3">
+        <span aria-hidden className={`size-1.5 rounded-full ${dot}`} />
         {label}
       </p>
-      <p className="mt-3">{value}</p>
-      {note && <p className="mt-2 text-micro text-ink-3">{note}</p>}
+      <p className="mt-2">{value}</p>
+      {note && <p className="mt-1.5 text-micro text-ink-3">{note}</p>}
     </div>
   );
 }

@@ -275,3 +275,19 @@ The landing page is the pitch; `/app` is the product. It has its own shell (a si
   - A refunded milestone never shows an invented submission or approval.
   - An open milestone ends in one "Now" step: who acts next and until when. Only that step pulses.
   - The exact lane chart (`SettlementLane`) stays under "View deadline details".
+
+## 16. Revision: editorial refinement (2026-11-24, refines §15)
+
+The dark theme, violet identity and coin-flow hero are unchanged. Composition follows an editorial model: numbered points, hairline dividers, restrained type, fewer cards.
+
+- **Type.** Headings are smaller, at weight 600: display 2xl tops out at 60 px, section display at 36 px, numerals at 28 px. Micro and label text are lighter (430 and 450). Section labels are sentence case with a short violet rule (`.eyebrow`), not uppercase. `text-index` is a light 32 px numeral for numbered lists.
+- **Landing.** The icon tiles and three-card grids are gone.
+  - The problem section is a numbered list beside its heading.
+  - How it works is a numbered list (1 to 4, then "or" for the refund path) beside the sticky illustration card.
+  - The time windows are a definition list with dividers.
+  - The evidence agreements are ledgers without card chrome, and the live figures sit in a ruled row.
+  - Built with Fe is one featured visual: an annotated excerpt of `settlane.fe` whose numbered comments match three explanations.
+  - The final call to action is a ruled row.
+- **Activity ledger** (`ActivityList`). One hairline row per event: a status dot, the UTC time and block in small mono, and the description in regular weight. The layout follows the container width (`@container`), so it stacks in the half-width dashboard card.
+- **Figures** (`StatGroup`). One panel split by hairlines instead of separate cards. A violet border marks the connected account's figures, and dashboard funds are titled "Your funds" or "Network funds".
+- **Notices.** The wallet notice is a compact panel with a tone stripe (danger for errors, amber while waiting). Its text is unchanged.

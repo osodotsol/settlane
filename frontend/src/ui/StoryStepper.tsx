@@ -10,7 +10,7 @@ import { StateChip } from "./StateChip";
 // the contract is doing: state, who acts, the on-chain rule and where the money is. The card is a visual
 // echo of the text, so it is hidden from assistive technology and from small screens.
 
-export type Step = { state: DisplayState; title: string; rule: string; actor: string; predicate: string };
+export type Step = { index?: string; state: DisplayState; title: string; rule: string; actor: string; predicate: string };
 
 const TRACK: Record<"normal" | "refund", string[]> = {
   normal: ["Funded", "In review", "Approved", "Paid"],
@@ -47,8 +47,8 @@ export function StoryStepper({ steps }: { steps: Step[] }) {
   const step = steps[active] ?? steps[0]!;
 
   return (
-    <div className="grid gap-12 lg:grid-cols-[1.1fr_1fr] lg:gap-16">
-      <ol className="divide-y divide-line border-y border-line lg:space-y-4 lg:divide-y-0 lg:border-y-0">
+    <div className="grid gap-12 lg:grid-cols-[1.15fr_1fr] lg:gap-20">
+      <ol className="border-b border-line">
         {steps.map((s, i) => (
           <li
             key={s.title}
@@ -56,16 +56,18 @@ export function StoryStepper({ steps }: { steps: Step[] }) {
               refs.current[i] = el;
             }}
             data-step={i}
-            className={`reveal grid gap-3 py-7 transition-[background-color,border-color] duration-[var(--dur-panel)] md:grid-cols-[10.5rem_1fr] md:gap-8 lg:min-h-[32vh] lg:items-center lg:rounded-2xl lg:border lg:px-7 lg:py-8 ${
-              i === active ? "lg:border-line lg:bg-surface" : "lg:border-transparent"
-            }`}
+            className="reveal grid grid-cols-[3.25rem_minmax(0,1fr)] gap-x-4 border-t border-line py-7 lg:min-h-[30vh] lg:content-center"
           >
-            <div>
-              <StateChip state={s.state} />
-            </div>
+            <span aria-hidden className={`text-index transition-colors duration-[var(--dur-panel)] ${i === active ? "" : "lg:!text-ink-3"} ${s.index === "or" ? "pt-1 text-[1.25rem] italic" : ""}`}>
+              {s.index ?? i + 1}
+            </span>
             <div>
               <h3 className="text-title">{s.title}</h3>
               <p className="mt-2 measure text-ink-2">{s.rule}</p>
+              <p className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-ink-3">
+                <StateChip state={s.state} />
+                <span>{s.actor}</span>
+              </p>
             </div>
           </li>
         ))}
@@ -73,7 +75,7 @@ export function StoryStepper({ steps }: { steps: Step[] }) {
 
       <div aria-hidden className="relative hidden lg:block">
         <div className="sticky top-32">
-          <div data-story-card className="card p-7 shadow-lift">
+          <div data-story-card className="card p-7">
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm text-ink-3">Milestone 1 · illustration</p>
               <StateChip state={step.state} />

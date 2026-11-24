@@ -13,7 +13,7 @@ export function HistoryNotice({ status, coverage, className = "" }: { status: Hi
     return (
       <p role="status" data-history="complete" className={`flex items-start gap-2 text-micro text-ink-3 ${className}`}>
         <span aria-hidden className="mt-1.5 size-1.5 shrink-0 rounded-full bg-paid" />
-        <span><span className="font-semibold text-ink-2">{n.title}.</span> {n.detail}</span>
+        <span><span className="font-medium text-ink-2">{n.title}.</span> {n.detail}</span>
       </p>
     );
   }

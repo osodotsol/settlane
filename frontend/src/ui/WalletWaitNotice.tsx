@@ -17,10 +17,16 @@ export function WalletWaitNotice() {
   const slow = waiting !== null && now - waiting.since >= SLOW_MS;
   if (!slow && !error) return null;
   return (
-    <div role="status" aria-live="polite" className="fixed inset-x-4 bottom-4 z-50 rounded-2xl border border-line-control bg-surface p-4 text-sm shadow-lift sm:left-auto sm:right-6 sm:w-[25rem]">
+    <div
+      role="status"
+      aria-live="polite"
+      data-tone={error && !slow ? "error" : "waiting"}
+      className="fixed inset-x-4 bottom-4 z-50 overflow-hidden rounded-xl border border-line bg-surface/95 py-3.5 pl-5 pr-4 text-sm shadow-pop backdrop-blur-md sm:left-auto sm:right-6 sm:w-[25rem]"
+    >
+      <span aria-hidden className={`absolute inset-y-0 left-0 w-[3px] ${error && !slow ? "bg-danger" : "bg-submitted"}`} />
       {slow && waiting ? (
         <>
-          <p className="font-semibold text-ink">
+          <p className="font-medium text-ink">
             MetaMask hasn&apos;t answered the {waiting.kind === "connect" ? "connection" : "network switch"} request · {formatElapsed(now - waiting.since)}
           </p>
           <ol className="mt-2 list-decimal space-y-1 pl-5 text-ink-2">
@@ -35,7 +41,10 @@ export function WalletWaitNotice() {
         </>
       ) : error ? (
         <div className="flex items-start justify-between gap-3">
-          <p className="text-ink">{error.message}</p>
+          <div>
+            <p className="text-micro font-medium text-danger">Wallet</p>
+            <p className="mt-0.5 text-ink">{error.message}</p>
+          </div>
           <button type="button" onClick={clearError} aria-label="Dismiss" className="press -m-1 grid size-8 shrink-0 place-items-center rounded-md text-ink-3 hover:bg-sunken hover:text-ink">
             <X aria-hidden size={16} />
           </button>

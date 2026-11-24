@@ -133,3 +133,17 @@
     - Browser suites: Sepolia 30/30 (axe in both schemes, overflow at 360 to 1440 px), Anvil 5/5, simulated-wallet app 24/24, hanging RPC 3/3.
     - Lint, typecheck and production build pass.
   - Not done: no real-wallet run; no Safari or Firefox check of the SMIL motion.
+- 2026-11-24 (editorial refinement after `914a701`, presentation only; `frontend/DESIGN.md` §16).
+  - Smaller headings at weight 600 and lighter small text. Sentence-case section labels.
+  - Icon tiles and the three-card grids replaced by numbered editorial lists with hairlines (problem, how it works, time windows).
+  - One annotated `settlane.fe` excerpt as the Fe visual.
+  - Evidence ledgers without cards; the live figures in a ruled row.
+  - Activity as a compact ledger that reflows by container width.
+  - Dashboard and payments figures in one divided panel; personal panels have a violet border and are titled "Your funds".
+  - Calmer wallet notice with a tone stripe; its text is unchanged.
+  - The hero animation, theme, contract, ABI and signing, recovery and history code are unchanged.
+  - Tests:
+    - Lint, typecheck and build pass. Unit suite: 240 passed, 2 skipped.
+    - Sepolia 30/30, Anvil 5/5, hanging RPC 3/3.
+    - Simulated-wallet app: 23/24 on the first run, then 24/24 twice.
+  - The app failure was "a draft made without a wallet survives connecting". It is timing-dependent and pre-existing: `CreateView.tsx:75` remounts the form once mounted, so input typed before that is lost. The test filled Provider in that window. Not changed here (create form out of scope).
