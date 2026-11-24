@@ -42,9 +42,9 @@ export function SettlementLane({ chart, creationKnown = true }: { chart: LaneCha
   const nowPct = percentAt(chart, chart.now);
   const ticks = axisTicks(chart);
   return (
-    <figure aria-labelledby="lane-title" className="m-0">
+    <figure aria-labelledby="lane-chart-title" className="m-0">
       <figcaption className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-3">
-        <h2 id="lane-title" className="text-title">Settlement lanes</h2>
+        <h3 id="lane-chart-title" className="text-heading">Deadline lanes</h3>
         <ul className="flex flex-wrap gap-x-5 gap-y-1.5 text-micro text-ink-2" aria-hidden>
           {(["delivery", "review", "refund"] as const).map((k) => (
             <li key={k} className="inline-flex items-center gap-2">
@@ -83,7 +83,7 @@ export function SettlementLane({ chart, creationKnown = true }: { chart: LaneCha
                     style={{ left: `${left}%`, width: `${Math.max(right - left, 0.4)}%` }}
                     title={`${SEGMENT_NAME[s.kind]}: ${formatUtc(s.from)}${s.to === null ? " onwards" : ` to ${formatUtc(s.to)}`}`}
                   >
-                    <div className={`grow-x absolute inset-0 ${SEGMENT_FILL[s.kind]}`} />
+                    <div className={`absolute inset-0 ${SEGMENT_FILL[s.kind]}`} />
                     <span className={`absolute inset-x-0 bottom-1.5 block truncate px-2 text-[0.6875rem] font-semibold uppercase leading-none tracking-[0.06em] ${SEGMENT_TEXT[s.kind]}`}>
                       {SEGMENT_SHORT[s.kind]}
                     </span>
@@ -103,7 +103,7 @@ export function SettlementLane({ chart, creationKnown = true }: { chart: LaneCha
               {lane.marks.map((m) => (
                 <span
                   key={`${m.txHash}-${m.kind}`}
-                  className="group/mark pop-in absolute top-[38%] grid size-7 -translate-x-1/2 -translate-y-1/2 place-items-center"
+                  className="group/mark absolute top-[38%] grid size-7 -translate-x-1/2 -translate-y-1/2 place-items-center"
                   style={{ left: `${percentAt(chart, m.at)}%` }}
                 >
                   <span className={`size-3.5 ring-2 ring-surface transition-transform duration-[var(--dur-hover)] ease-out group-hover/mark:scale-125 ${MARK_DOT[m.kind]}`} />

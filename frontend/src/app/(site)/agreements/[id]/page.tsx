@@ -4,7 +4,6 @@ import { notFound } from "next/navigation";
 import { getAgreement, getHistory } from "@/contract/data";
 import { ID_PATTERN } from "@/contract/known-ids";
 import type { Activity } from "@/contract/events";
-import { formatUtc } from "@/domain/format";
 import { agreementCoverage } from "@/domain/history-coverage";
 import { HistoryNotice } from "@/ui/HistoryNotice";
 import { buildLaneChart } from "@/domain/lane";
@@ -17,7 +16,7 @@ import { Banner } from "@/ui/Banner";
 import { Container } from "@/ui/Container";
 import { LedgerStrip } from "@/ui/LedgerStrip";
 import { MilestoneDetail } from "@/ui/MilestoneDetail";
-import { SettlementLane } from "@/ui/SettlementLane";
+import { SettlementTimeline } from "@/ui/SettlementTimeline";
 
 // Rendered per request from a short-lived server cache (src/contract/cache.ts): a new event or agreement
 // shows up within seconds, and an RPC outage serves the last good data with a notice instead of an error.
@@ -125,8 +124,7 @@ export default async function AgreementPage({ params }: Params) {
       </div>
 
       <section className="card reveal mt-6 p-6 sm:p-8">
-        <SettlementLane chart={chart} creationKnown={created !== undefined} />
-        <p className="mt-3 text-sm text-ink-3">States and windows are judged at Sepolia block time {formatUtc(now)}.</p>
+        <SettlementTimeline chart={chart} created={created ? { at: created.timestamp, txHash: created.txHash } : null} />
       </section>
 
       <section aria-labelledby="milestones" className="card mt-6 p-6 sm:p-8">

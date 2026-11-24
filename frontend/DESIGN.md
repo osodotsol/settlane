@@ -253,3 +253,25 @@ The landing page is the pitch; `/app` is the product. It has its own shell (a si
 - Create Agreement renders the full form without a wallet. A draft is checked locally ("Check draft"), with a focusable error summary linked to each field and the inline errors kept. The draft stays in the component when a wallet connects or the network changes, and is mirrored to sessionStorage for reloads. Roles are re-validated against the connected account and deadlines are fixed from the block time at signing; simulation and signing need a connected Sepolia wallet.
 
 **Wallet reliability (R1, 2026-11-22, D-032).** Every wallet request is tracked per action (`src/chain/tx-registry.ts`) and stated exactly in `TxPanel`: checking, waiting for your signature (with elapsed time; after 15 s, what to do in MetaMask, including the "reading 'origin'" error's Try again), sent and waiting for a block, confirmed, done on-chain (found by checking), declined, cancelled in the wallet, reverted, refused before sending, outcome not known. "Stop waiting" never claims a cancellation; the same action cannot be requested twice while an earlier request may be open, across account and network changes, navigation and reloads; "Check the chain" resolves an unknown outcome from the contract. A collapsible "What this page asked the wallet" lists the wallet requests of the attempt (method names and timings only). Connecting and switching network share one request at a time, with a corner notice after 8 s. Gas limits carry a 25% margin; fees stay with the wallet. Deadline hints say the clock starts when "Create and sign" is pressed. Queue lines for finished and expired milestones no longer suggest pending work.
+
+## 15. Revision: premium dark pass (2026-11-24, supersedes the light theme in §2 and the landing structure in §11 to §13)
+
+**Idea: value moving through clearly defined settlement rules.** One theme for the site and the app: a midnight ground (`--paper #070912`, `--surface #0e1222`), violet light (`--brand #6d4aff`, accent `--cobalt #ab98ff`), and the state colours retuned for it: funded blue, in-review amber, approved teal, paid mint, refunded orange. The light palette and the `prefers-color-scheme` branches are removed (`color-scheme: dark`). Every token is set in `globals.css`. Components still reference semantic tokens only, and the axe suite checks every text pair.
+
+- **Primary button.** A violet gradient (`.btn-brand`) with white text (≥4.7:1 at its lightest stop). Secondary buttons are glass outlines.
+- **Surfaces.** `.glass` cards (a faint top light over the surface, a violet-tinted hairline), `.icon-tile`, and the uppercase `.eyebrow` label.
+- **Hero background** (`src/ui/landing/EthFlow.tsx`). Inline SVG: three luminous ribbons, seven metallic ETH coins, a few faint glints, and a brief "Built with Fe" caption. It is text, not an invented logo or token.
+  - No image asset. The supplied GIF is 552×309 and 422 KB, too low-resolution for a hero.
+  - Motion is SMIL and added only on the client when reduced motion is off and the device is not low-powered. It pauses while off screen.
+  - The server render and the reduced-motion view are a still composition. The SVG is `aria-hidden` and `pointer-events: none`.
+  - A scrim keeps the headline at full contrast. From 1024 px the flow sits to the right; below that it sits under the call to action.
+- **Landing order.** Hero → Problem → How it works (scroll story, `#how-it-works`) → Time-based escrow (`DeadlineOrbit`, labelled as an illustration, not a live clock) → Real settlement evidence (`#evidence`: the replay, then one card per settled agreement with every transaction linked, and live figures labelled as live) → Built with Fe (effects, the clock effect, `sol(..)` selectors and the ABI lock, with honest limits) → Final call to action.
+  - The limitations grid moved to the Developers page (`/contract#limitations`), as did the Fe code example.
+  - The footer carries "Sepolia testnet · Test ETH only · Trusted verifier · Unaudited prototype." and a Security & Limitations link.
+  - Transactional warnings in the app are unchanged.
+- **Navigation.** Home, How It Works, Explorer, Developers (`/contract`), plus Launch App. The public header has no wallet or network control; the app shell keeps them. The footer has four areas: brand, Product, Developers, Resources.
+- **Settlement progress** (`SettlementTimeline`, `src/domain/settlement-timeline.ts`). Each milestone is shown as the steps that really happened, in block-time order, each with its time and transaction.
+  - A step the stored state proves but the history read did not contain is shown without a time.
+  - A refunded milestone never shows an invented submission or approval.
+  - An open milestone ends in one "Now" step: who acts next and until when. Only that step pulses.
+  - The exact lane chart (`SettlementLane`) stays under "View deadline details".

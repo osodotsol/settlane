@@ -118,3 +118,18 @@
   - **M4:** an unread suffix the next scan window will not cover stays a gap (never "complete" without it) and is re-read. **M5a:** a history the engine has not read live is never described as complete. **M6:** the server cache refuses a new key when all 256 slots have reads in flight (`CacheFullError`). **M7:** the archive holds the draft that was submitted; edits made meanwhile are kept. **C1:** precompile addresses (0x01 to 0x11, 0x100) and the system address are refused as any party or payee.
   - One existing test changed its expectation because it encoded a defect: `tests/tx-runner.test.ts` asserted "found" for a lost claim on a Paid milestone although the account's nonce never moved (this request was not executed). It now asserts "still open here" while the wallet request is attached, then "released: already paid" after a reload. The C7 lock double now follows the real Web Locks API.
   **Tests:** 234 unit tests passed (2 skipped: opt-in live Sepolia); lint, typecheck and production build passed with no warnings; browser: Sepolia read-only 25/25, Anvil 5/5, simulated-wallet app 24/24, hanging RPC 3/3. Accepted limitations (unchanged): duplicate funding from another browser profile or device cannot be prevented without a contract-level idempotency key; M5b/M5c need a tampered snapshot or a malicious node. No contract, ABI or deployment change; nothing signed, sent or pushed.
+- 2026-11-24 (premium dark frontend pass after `3ed196f`, presentation only; `frontend/DESIGN.md` §15). One dark midnight/violet theme for the site and the app. The light palette is removed.
+  - Hero: an SVG ETH coin flow (`src/ui/landing/EthFlow.tsx`). It moves only without reduced motion, pauses off screen, and is aria-hidden; the static composition is the fallback. The supplied GIF was not used: it is 552×309 and too low-resolution.
+  - Landing order: problem, how it works (`#how-it-works`), time-based escrow (illustrated deadline ring, labelled as such), real settlement evidence (replay plus per-agreement transaction cards for #1 and #2, live figures labelled live), Built with Fe, final call to action.
+  - The limitations grid and the Fe code example moved to `/contract`, which adds `#limitations` and `#tests` anchors.
+  - Navigation: Home, How It Works, Explorer, Developers, Launch App. There is no wallet control in the public header.
+  - Footer: Product, Developers and Resources columns, with the notice "Sepolia testnet · Test ETH only · Trusted verifier · Unaudited prototype."
+  - New settlement timeline (`SettlementTimeline`, `src/domain/settlement-timeline.ts`) built only from recorded events and the stored state. The lane chart moved under "View deadline details". `Lane` now carries the stored state.
+  - No change to the contract, ABI, signing, recovery, nonce, lock or simulation code.
+  - Tests:
+    - 6 new timeline unit tests. Unit suite: 240 passed, 2 skipped (opt-in live).
+    - 6 new browser tests: link resolution, story order, evidence links, still hero under reduced motion, moving and pausing hero, timeline.
+    - Existing Sepolia tests updated for the new nav names and anchor.
+    - Browser suites: Sepolia 30/30 (axe in both schemes, overflow at 360 to 1440 px), Anvil 5/5, simulated-wallet app 24/24, hanging RPC 3/3.
+    - Lint, typecheck and production build pass.
+  - Not done: no real-wallet run; no Safari or Firefox check of the SMIL motion.

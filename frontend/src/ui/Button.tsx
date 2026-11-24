@@ -9,8 +9,8 @@ const base =
   "disabled:cursor-not-allowed disabled:opacity-50";
 
 const variants: Record<Variant, string> = {
-  primary: "lift bg-ink text-paper hover:bg-ink/90",
-  secondary: "border border-line bg-transparent text-ink hover:border-line-control hover:bg-surface",
+  primary: "lift btn-brand text-white",
+  secondary: "border border-line-control/60 bg-surface/40 text-ink backdrop-blur hover:border-cobalt/70 hover:bg-surface",
   quiet: "text-ink underline-offset-4 decoration-cobalt hover:underline px-0",
   danger: "border border-danger text-danger hover:bg-danger-tint",
 };

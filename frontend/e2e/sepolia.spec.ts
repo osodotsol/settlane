@@ -239,14 +239,14 @@ test.describe("with motion enabled", () => {
 
   test("scrolling the story changes the milestone card", async ({ page }) => {
     await page.goto("/");
-    const steps = page.locator("#how-it-settles ol > li");
+    const steps = page.locator("#how-it-works ol > li");
     await expect(steps).toHaveCount(5);
     await steps.nth(2).scrollIntoViewIfNeeded();
     await steps.nth(2).evaluate((el) => el.scrollIntoView({ block: "center", behavior: "instant" }));
-    await expect(page.locator("#how-it-settles [data-story-card]").getByText("Verifier (trusted)")).toBeVisible();
+    await expect(page.locator("#how-it-works [data-story-card]").getByText("Verifier (trusted)")).toBeVisible();
     await steps.nth(4).evaluate((el) => el.scrollIntoView({ block: "center", behavior: "instant" }));
-    await expect(page.locator("#how-it-settles [data-story-card]").getByText("Refunded to the client")).toBeVisible();
-    await expect(page.locator("#how-it-settles [data-story-card]").getByText("Expired").first()).toBeVisible();
+    await expect(page.locator("#how-it-works [data-story-card]").getByText("Refunded to the client")).toBeVisible();
+    await expect(page.locator("#how-it-works [data-story-card]").getByText("Expired").first()).toBeVisible();
   });
 
   test("the header gains depth once the page scrolls and the progress line follows", async ({ page }) => {
@@ -265,7 +265,7 @@ test.describe("with motion enabled", () => {
     const header = await page.locator("header").first().boundingBox();
     expect(clearance).toBeGreaterThanOrEqual(header!.height);
     // tab down the page to a control far below the fold: it must land below the header
-    const link = page.locator("footer").getByRole("link", { name: "Limitations" });
+    const link = page.locator("footer").getByRole("link", { name: "Security & Limitations" });
     await link.focus();
     const box = await link.boundingBox();
     expect(box!.y).toBeGreaterThanOrEqual(header!.height);
@@ -300,13 +300,104 @@ test.describe("phone layout", () => {
   test("every navigation item fits on screen and the story card is replaced by the plain list", async ({ page }) => {
     await page.goto("/");
     const nav = page.getByRole("navigation", { name: "Main (compact)" });
-    for (const name of ["Explorer", "Contract", "How it settles"]) {
+    for (const name of ["Home", "How It Works", "Explorer", "Developers"]) {
       const box = await nav.getByRole("link", { name }).boundingBox();
       expect(box!.x + box!.width, name).toBeLessThanOrEqual(390);
       expect(box!.height, name).toBeGreaterThanOrEqual(40);
     }
-    await expect(page.locator("#how-it-settles [data-story-card]")).toBeHidden();
-    await expect(page.locator("#how-it-settles ol > li")).toHaveCount(5);
+    await expect(page.locator("#how-it-works [data-story-card]")).toBeHidden();
+    await expect(page.locator("#how-it-works ol > li")).toHaveCount(5);
+  });
+});
+
+// ---- Public site: navigation, footer, hero motion, settlement timeline (premium pass, DESIGN.md §15) ----
+test.describe("public site structure", () => {
+  test.use({ reducedMotion: "reduce", viewport: { width: 1440, height: 900 } });
+
+  test("every header and footer link resolves: pages answer 200 and every in-page anchor exists", async ({ page, request }) => {
+    await page.goto("/contract");
+    await expect(page.locator("header").getByRole("link", { name: "Settlane, home" })).toHaveAttribute("href", "/");
+    const nav = page.getByRole("navigation", { name: "Main", exact: true });
+    await expect(nav.getByRole("link")).toHaveText(["Home", "How It Works", "Explorer", "Developers"]);
+    await expect(nav.getByRole("link", { name: "Developers" })).toHaveAttribute("aria-current", "page");
+    await expect(page.locator("header").getByRole("link", { name: "Limitations" })).toHaveCount(0);
+    const footer = page.locator("footer");
+    for (const name of ["How It Works", "Launch App", "Explore Agreements", "Fe Smart Contract", "GitHub Repository", "Testing & Verification", "Documentation", "Security & Limitations", "Sepolia Explorer"]) {
+      await expect(footer.getByRole("link", { name: new RegExp(`^${name}`) })).toHaveCount(1);
+    }
+    await expect(footer.getByText("Sepolia testnet · Test ETH only · Trusted verifier · Unaudited prototype.")).toBeVisible();
+    const hrefs = new Set<string>();
+    for (const a of await page.locator("header a[href], footer a[href]").all()) hrefs.add((await a.getAttribute("href"))!);
+    for (const href of hrefs) {
+      if (/^https?:/.test(href)) {
+        expect(href, "external links point at the repository or Etherscan").toMatch(/^https:\/\/(github\.com\/osodotsol\/settlane|sepolia\.etherscan\.io\/address\/0x[0-9a-fA-F]{40})/);
+        continue;
+      }
+      const [path, hash] = href.split("#");
+      const res = await request.get(path || "/");
+      expect(res.status(), href).toBe(200);
+      if (hash) {
+        await page.goto(href);
+        await expect(page.locator(`[id="${hash}"]`), href).toHaveCount(1);
+      }
+    }
+  });
+
+  test("the homepage tells the story in order and keeps limitations off the promotional page", async ({ page }) => {
+    await page.goto("/");
+    const headings = await page.locator("main h2").allTextContents();
+    const order = ["Today, one side always goes first.", "Fund. Submit. Approve. Claim.", "Every window is set before the work starts.", "Paid and refunded, on Sepolia.", "Escrow rules the compiler helps enforce.", "See value move by the rules."];
+    expect(headings.filter((h) => order.includes(h))).toEqual(order);
+    await expect(page.getByText("What Settlane does not do")).toHaveCount(0);
+    await expect(page.getByText("Illustration, not a live clock.", { exact: false })).toBeVisible();
+    // the real evidence: two historical agreements, every transaction link a real Sepolia transaction
+    const evidence = page.locator("#evidence article");
+    await expect(evidence).toHaveCount(2);
+    await expect(evidence.nth(0)).toContainText("Agreement #1");
+    await expect(evidence.nth(1)).toContainText("Agreement #2");
+    await expect(evidence.nth(1)).not.toContainText("Approved");
+    for (const a of await evidence.locator('a[href*="etherscan"]').all()) expect(await a.getAttribute("href")).toMatch(/^https:\/\/sepolia\.etherscan\.io\/tx\/0x[0-9a-f]{64}$/);
+    expect(await evidence.locator('a[href*="etherscan"]').count()).toBe(6);
+  });
+
+  test("the hero coin flow is decorative and still under reduced motion", async ({ page }) => {
+    await page.goto("/");
+    const flow = page.locator("[data-eth-flow]");
+    await expect(flow).toHaveAttribute("data-eth-flow", "still");
+    await expect(flow).toHaveAttribute("aria-hidden", "true");
+    expect(await flow.locator("animate, animateMotion").count()).toBe(0);
+    // decoration never takes a click: the hero buttons are reachable
+    await expect(page.locator("main").getByRole("link", { name: "Explore Real Settlements" })).toBeVisible();
+  });
+
+  test("settlement timeline: paid shows its four real steps, refunded shows only what happened, deadlines stay one click away", async ({ page }) => {
+    await page.goto("/agreements/1");
+    const paid = page.locator('[data-timeline="0"]');
+    for (const t of ["Funded", "Evidence submitted", "Approved", "Paid to the provider"]) await expect(paid.getByText(t, { exact: false }).first()).toBeVisible();
+    await expect(paid.locator('[aria-current="step"]')).toHaveCount(0);
+    await expect(paid.locator('a[href^="https://sepolia.etherscan.io/tx/0x"]')).toHaveCount(4);
+    await page.goto("/agreements/2");
+    const refunded = page.locator('[data-timeline="0"]');
+    await expect(refunded.getByText("Refunded to the client")).toBeVisible();
+    await expect(refunded.getByText("Evidence submitted")).toHaveCount(0);
+    await expect(refunded.getByText("Approved")).toHaveCount(0);
+    await expect(page.locator("figure")).toBeHidden();
+    await page.getByText("View deadline details").click();
+    await expect(page.locator("figure").getByText("Deadline lanes")).toBeVisible();
+  });
+});
+
+test.describe("public site with motion", () => {
+  test.use({ reducedMotion: "no-preference", viewport: { width: 1440, height: 900 } });
+  test("the hero coin flow moves, and pauses when scrolled away", async ({ page }) => {
+    await page.goto("/");
+    const flow = page.locator("[data-eth-flow]");
+    await expect(flow).toHaveAttribute("data-eth-flow", "moving");
+    expect(await flow.locator("animateMotion").count()).toBeGreaterThanOrEqual(5);
+    await page.evaluate(() => window.scrollTo({ top: 4000, behavior: "instant" }));
+    await expect.poll(() => flow.evaluate((el) => (el as SVGSVGElement).animationsPaused())).toBe(true);
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+    await expect.poll(() => flow.evaluate((el) => (el as SVGSVGElement).animationsPaused())).toBe(false);
   });
 });
 
@@ -314,10 +405,10 @@ test.describe("phone layout", () => {
 test.describe("application, no wallet", () => {
   test.use({ reducedMotion: "reduce", viewport: { width: 1440, height: 900 } });
 
-  test("Open App is in the landing header and hero and leads to the dashboard", async ({ page }) => {
+  test("Launch App is in the landing header and hero and leads to the dashboard", async ({ page }) => {
     await page.goto("/");
-    await expect(page.locator("header").getByRole("link", { name: "Open App" })).toHaveAttribute("href", "/app");
-    await page.locator("main").getByRole("link", { name: "Open App" }).first().click();
+    await expect(page.locator("header").getByRole("link", { name: "Launch App" })).toHaveAttribute("href", "/app");
+    await page.locator("main").getByRole("link", { name: "Launch App" }).first().click();
     await expect(page).toHaveURL(/\/app$/);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("Network overview");
   });

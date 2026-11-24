@@ -1,6 +1,6 @@
 import type { Activity, ActivityKind } from "@/contract/events";
 import type { Milestone } from "@/contract/read";
-import { displayState, type DisplayState } from "./lifecycle";
+import { displayState, type DisplayState, type StoredState } from "./lifecycle";
 
 // Settlement-lane geometry (DESIGN.md §4): pure, so it is tested against the recorded Sepolia values.
 //   delivery window  [created, deliver_by)  submissions are accepted (provider)
@@ -15,6 +15,8 @@ export type Mark = { kind: ActivityKind; at: bigint; revision?: bigint; txHash: 
 export type Lane = {
   index: number;
   state: DisplayState;
+  /** The state the contract stores (the display state can be the derived `expired`). */
+  stored: StoredState;
   deliverBy: bigint;
   decideBy: bigint;
   segments: Segment[];
@@ -46,7 +48,7 @@ export function buildLaneChart(milestones: readonly Milestone[], activity: reado
     const marks = activity
       .filter((a) => a.m === m.index && a.kind !== "created")
       .map((a) => ({ kind: a.kind, at: a.timestamp, revision: a.revision, txHash: a.txHash }));
-    return { index: m.index, state: displayState(m.state, now, m.deliverBy, m.decideBy), deliverBy: m.deliverBy, decideBy: m.decideBy, segments, marks };
+    return { index: m.index, state: displayState(m.state, now, m.deliverBy, m.decideBy), stored: m.state, deliverBy: m.deliverBy, decideBy: m.decideBy, segments, marks };
   });
   const lastDeadline = lanes.reduce((x, l) => (l.decideBy > x ? l.decideBy : x), createdAt);
   const lastMark = activity.reduce((x, a) => (a.timestamp > x ? a.timestamp : x), createdAt);

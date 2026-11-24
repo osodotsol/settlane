@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useAgreementData, useHistory } from "@/chain/queries";
 import { rolesOf, isOpen } from "@/domain/app-model";
-import { formatUtc } from "@/domain/format";
 import { buildLaneChart } from "@/domain/lane";
 import { buildLedger } from "@/domain/ledger";
 import { agreementCoverage } from "@/domain/history-coverage";
@@ -14,7 +13,7 @@ import { Avatar } from "../Avatar";
 import { LedgerStrip } from "../LedgerStrip";
 import { MilestoneDetail } from "../MilestoneDetail";
 import { MilestoneActions } from "./MilestoneActions";
-import { SettlementLane } from "../SettlementLane";
+import { SettlementTimeline } from "../SettlementTimeline";
 import { EmptyState, ErrorState, LoadingRows, RoleChip, StaleNotice, useAppData } from "./parts";
 import { ButtonLink } from "../Button";
 import { useWallet } from "@/chain/use-wallet";
@@ -108,8 +107,7 @@ export function AgreementWorkspace({ id }: { id: bigint }) {
       </Card>
 
       <section className="card mt-6 p-6 sm:p-8">
-        <SettlementLane chart={chart} creationKnown={created !== undefined} />
-        <p className="mt-3 text-sm text-ink-3">States and windows are judged at Sepolia block time {formatUtc(now)}.</p>
+        <SettlementTimeline chart={chart} created={created ? { at: created.timestamp, txHash: created.txHash } : null} />
       </section>
 
       <Card title="History" id="history" lead="Decoded from the contract's events on Sepolia, in chain order.">

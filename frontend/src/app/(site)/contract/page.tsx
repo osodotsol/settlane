@@ -9,6 +9,7 @@ import type { Activity, ActivityKind } from "@/contract/events";
 import { formatUtc, shortHex } from "@/domain/format";
 import { Address } from "@/ui/Address";
 import { Banner } from "@/ui/Banner";
+import { CodeBlock, type Tok } from "@/ui/CodeBlock";
 import { CommandBlock } from "@/ui/CommandBlock";
 import { Container } from "@/ui/Container";
 import { VerificationSeal } from "@/ui/VerificationSeal";
@@ -46,6 +47,15 @@ const LIMITS = [
   "ETH sent to the contract outside an agreement (for example forced in) is stranded; the invariant is balance ≥ outstanding.",
 ];
 
+const FE_LINES: Tok[][] = [
+  [["c", "// the production Submit arm: a thin shell around a shared handler"]],
+  [["t", "Submit"], ["p", " { id, m, evidence } "], ["k", "uses"], ["p", " (ctx, "], ["k", "mut"], ["p", " log, agreements, "], ["k", "mut"], ["p", " milestones) {"]],
+  [["p", "    "], ["k", "with"], ["p", " ("], ["t", "Clock"], ["p", " = "], ["t", "Clock"], ["p", " { now: "], ["f", "ctx.timestamp()"], ["p", " }) {"]],
+  [["p", "        handlers::"], ["f", "submit_handler"], ["p", "(id, m, evidence)"]],
+  [["p", "    }"]],
+  [["p", "}"]],
+];
+
 const idx = (i: number) => ({ "--i": i }) as React.CSSProperties;
 const delay = (ms: number) => ({ "--d": ms }) as React.CSSProperties;
 
@@ -69,7 +79,8 @@ export default async function ContractPage() {
     <Container className="py-12 sm:py-16">
       <div className="grid gap-12 lg:grid-cols-[1fr_1.05fr] lg:items-center lg:gap-16">
         <div className="enter" style={delay(0)}>
-          <h1 className="text-display-xl">Contract evidence</h1>
+          <p className="eyebrow">Developers</p>
+          <h1 className="text-display-xl mt-3">Contract evidence</h1>
           <p className="mt-5 measure text-lg text-ink-2">
             What is deployed, where, and how to check it yourself. Everything on this page is read from Sepolia or from the open-source repository, and
             nothing here asks you to trust this website.
@@ -96,7 +107,24 @@ export default async function ContractPage() {
         </dl>
       </section>
 
-      <section aria-labelledby="verify" className="mt-20">
+      <section aria-labelledby="fe-code" className="mt-20 grid gap-10 lg:grid-cols-[1fr_1.15fr] lg:items-center lg:gap-14">
+        <div className="reveal min-w-0">
+          <h2 id="fe-code" className="text-title">Built with Fe: time is an effect</h2>
+          <p className="mt-3 measure text-ink-2">
+            The production contract supplies the clock from the block, and nothing else. A test contract in a separate ingot runs the identical rules under a
+            clock the tests can move, so every deadline is tested on both sides of the line.
+          </p>
+          <p className="mt-3 measure text-sm text-ink-3">
+            The compiler blocks a handler that does not list the Call effect from sending ETH. It does not stop an entry point that lists Call read-only, so a
+            policy lint and tests close that gap.
+          </p>
+        </div>
+        <div className="reveal min-w-0">
+          <CodeBlock lines={FE_LINES} label="ingots/settlane/src/settlane.fe" footer={<>The only place the production contract reads time is <span className="text-data text-[0.8125rem]">ctx.timestamp()</span>, enforced by a lint rule.</>} />
+        </div>
+      </section>
+
+      <section id="tests" aria-labelledby="verify" className="mt-20 scroll-mt-24">
         <h2 id="verify" className="text-title reveal">Verify it yourself</h2>
         <p className="reveal mt-1 measure text-sm text-ink-3">
           Three commands from a checkout of the repository. They rebuild the contract with {FE_VERSION}, compare it with the pinned hashes, and compare the
@@ -193,8 +221,9 @@ export default async function ContractPage() {
         </p>
       </section>
 
-      <section aria-labelledby="limits" className="mt-20">
-        <h2 id="limits" className="text-title reveal">Verified limitations</h2>
+      <section id="limitations" aria-labelledby="limits" className="mt-20 scroll-mt-24">
+        <h2 id="limits" className="text-title reveal">Security &amp; limitations</h2>
+        <p className="reveal mt-1 measure text-sm text-ink-3">Verified against the contract and its tests. Read these before funding an agreement or choosing a verifier.</p>
         <ol className="card reveal-stagger mt-6 divide-y divide-line px-6 sm:px-8">
           {LIMITS.map((t, i) => (
             <li key={t} style={idx(i)} className="grid gap-3 py-5 sm:grid-cols-[3rem_1fr]">

@@ -18,10 +18,10 @@ export function HeaderShell({ children }: { children: ReactNode }) {
   return (
     <header
       data-scrolled={isScrolled || undefined}
-      className="sticky top-0 z-30 border-b border-transparent bg-paper transition-[border-color,box-shadow] duration-[var(--dur-panel)] ease-out data-[scrolled]:border-line data-[scrolled]:shadow-[0_10px_24px_-18px_rgb(21_23_27/0.35)]"
+      className="sticky top-0 z-30 border-b border-transparent bg-paper/70 backdrop-blur-xl transition-[border-color,box-shadow,background-color] duration-[var(--dur-panel)] ease-out data-[scrolled]:border-line data-[scrolled]:bg-paper/85 data-[scrolled]:shadow-[0_14px_30px_-20px_rgb(0_0_0/0.9)]"
     >
       {children}
-      <div aria-hidden className="scroll-progress absolute inset-x-0 -bottom-px h-0.5 bg-cobalt" />
+      <div aria-hidden className="scroll-progress absolute inset-x-0 -bottom-px h-0.5 bg-gradient-to-r from-brand to-cobalt" />
     </header>
   );
 }

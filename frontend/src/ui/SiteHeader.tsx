@@ -1,10 +1,12 @@
+import { ArrowUpRight } from "lucide-react";
 import { ButtonLink } from "./Button";
 import { Container } from "./Container";
 import { HeaderShell } from "./HeaderShell";
 import { NavLinks } from "./NavLinks";
-import { WalletControl } from "./WalletControl";
 import { Wordmark } from "./Wordmark";
 
+// The public header stays light: brand, four links and one primary action. Wallet and network state live
+// inside the application (/app), where they are needed.
 export function SiteHeader() {
   return (
     <HeaderShell>
@@ -13,14 +15,9 @@ export function SiteHeader() {
         <nav aria-label="Main" className="hidden lg:block">
           <NavLinks />
         </nav>
-        <div className="flex items-center gap-3">
-          <span className="hidden items-center gap-2 rounded-full border border-line bg-surface px-3 py-1 text-micro text-ink-2 sm:inline-flex">
-            <span aria-hidden className="size-1.5 rounded-full bg-paid" />
-            Sepolia · test ETH
-          </span>
-          <span className="hidden sm:block"><WalletControl /></span>
-          <ButtonLink href="/app" size="sm">Open App</ButtonLink>
-        </div>
+        <ButtonLink href="/app" size="sm">
+          Launch App <ArrowUpRight aria-hidden size={16} />
+        </ButtonLink>
       </Container>
       <nav aria-label="Main (compact)" className="border-t border-line lg:hidden">
         <Container>

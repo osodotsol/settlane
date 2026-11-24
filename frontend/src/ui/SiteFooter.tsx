@@ -1,51 +1,55 @@
 import Link from "next/link";
 import { CI_URL, REPOSITORY, SETTLANE_ADDRESS, addressUrl } from "@/config/chain";
-import { shortHex } from "@/domain/format";
 import { Container } from "./Container";
 import { Wordmark } from "./Wordmark";
 
-const COLUMNS: { title: string; links: { href: string; label: string; external?: boolean }[] }[] = [
+type FooterLink = { href: string; label: string; external?: boolean };
+
+// Every destination is real: a page of this site, the repository, its CI, or the contract on Etherscan.
+const COLUMNS: { title: string; links: FooterLink[] }[] = [
   {
-    title: "Explore",
+    title: "Product",
     links: [
-      { href: "/explorer", label: "All agreements" },
-      { href: "/agreements/1", label: "Agreement #1 (paid)" },
-      { href: "/agreements/2", label: "Agreement #2 (refunded)" },
+      { href: "/#how-it-works", label: "How It Works" },
+      { href: "/app", label: "Launch App" },
+      { href: "/explorer", label: "Explore Agreements" },
     ],
   },
   {
-    title: "Evidence",
+    title: "Developers",
     links: [
-      { href: "/contract", label: "Contract evidence" },
-      { href: addressUrl(SETTLANE_ADDRESS), label: `Contract ${shortHex(SETTLANE_ADDRESS)}`, external: true },
-      { href: CI_URL, label: "Continuous integration", external: true },
+      { href: "/contract", label: "Fe Smart Contract" },
+      { href: REPOSITORY, label: "GitHub Repository", external: true },
+      { href: "/contract#verify", label: "Testing & Verification" },
     ],
   },
   {
-    title: "Project",
+    title: "Resources",
     links: [
-      { href: REPOSITORY, label: "Source (Apache-2.0)", external: true },
-      { href: "/#how-it-settles", label: "How it settles" },
-      { href: "/#limitations", label: "Limitations" },
+      { href: `${REPOSITORY}#readme`, label: "Documentation", external: true },
+      { href: "/contract#limitations", label: "Security & Limitations" },
+      { href: addressUrl(SETTLANE_ADDRESS), label: "Sepolia Explorer", external: true },
     ],
   },
 ];
 
 export function SiteFooter() {
   return (
-    <footer className="mt-24 border-t border-line bg-surface">
-      <Container className="grid gap-12 py-14 md:grid-cols-[1.3fr_2fr]">
+    <footer className="site-footer relative mt-24 overflow-hidden border-t border-line">
+      <div aria-hidden className="footer-glow pointer-events-none absolute inset-x-0 top-0 h-64" />
+      <Container className="relative grid gap-12 py-16 md:grid-cols-[1.4fr_2fr]">
         <div>
           <Wordmark />
-          <p className="mt-4 max-w-xs text-sm text-ink-2">Pay for work one milestone at a time, by rules fixed in advance. Written in Fe, on the Sepolia testnet.</p>
+          <p className="mt-4 max-w-xs text-ink-2">Milestone payments. Clear rules. Verifiable settlement.</p>
+          <p className="mt-3 max-w-xs text-sm text-ink-3">A Fe smart contract on the Ethereum Sepolia testnet. Open source, Apache-2.0.</p>
         </div>
-        <nav aria-label="Footer" className="grid gap-8 sm:grid-cols-3">
+        <nav aria-label="Footer" className="grid grid-cols-2 gap-8 sm:grid-cols-3">
           {COLUMNS.map((c) => (
             <div key={c.title}>
-              <h2 className="text-sm font-semibold">{c.title}</h2>
+              <h2 className="text-sm font-semibold text-ink">{c.title}</h2>
               <ul className="mt-4 space-y-2.5 text-sm">
                 {c.links.map((l) => (
-                  <li key={l.href}>
+                  <li key={l.label}>
                     {l.external ? (
                       <a href={l.href} target="_blank" rel="noreferrer" className="draw-link text-ink-2 hover:text-ink">
                         {l.label}
@@ -61,9 +65,12 @@ export function SiteFooter() {
           ))}
         </nav>
       </Container>
-      <div className="border-t border-line">
-        <Container className="py-5 text-sm text-ink-3">
-          Settlane is an unaudited prototype on the Sepolia testnet. Test ETH only. The verifier is a trusted party.
+      <div className="relative border-t border-line">
+        <Container className="flex flex-wrap items-center justify-between gap-3 py-5 text-sm text-ink-3">
+          <p>Sepolia testnet · Test ETH only · Trusted verifier · Unaudited prototype.</p>
+          <a href={CI_URL} target="_blank" rel="noreferrer" className="draw-link text-ink-3 hover:text-ink">
+            Continuous integration<span className="sr-only"> (opens in a new tab)</span>
+          </a>
         </Container>
       </div>
     </footer>
