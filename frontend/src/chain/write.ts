@@ -109,6 +109,10 @@ async function liveGhosts(action: TxAction, account: Address, ghosts: Ghost[], m
     const own = (action.fn === "create" ? action : { ...action, fn: g.fn }) as TxAction; // judged as ITS action (approve and reject share a key)
     if (snap?.kind === "milestone" && blockTime !== undefined && deadReason(own, { data: g.data }, snap, blockTime)) continue;
     if (g.hash && (await publicClient.getTransactionReceipt({ hash: g.hash }).catch(() => null))) continue;
+    if (g.unknown) {
+      alive.push(g); // its call is unknown: it cannot be searched for, only proven dead by the contract's state (above)
+      continue;
+    }
     if (g.nonceBefore !== undefined && g.blockBefore !== undefined && latest !== undefined && latest > g.nonceBefore) {
       const found = await searchAccountTxs(account, { data: g.data, value: g.value }, g.nonceBefore, latest, BigInt(g.blockBefore) - 2n, mine).catch(() => null);
       if (found?.match) continue;
@@ -133,8 +137,11 @@ export async function startTx({ req, label, account, walletChainId, write, refre
   // An overridden earlier request (its outcome never proven) becomes a GHOST of the new attempt: it is remembered, stored,
   // and it constrains what may be sent until the chain shows it can no longer take effect (R2-C).
   const ghosts: Ghost[] = [...(previous?.ghosts ?? [])];
-  if (previous?.state.phase === "unknown" && previous.recovery?.verdict.kind === "override" && previous.call) {
-    ghosts.push({ startedAt: previous.startedAt, fn: previous.action.fn, data: previous.call.data, value: previous.call.value, hash: previous.state.hash, nonceBefore: previous.nonceBefore, blockBefore: previous.blockBefore });
+  if (previous?.state.phase === "unknown" && previous.recovery?.verdict.kind === "override") {
+    // A record without its call (saved by an older version) is NOT safe to retry: it becomes an UNKNOWN ghost that blocks every
+    // different request until the contract's state proves it can no longer take effect (R2-D).
+    if (previous.call) ghosts.push({ startedAt: previous.startedAt, fn: previous.action.fn, data: previous.call.data, value: previous.call.value, hash: previous.state.hash, nonceBefore: previous.nonceBefore, blockBefore: previous.blockBefore });
+    else ghosts.push({ startedAt: previous.startedAt, fn: previous.action.fn, data: "0x", value: "0", hash: previous.state.hash, unknown: true });
   }
   const call = callOf(req);
   registry.set({ key, label, action, account, chainId: CHAIN.id, contract: SETTLANE_ADDRESS, startedAt: Date.now(), attempt, state: { phase: "checking" }, live: true, lateHashes: previous?.lateHashes ?? [], sent: previous?.sent ?? [], ghosts });
@@ -164,7 +171,7 @@ export async function startTx({ req, label, account, walletChainId, write, refre
     const own = new Set<string>((previous?.sent ?? []).map((h) => h.toLowerCase()));
     const alive = await liveGhosts(action, account, ghosts, own);
     set((e) => ({ ...e, ghosts: alive }));
-    const different = alive.filter((g) => g.data.toLowerCase() !== call.data.toLowerCase() || g.value !== call.value);
+    const different = alive.filter((g) => g.unknown || g.data.toLowerCase() !== call.data.toLowerCase() || g.value !== call.value);
     if (different.length > 0 && !(req.fn === "submit" && acceptLateReplace)) {
       set((e) => ({
         ...e,

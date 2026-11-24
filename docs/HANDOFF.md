@@ -19,7 +19,8 @@ Do not modify src/ unless the assignment allows it. Do not commit or push.
 ## Active assignment
 - **ID:** F-final review fixes (frontend, D-032 to D-036). **Commit:** the commit "Frontend: fix the final review findings M1, H3, H4, M3" on `settlane/dev` (see `git log -1`).
 - **Status:** the independent review at `deefab5` (`docs/reviews/2026-11-24-final-independent-review.md`) found M1, H3, H4 and M3 confirmed; the owner approved the fixes; they are implemented with regression tests (`frontend/tests/final-review-fixes.test.ts`). **Awaiting the owner's review.** The frontend was never run with a real MetaMask after R1; the smoke test is in `docs/PROGRESS.md`. The Fe contract, ABI and deployment are unchanged. Not committed: the seven unreviewed `.claude/skills/` directories.
-- **Open, not fixed (Low or unconfirmed):** C1 precompile payees (hardening), H1 two-tab admission race, H2 identical-terms create across devices, M2, M4 to M7 of `docs/reviews/2026-11-23-final-technical-audit.md`; an unresolved pre-R2-C claim stored without calldata unlocks a different payee after attestation (audit H3 second probe).
+- **R2-D (after `155979c`):** the legacy no-calldata claim case is fixed (unknown ghost), the Sepolia Activity test uses the application's history engine, and the intermittent app-suite timeout was not reproduced (see `docs/PROGRESS.md`).
+- **Open, not fixed (Low or unconfirmed):** C1 precompile payees (hardening), H1 two-tab admission race, H2 identical-terms create across devices, M2, M4 to M7 of `docs/reviews/2026-11-23-final-technical-audit.md`; the unexplained one-off app-suite timeout.
 
 ## Previous assignment (R-006)
 - **ID:** R-006 Phase 3B review (Refund, the second transition that moves ETH, plus the G-1 and provenance lint rules)

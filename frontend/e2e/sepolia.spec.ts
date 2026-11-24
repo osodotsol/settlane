@@ -2,10 +2,10 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { createPublicClient, decodeEventLog, http } from "viem";
+import { createPublicClient, http } from "viem";
 import { sepolia } from "viem/chains";
 import { settlaneAbi } from "../src/contract/abi";
-import snapshotFile from "../src/contract/history-snapshot.json";
+import { history } from "../src/contract/history-instance";
 
 // Live expectations come from the chain itself (other agreements may be created on the deployment at any time):
 // the network's totals and its event list, read read-only from a public endpoint.
@@ -23,15 +23,21 @@ async function networkTotals() {
     }
   }
 }
+/**
+ * The network's events as Settlane itself reads them: the verified snapshot plus the live scan through the application's own
+ * history engine and its fallback log sources (public nodes prune old logs, so one node cannot be asked directly). Nothing is
+ * assumed: the history must report itself COMPLETE (no gap, no conflict, no refresh error), and its payouts are checked against
+ * the contract's own accounting views, which are an independent source.
+ */
 async function networkEvents() {
-  // the verified snapshot (old logs are pruned on public nodes) plus the logs after its boundary, read now
-  const names = snapshotFile.events.map((e) => decodeEventLog({ abi: settlaneAbi, topics: e.topics as [`0x${string}`, ...`0x${string}`[]], data: e.data as `0x${string}` }).eventName as string);
-  const head = (await chain.getBlockNumber()) - 3n; // the node that answers getLogs can lag the one that reported the head
-  for (let from = BigInt(snapshotFile.lastVerifiedBlock) + 1n; from <= head; from += 5_000n) {
-    const to = from + 4_999n < head ? from + 4_999n : head;
-    for (const l of await chain.getLogs({ address: SETTLANE, fromBlock: from, toBlock: to })) names.push(decodeEventLog({ abi: settlaneAbi, topics: l.topics, data: l.data }).eventName as string);
-  }
-  return names;
+  const h = await history.refresh();
+  const problems = [...h.status.gaps.map((g) => `gap ${g.from}-${g.to}: ${g.error}`), ...h.status.conflicts, ...(h.status.refreshError ? [h.status.refreshError] : []), ...(h.status.snapshot.problem ? [h.status.snapshot.problem] : [])];
+  expect(h.status.complete, `the event history is incomplete: ${problems.join("; ") || "not refreshed"}`).toBe(true);
+  const sum = (kind: string) => h.events.filter((e) => e.kind === kind).reduce((t, e) => t + (e.amount ?? 0n), 0n);
+  const totals = await networkTotals();
+  expect(sum("claimed"), "claimed amounts in the history equal the contract's paid totals").toBe(totals.paid);
+  expect(sum("refunded"), "refunded amounts in the history equal the contract's refunded totals").toBe(totals.refunded);
+  return h.events.map((e) => e.kind);
 }
 
 // Against the real Sepolia deployment (read-only). A1 and A2 are terminal, so their values are fixed.
@@ -373,7 +379,7 @@ test.describe("application, no wallet", () => {
     const events = await networkEvents();
     await expect(page.locator("ol > li")).toHaveCount(events.length);
     await page.getByRole("group", { name: "Kind of event" }).getByRole("button", { name: "Claimed" }).click();
-    await expect(page.locator("ol > li")).toHaveCount(events.filter((e) => e === "MilestoneClaimed").length);
+    await expect(page.locator("ol > li")).toHaveCount(events.filter((e) => e === "claimed").length);
     await expect(page.locator("ol > li").last()).toContainText("Agreement #1 · Provider claimed 0.001 ETH"); // newest first: A1's claim is the oldest
   });
 

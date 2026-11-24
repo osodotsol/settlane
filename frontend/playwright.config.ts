@@ -7,5 +7,5 @@ export default defineConfig({
   timeout: 120_000,
   workers: 1,
   reporter: [["list"]],
-  use: { baseURL: process.env.E2E_BASE_URL, trace: "off" },
+  use: { baseURL: process.env.E2E_BASE_URL, trace: process.env.E2E_TRACE ? "retain-on-failure" : "off" },
 });

@@ -58,11 +58,13 @@ export function MilestoneActions({ a, m, now }: { a: Agreement; m: Milestone; no
   // Earlier submissions whose outcome is unproven (R2-C): their evidence, decoded from the exact call that was sent.
   const e = tx.entry;
   const pendingGhost = e?.state.phase === "unknown" && e.recovery?.verdict.kind === "override" && e.call ? [{ fn: e.action.fn, data: e.call.data }] : [];
+  // an earlier submission whose evidence is unknown (saved by an older version) always needs the acknowledgment (R2-D)
+  const unknownSubmit = !!e && ((e.ghosts ?? []).some((g) => g.fn === "submit" && g.unknown) || (e.state.phase === "unknown" && e.recovery?.verdict.kind === "override" && !e.call && e.action.fn === "submit"));
   const ghostEvidence = [...(e?.ghosts ?? []), ...pendingGhost]
     .filter((g) => g.fn === "submit")
     .map((g) => callArgs({ data: g.data })?.args[2] as bigint | undefined)
     .filter((x): x is bigint => x !== undefined);
-  const needsAck = ev.ok && ghostEvidence.some((g) => g !== ev.value);
+  const needsAck = ev.ok && (unknownSubmit || ghostEvidence.some((g) => g !== ev.value));
   const latestSent = e?.state.phase === "confirmed" && e.action.fn === "submit" ? (callArgs(e.call)?.args[2] as bigint | undefined) : undefined;
   const lateReplaced = m.state === "submitted" && latestSent !== undefined && m.evidence !== latestSent && ghostEvidence.includes(m.evidence);
   const hex = (v: bigint) => toHex(v, { size: 32 });

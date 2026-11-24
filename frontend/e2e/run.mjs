@@ -136,7 +136,9 @@ if (!only || only === "anvil" || only === "app") {
       node = second.node;
       if (second.SETTLANE !== first.SETTLANE || second.deployed.blockNumber !== first.deployed.blockNumber) throw new Error("the second node did not reproduce the deployment");
       server = await serve(3922, dist);
-      failures += run("npx", ["playwright", "test", "e2e/app.spec.ts"], specEnv(second)) === 0 ? 0 : 1;
+      // E2E_GREP, E2E_REPEAT (and E2E_TRACE=1 in playwright.config.ts) narrow and repeat this suite to investigate a flaky test
+      const narrow = [...(process.env.E2E_GREP ? ["-g", process.env.E2E_GREP] : []), ...(process.env.E2E_REPEAT ? ["--repeat-each", process.env.E2E_REPEAT] : [])];
+      failures += run("npx", ["playwright", "test", "e2e/app.spec.ts", ...narrow], specEnv(second)) === 0 ? 0 : 1;
     }
   } finally {
     stop(server);

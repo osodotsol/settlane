@@ -82,7 +82,12 @@ export type TxEntry = {
   dismissed?: boolean;
 };
 
-export type Ghost = { startedAt: number; fn: TxAction["fn"]; data: Hex; value: string; hash?: Hex; nonceBefore?: number; blockBefore?: string };
+/**
+ * `unknown`: the earlier request was stored by a version that did not keep its call (R2-D). What it would send cannot be
+ * known, so it is never "the same call" as anything and the chain cannot be searched for it: only contract-state proof
+ * (deadReason) releases it. `data` is then "0x" and means nothing.
+ */
+export type Ghost = { startedAt: number; fn: TxAction["fn"]; data: Hex; value: string; hash?: Hex; nonceBefore?: number; blockBefore?: string; unknown?: boolean };
 
 export const TERMINAL: TxPhase["phase"][] = ["confirmed", "found", "rejected", "cancelled", "reverted", "failed"];
 export const isTerminal = (s: TxPhase) => TERMINAL.includes(s.phase);
