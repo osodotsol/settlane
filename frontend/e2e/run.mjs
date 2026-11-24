@@ -6,11 +6,13 @@
 //   3. The same, on a fresh node: e2e/app.spec.ts drives the application with a stand-in wallet (e2e/wallet.ts):
 //      create, submit, approve, request a revision, claim, refund, with role, deadline and error checks.
 //   4. A node that never answers (a local socket that accepts and stays silent): e2e/hang.spec.ts.
-// Nothing is ever sent to a public network. Usage: npm run e2e [-- sepolia|anvil|app|hang]  (E2E_SKIP_BUILD=1 reuses .next-e2e-anvil)
+//   5. A partial log-node outage like Sepolia's on 2026-11-24 (one node prunes, one hangs, one works): e2e/outage.spec.ts.
+// Nothing is ever sent to a public network. Usage: npm run e2e [-- sepolia|anvil|app|hang|outage]  (E2E_SKIP_BUILD=1 reuses .next-e2e-anvil)
 import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
+import { createServer } from "node:http";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPublicClient, createWalletClient, http, parseEther } from "viem";
@@ -31,9 +33,26 @@ function run(cmd, args, extraEnv = {}) {
   return r.status ?? 1;
 }
 
+/**
+ * A port must be free before a server or node is started on it. A leftover server from an earlier run would otherwise
+ * answer in its place, and the tests would silently run against the wrong build or the wrong chain (seen 2026-11-24).
+ */
+async function assertFree(port, what) {
+  const isFree = () =>
+    new Promise((r) => {
+      const probe = net.createServer().once("error", () => r(false)).once("listening", () => probe.close(() => r(true)));
+      probe.listen(port);
+    });
+  let free = false;
+  for (let i = 0; i < 10 && !(free = await isFree()); i++) await sleep(500); // a node this run just stopped may still be closing
+  if (!free) throw new Error(`${what}: port ${port} is already in use, probably by a server left from an earlier run. Stop it first.`);
+}
+
 async function serve(port, extraEnv) {
+  await assertFree(port, "app server");
   const child = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "-p", String(port)], { cwd: app, env: { ...env, ...extraEnv }, stdio: "ignore" });
   for (let i = 0; i < 120; i++) {
+    if (child.exitCode !== null) throw new Error(`server on ${port} exited with code ${child.exitCode}`);
     try {
       if ((await fetch(`http://127.0.0.1:${port}/`)).ok) return child;
     } catch {}
@@ -66,6 +85,7 @@ if (!only || only === "sepolia") {
 async function startAnvil() {
   const anvilBin = [path.join(homedir(), "tools/foundry/bin/anvil"), "anvil"].find((p) => p === "anvil" || existsSync(p));
   const ANVIL = "http://127.0.0.1:8645";
+  await assertFree(8645, "Anvil");
   const node = spawn(anvilBin, ["--host", "127.0.0.1", "--port", "8645", "--chain-id", "11155111", "--silent"], { stdio: "ignore" });
   const chain = { ...sepolia, rpcUrls: { default: { http: [ANVIL] } } };
   const pub = createPublicClient({ chain, transport: http(ANVIL) });
@@ -136,9 +156,15 @@ if (!only || only === "anvil" || only === "app") {
       node = second.node;
       if (second.SETTLANE !== first.SETTLANE || second.deployed.blockNumber !== first.deployed.blockNumber) throw new Error("the second node did not reproduce the deployment");
       server = await serve(3922, dist);
+      // The seeded chain is the suite's baseline: each repetition of the serial suite reverts to it (e2e/app.spec.ts), so
+      // every full run starts from the same two agreements, block height and clock (Anvil's revert restores all three).
+      const snap = await fetch(second.ANVIL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "evm_snapshot", params: [] }) }).then((r) => r.json());
+      // outside test-results/, which Playwright empties when it starts
+      const baselineFile = path.join(tmpdir(), `settlane-e2e-baseline-${process.pid}.txt`);
+      writeFileSync(baselineFile, snap.result);
       // E2E_GREP, E2E_REPEAT (and E2E_TRACE=1 in playwright.config.ts) narrow and repeat this suite to investigate a flaky test
       const narrow = [...(process.env.E2E_GREP ? ["-g", process.env.E2E_GREP] : []), ...(process.env.E2E_REPEAT ? ["--repeat-each", process.env.E2E_REPEAT] : [])];
-      failures += run("npx", ["playwright", "test", "e2e/app.spec.ts", ...narrow], specEnv(second)) === 0 ? 0 : 1;
+      failures += run("npx", ["playwright", "test", "e2e/app.spec.ts", ...narrow], { ...specEnv(second), ANVIL_BASELINE_FILE: baselineFile }) === 0 ? 0 : 1;
     }
   } finally {
     stop(server);
@@ -176,6 +202,68 @@ if (!only || only === "hang") {
     stop(server);
     for (const s of sockets) s.destroy();
     hole.close();
+  }
+}
+
+if (!only || only === "outage") {
+  // 5. The history's log nodes, in order: one that refuses every log range ("pruned history unavailable", like publicnode),
+  //    one that accepts connections and never answers (like Tenderly that day), then the healthy node. Contract state is
+  //    read from the healthy node. The hanging node counts the requests that reach it, so the spec can prove a dead node is
+  //    not walked again on every refresh.
+  const a = await startAnvil();
+  let holeHits = 0;
+  const holeSockets = new Set();
+  const hole = net.createServer((sock) => {
+    holeSockets.add(sock);
+    sock.on("data", (d) => (holeHits += (d.toString().match(/^POST /gm) ?? []).length));
+    sock.on("close", () => holeSockets.delete(sock));
+    sock.on("error", () => {});
+  });
+  await assertFree(8702, "hanging log node");
+  await new Promise((r) => hole.listen(8702, "127.0.0.1", r));
+  const prune = createServer(async (req, res) => {
+    // like the public nodes, it allows browser reads (CORS), so the browser pages really talk to it
+    res.setHeader("access-control-allow-origin", "*");
+    res.setHeader("access-control-allow-headers", "content-type");
+    res.setHeader("access-control-allow-methods", "POST, GET, OPTIONS");
+    if (req.method === "OPTIONS") return res.end();
+    if (req.method === "GET" && req.url === "/__hits") return res.end(JSON.stringify({ hole: holeHits }));
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const msg = JSON.parse(body);
+    res.setHeader("content-type", "application/json");
+    if (msg.method === "eth_getLogs") {
+      await sleep(200);
+      return res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, error: { code: 4444, message: "pruned history unavailable" } }));
+    }
+    res.end(await fetch(a.ANVIL, { method: "POST", headers: { "content-type": "application/json" }, body }).then((r) => r.text()));
+  });
+  await assertFree(8701, "pruning log node");
+  await new Promise((r) => prune.listen(8701, "127.0.0.1", r));
+  const dist = {
+    SETTLANE_DIST_DIR: ".next-e2e-outage",
+    NEXT_PUBLIC_RPC_URLS: a.ANVIL,
+    NEXT_PUBLIC_HISTORY_RPC_URLS: ["http://127.0.0.1:8701", "http://127.0.0.1:8702", a.ANVIL].join(","),
+    NEXT_PUBLIC_SETTLANE_ADDRESS: a.SETTLANE,
+    NEXT_PUBLIC_DEPLOY_BLOCK: String(a.deployed.blockNumber),
+  };
+  let server;
+  try {
+    if (!process.env.E2E_SKIP_BUILD && run("npx", ["next", "build"], dist) !== 0) throw new Error("build failed");
+    server = await serve(3924, dist);
+    // spawned asynchronously: the mock nodes live in this process and must keep answering while the spec runs
+    const child = spawn("npx", ["playwright", "test", "e2e/outage.spec.ts"], { cwd: app, env: { ...env, E2E_BASE_URL: "http://127.0.0.1:3924", OUTAGE_STATS: "http://127.0.0.1:8701/__hits", ANVIL_URL: a.ANVIL }, stdio: "inherit" });
+    const code = await new Promise((r) => child.on("exit", r));
+    failures += code === 0 ? 0 : 1;
+  } catch (error) {
+    console.error(String(error));
+    failures += 1;
+  } finally {
+    stop(server);
+    stop(a.node);
+    for (const s of holeSockets) s.destroy();
+    hole.close();
+    prune.close();
   }
 }
 

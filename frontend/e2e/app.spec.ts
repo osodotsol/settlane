@@ -1,3 +1,4 @@
+import { readFileSync, writeFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { createPublicClient, createWalletClient, getAddress, http, isAddress, keccak256, parseEther, stringToBytes, type Address } from "viem";
 import { sepolia } from "viem/chains";
@@ -48,6 +49,30 @@ const confirmed = (page: Page) => expect(page.getByText(/Confirmed in block \d+/
 
 test.describe.configure({ mode: "serial" });
 test.use({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+
+// Isolation between repetitions (E2E_REPEAT): the tests are a serial story on one chain (agreement #3 is created by the
+// first test, later tests advance the clock). Each repetition after the first reverts the node to the baseline e2e/run.mjs
+// snapshotted after seeding, and snapshots it again (a snapshot is consumed by its revert), so every full run starts from
+// the same chain. A test never depends on what an earlier repetition left behind.
+// The current snapshot id lives in a file, not in this module: Playwright restarts the worker after a failure, and a
+// restarted worker must revert to the live snapshot, not to the one already consumed.
+const BASELINE_FILE = process.env.ANVIL_BASELINE_FILE;
+let repetition = 0;
+test.beforeEach(async ({}, info) => {
+  if (info.repeatEachIndex === repetition) return;
+  repetition = info.repeatEachIndex;
+  if (!BASELINE_FILE) throw new Error("e2e/run.mjs must pass ANVIL_BASELINE_FILE (the seeded chain's snapshot) to repeat this suite");
+  expect((await rpc("evm_revert", [readFileSync(BASELINE_FILE, "utf8").trim()])).result, "revert to the seeded baseline").toBe(true);
+  writeFileSync(BASELINE_FILE, (await rpc("evm_snapshot")).result as string);
+  await expect.poll(async () => {
+    try {
+      await pub.readContract({ address: SETTLANE, abi: settlaneAbi, functionName: "getAgreement", args: [3n] });
+      return "agreement 3 exists";
+    } catch {
+      return "clean";
+    }
+  }, { message: "agreement 3 (created by the first test) is gone after the revert" }).toBe("clean");
+});
 
 test("create: the form enforces the contract's rules, then creates and funds an agreement through the wallet", async ({ page }) => {
   await openAs(page, CLIENT, "/app/create");
@@ -647,8 +672,12 @@ test("a lost create is never unlocked by the user's word; another account is not
   // a DIFFERENT agreement by the same client (another device) does not settle it (R2-C: matched on the request's terms)
   const t = await now();
   await chainSend(CLIENT, "create", [PROVIDER, VERIFIER, 86_400n, 1, [parseEther("0.01"), 0n, 0n], [t + 7_200n, 0n, 0n], [BigInt(keccak256(stringToBytes("Lost create"))), 0n, 0n]], parseEther("0.01"));
+  // wait for THIS check to finish (its verdict time changes): the earlier check's "held" must not satisfy it, and nothing
+  // may happen on-chain while it is still reading (it would then judge a chain that changed under it)
+  const previousCheck = await page.locator("[data-recovery]").getAttribute("data-recovery-at");
   await page.getByRole("button", { name: "Check the chain" }).click();
-  await expect(page.locator("[data-recovery]")).toHaveAttribute("data-recovery", "create-held", { timeout: 20_000 });
+  await expect(page.locator("[data-recovery]")).not.toHaveAttribute("data-recovery-at", previousCheck!, { timeout: 20_000 });
+  await expect(page.locator("[data-recovery]")).toHaveAttribute("data-recovery", "create-held");
   await expect(page.getByRole("button", { name: "Review and create" })).toBeDisabled();
   // the old request is approved in MetaMask after all: exactly the call it was asked to sign (simulated outside the page)
   await wallet(CLIENT).sendTransaction({ to: SETTLANE, data: asked!.data as `0x${string}`, value: BigInt(asked!.value ?? "0x0") });

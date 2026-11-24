@@ -212,7 +212,7 @@ export function TxPanel({ tx, onSuccess }: { tx: ReturnType<typeof useTx>; onSuc
           <p className="font-semibold text-ink">Outcome not known yet</p>
           <p className="mt-1 text-ink-2">{what} {s.hash && <Tx hash={s.hash} />}</p>
           {v && (
-            <p className="mt-2 text-ink-2" data-recovery={v.kind}>
+            <p className="mt-2 text-ink-2" data-recovery={v.kind} data-recovery-at={entry.recovery?.at}>
               {v.kind === "released" ? `Checked: ${v.reason} You can now send a new request.` : v.kind === "cannot-prove" ? `Checked: ${v.reason}` : `${v.kind === "override" || v.kind === "create-held" ? "" : "Checked: "}${said[v.kind] ?? ""}`}
             </p>
           )}

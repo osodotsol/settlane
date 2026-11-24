@@ -159,3 +159,28 @@
   - **Regression evidence.** New browser test "create form: typing at the first hydrated moment…": an init script seeds a saved draft and types into Provider the moment React attaches its props. It fails 10/10 on `ef30a0b`'s `CreateView.tsx` (the typed address is replaced by the saved one) and passes 40/40 with the fix. Its exact assertion: the form ends as the user saw it plus what was typed.
   - A second new test covers restoring the saved draft with nothing typed, across connect, account switch and reload.
   - 6 unit tests in `tests/draft-init.test.ts`.
+- 2026-11-24 (test reliability after `65da821`; frontend and e2e harness only).
+  - **1. Sepolia failures (real defect, fixed).** The live history reads the blocks after the verified snapshot (15,880 then) in 10,000-block chunks. Measured on 2026-11-24:
+    - publicnode refuses those ranges in 1.6 s ("pruned history unavailable").
+    - sepolia.gateway.tenderly.co never answers (6 s timeout).
+    - ethpandaops answers in 2 s.
+  - viem's fixed-order `fallback` walked all three for every chunk of every refresh (about 9.5 s), so the history could not finish inside its 10 to 12 s budget although a healthy node existed. The app stayed honest: "History may be incomplete", state read live. The tests rightly failed on completeness.
+  - **Fix:** `src/chain/adaptive-transport.ts`, for the event-log client only.
+    - It remembers health: a failed endpoint is tried last for 60 s, and the last winner is tried first.
+    - It hedges after 2.5 s.
+    - When every node fails, it combines their errors: the nodes' own answers first, timeouts last. So the history engine still sees a recoverable "beyond current head" answer. A first version surfaced only the last error in time, a timeout, which caused a gap; caught by the live probe and covered by a unit test.
+    - Contract state, simulation and receipts keep `publicClient`, unchanged.
+  - **Live probe** (history engine, real Sepolia):
+    - Old: 8.1 s incomplete, then 10.2 s.
+    - New: 6.1 to 6.8 s complete from cold, then about 0.5 s.
+  - **2. Controlled outage suite** (`e2e/outage.spec.ts`, runner stage 5): a pruning log node, a hanging node, then the healthy node.
+    - The server history must be complete within budget, and the next refresh, after a mined block, must not reach the hanging node again.
+    - Agreement, activity and explorer pages must show the complete history.
+    - The old fallback fails it: the hanging node is asked again (2 → 3). The new transport passes.
+  - **3. Repeated-run isolation.** `run.mjs` snapshots the seeded Anvil chain. Each repetition of the serial app suite reverts to it and re-snapshots; the id lives in a temp file so a worker restarted after a failure uses the live snapshot. Anvil's revert restores blocks, nonces and clock, and the pool is empty after it.
+  - **4. Lost-create race (test).** The test's second "Check the chain" waited for `data-recovery="create-held"`, which the first check had already set. The on-chain approval could then land while the second check was still reading, and the page settled correctly as "Done on-chain" instead of "Confirmed in block". `TxPanel` now exposes `data-recovery-at` (markup only) and the test waits for its own check. Recovery logic unchanged.
+  - **5. Harness ports.** A leftover Next server and Anvil from an interrupted run answered on the test ports, and `serve()` accepted them, so a run silently tested an old build and chain. The runner now requires each port to be free (waiting up to 5 s for a node it just stopped) and fails if a server exits at start. The outage stage spawns Playwright asynchronously, because its mock nodes live in the runner process.
+  - **Results:**
+    - Lint, typecheck, ABI check and build pass. Unit suite: 254 passed, 2 skipped (opt-in live).
+    - Sepolia 30/30, with Tenderly still not answering.
+    - Anvil 5/5, hanging RPC 3/3, outage 2/2, simulated-wallet app 78/78 (3 full repetitions with reverts).
