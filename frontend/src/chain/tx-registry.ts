@@ -76,6 +76,10 @@ export type TxEntry = {
    * sent again (a submit with other evidence only with the user's explicit acknowledgment).
    */
   ghosts?: Ghost[];
+  /** Hashes of the transactions THIS key's later attempts sent. They are never proof about an EARLIER request (final review H4). */
+  sent?: Hex[];
+  /** The user dismissed the finished status. The record stays only because it carries unresolved ghosts (final review H3). */
+  dismissed?: boolean;
 };
 
 export type Ghost = { startedAt: number; fn: TxAction["fn"]; data: Hex; value: string; hash?: Hex; nonceBefore?: number; blockBefore?: string };
@@ -134,10 +138,21 @@ const fromJson = (s: string) => JSON.parse(s, (_k, x) => (x && typeof x === "obj
 /** Is the request's own outcome still unproven (so it must survive a reload)? A release by proof is not; an override is. */
 const unproven = (e: TxEntry) => !isTerminal(e.state) && !(e.state.phase === "unknown" && e.cleared && e.recovery?.verdict.kind === "released");
 
+/**
+ * A request that never reached the wallet (final review M1). "checking" is only simulation: the wallet is asked after the
+ * record became "awaiting", which stores the exact call and the baseline. So a "checking" record carries no wallet request and
+ * must never block anything after a reload: it becomes a plain failure (its ghosts, which DO matter, are kept).
+ */
+const NEVER_ASKED: TxPhase = { phase: "failed", problem: { message: "The page was closed or reloaded before your wallet was asked.", recovery: "Nothing was sent. You can try again." } };
+
 /** Entries worth keeping across a reload, as stored: unproven requests, and any entry that still carries ghosts. */
 export function serialize(entries: TxEntry[]): string {
   // `live` is per tab; other tabs learn that a request is open from its Web Lock, or ownerTab + a fresh heartbeatAt
-  return toJson(entries.filter((e) => unproven(e) || (e.ghosts?.length ?? 0) > 0).map((e) => ({ ...e, live: false, ownerTab: e.live ? e.ownerTab : undefined })));
+  return toJson(
+    entries
+      .filter((e) => (e.state.phase === "checking" ? (e.ghosts?.length ?? 0) > 0 : unproven(e) || (e.ghosts?.length ?? 0) > 0))
+      .map((e) => ({ ...e, state: e.state.phase === "checking" ? NEVER_ASKED : e.state, live: false, ownerTab: e.live ? e.ownerTab : undefined })),
+  );
 }
 
 /**
@@ -167,6 +182,8 @@ export function deserialize(raw: string | null, _now?: number): TxEntry[] {
     // no age limit (R2-C): an unproven request is kept until the chain resolves it
     .filter((e) => e && typeof e.key === "string" && inScope(e))
     .map((e) => {
+      // records stored by earlier versions in the "checking" phase never reached the wallet either (M1): heal them
+      if (e.state.phase === "checking") return { ...e, live: false, state: NEVER_ASKED, lateHashes: e.lateHashes ?? [] };
       if (isTerminal(e.state) || (e.state.phase === "unknown" && e.cleared)) return { ...e, live: false, lateHashes: e.lateHashes ?? [] };
       const hash = e.state.phase === "pending" ? e.state.hash : e.state.phase === "unknown" ? e.state.hash : undefined;
       const state: TxPhase = e.state.phase === "unknown" ? { ...e.state, reason: e.state.reason === "stopped" || e.state.reason === "wallet-error" ? e.state.reason : "reloaded" } : { phase: "unknown", reason: "reloaded", hash };

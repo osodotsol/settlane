@@ -139,9 +139,10 @@ export const isSameCall = (tx: Pick<MinedTx, "to" | "input" | "value">, call: { 
 
 /**
  * Searches the account's transactions with nonces [fromNonce, toNonce) for the recorded call (R2-C rule 2), and reports which
- * transaction used each nonce. `complete` is false when the range was larger than MAX_NONCES_SEARCHED.
+ * transaction used each nonce. Transactions in `skip` (lower-case hashes) never count as the match: a later attempt's own
+ * transaction is not proof about an earlier request (final review H4). `complete` is false when the range was larger than MAX_NONCES_SEARCHED.
  */
-export async function searchAccountTxs(account: Address, call: { data: Hex; value: string }, fromNonce: number, toNonce: number, fromBlock: bigint): Promise<{ match?: MinedTx; byNonce: Map<number, MinedTx>; complete: boolean }> {
+export async function searchAccountTxs(account: Address, call: { data: Hex; value: string }, fromNonce: number, toNonce: number, fromBlock: bigint, skip?: ReadonlySet<string>): Promise<{ match?: MinedTx; byNonce: Map<number, MinedTx>; complete: boolean }> {
   const byNonce = new Map<number, MinedTx>();
   const head = await publicClient.getBlockNumber({ cacheTime: 0 }); // never viem's cached head: it can predate the transaction
   const last = Math.min(toNonce, fromNonce + MAX_NONCES_SEARCHED);
@@ -149,7 +150,7 @@ export async function searchAccountTxs(account: Address, call: { data: Hex; valu
     const tx = await minedTxByNonce(account, k, fromBlock, head);
     if (!tx) throw new Error(`the transaction with nonce ${k} could not be found`);
     byNonce.set(k, tx);
-    if (isSameCall(tx, call)) return { match: tx, byNonce, complete: true };
+    if (isSameCall(tx, call) && !skip?.has(tx.hash.toLowerCase())) return { match: tx, byNonce, complete: true };
   }
   return { byNonce, complete: last === toNonce };
 }

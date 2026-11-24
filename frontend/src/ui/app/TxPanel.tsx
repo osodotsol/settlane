@@ -81,7 +81,7 @@ export function TxPanel({ tx, onSuccess }: { tx: ReturnType<typeof useTx>; onSuc
   const { chainId } = useConnection();
   const open = entry !== undefined && (entry.state.phase === "awaiting" || entry.state.phase === "pending" || entry.state.phase === "checking");
   const now = useNow(open);
-  if (!entry) return <OtherAccounts others={others} />;
+  if (!entry || entry.dismissed) return <OtherAccounts others={others} />;
   const s = entry.state;
   const box = "mt-4 rounded-xl border px-4 py-3 text-sm";
   const notes = (

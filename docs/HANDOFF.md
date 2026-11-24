@@ -17,6 +17,11 @@ Do not modify src/ unless the assignment allows it. Do not commit or push.
 ```
 
 ## Active assignment
+- **ID:** F-final review fixes (frontend, D-032 to D-036). **Commit:** the commit "Frontend: fix the final review findings M1, H3, H4, M3" on `settlane/dev` (see `git log -1`).
+- **Status:** the independent review at `deefab5` (`docs/reviews/2026-11-24-final-independent-review.md`) found M1, H3, H4 and M3 confirmed; the owner approved the fixes; they are implemented with regression tests (`frontend/tests/final-review-fixes.test.ts`). **Awaiting the owner's review.** The frontend was never run with a real MetaMask after R1; the smoke test is in `docs/PROGRESS.md`. The Fe contract, ABI and deployment are unchanged. Not committed: the seven unreviewed `.claude/skills/` directories.
+- **Open, not fixed (Low or unconfirmed):** C1 precompile payees (hardening), H1 two-tab admission race, H2 identical-terms create across devices, M2, M4 to M7 of `docs/reviews/2026-11-23-final-technical-audit.md`; an unresolved pre-R2-C claim stored without calldata unlocks a different payee after attestation (audit H3 second probe).
+
+## Previous assignment (R-006)
 - **ID:** R-006 Phase 3B review (Refund, the second transition that moves ETH, plus the G-1 and provenance lint rules)
 - **Commit:** the Phase 3B commit on `settlane/dev` (see `git log -1`).
 - **Status: NOT RUN by Codex.** Codex is not installed in this environment. A Claude-side review (Opus 5.5) of `f393eb6` was run at the owner's request (`docs/reviews/2026-11-19-phase3b.md`): no Critical, High or Medium finding, two Low findings (L-1, L-2), **both fixed in Phase 4A** (D-025). D-024 is approved. The fixes are not independently re-reviewed. R-005 was never run by Codex either, so a Codex run should cover both, at the Phase 4A commit (see `git log`). Question 6 below is partly answered: the 136 controls missed the production clock of four arms (L-1) and a cross-payout payee (L-2), now covered by 6 `l1-*` controls and two tests.

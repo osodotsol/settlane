@@ -91,9 +91,10 @@ export function callOf(req: TxRequest): { data: Hex; value: string } {
 /**
  * The ghosts (earlier unproven requests) that may still take effect, after checking the chain (R2-C). A ghost is dropped
  * only with proof: its exact call was found mined from the account, or the contract can permanently no longer accept it.
- * Any read failure keeps it.
+ * Any read failure keeps it. `mine` holds the hashes of the later attempts' own transactions: an identical retry that mines
+ * is NOT proof that the earlier request was mined (every accepted submit bumps the revision, so both could land).
  */
-async function liveGhosts(action: TxAction, account: Address, ghosts: Ghost[]): Promise<Ghost[]> {
+async function liveGhosts(action: TxAction, account: Address, ghosts: Ghost[], mine: ReadonlySet<string> = new Set()): Promise<Ghost[]> {
   if (ghosts.length === 0) return ghosts;
   let snap: Snapshot | undefined;
   let blockTime: bigint | undefined;
@@ -109,7 +110,7 @@ async function liveGhosts(action: TxAction, account: Address, ghosts: Ghost[]): 
     if (snap?.kind === "milestone" && blockTime !== undefined && deadReason(own, { data: g.data }, snap, blockTime)) continue;
     if (g.hash && (await publicClient.getTransactionReceipt({ hash: g.hash }).catch(() => null))) continue;
     if (g.nonceBefore !== undefined && g.blockBefore !== undefined && latest !== undefined && latest > g.nonceBefore) {
-      const found = await searchAccountTxs(account, { data: g.data, value: g.value }, g.nonceBefore, latest, BigInt(g.blockBefore) - 2n).catch(() => null);
+      const found = await searchAccountTxs(account, { data: g.data, value: g.value }, g.nonceBefore, latest, BigInt(g.blockBefore) - 2n, mine).catch(() => null);
       if (found?.match) continue;
     }
     alive.push(g);
@@ -136,7 +137,7 @@ export async function startTx({ req, label, account, walletChainId, write, refre
     ghosts.push({ startedAt: previous.startedAt, fn: previous.action.fn, data: previous.call.data, value: previous.call.value, hash: previous.state.hash, nonceBefore: previous.nonceBefore, blockBefore: previous.blockBefore });
   }
   const call = callOf(req);
-  registry.set({ key, label, action, account, chainId: CHAIN.id, contract: SETTLANE_ADDRESS, startedAt: Date.now(), attempt, state: { phase: "checking" }, live: true, lateHashes: previous?.lateHashes ?? [], ghosts });
+  registry.set({ key, label, action, account, chainId: CHAIN.id, contract: SETTLANE_ADDRESS, startedAt: Date.now(), attempt, state: { phase: "checking" }, live: true, lateHashes: previous?.lateHashes ?? [], sent: previous?.sent ?? [], ghosts });
   const set = (patch: (e: TxEntry) => TxEntry) => registry.update(key, attempt, patch);
 
   // Last line of defence for addresses (R2 M2): every address argument must pass the EIP-55 check (checksummed or one
@@ -160,7 +161,8 @@ export async function startTx({ req, label, account, walletChainId, write, refre
   //    decision or another create would let the late original win. A submit with other evidence needs the user's explicit
   //    acknowledgment (the alternative could cost the provider the delivery deadline); a create never gets here (held).
   if (ghosts.length > 0) {
-    const alive = await liveGhosts(action, account, ghosts);
+    const own = new Set<string>((previous?.sent ?? []).map((h) => h.toLowerCase()));
+    const alive = await liveGhosts(action, account, ghosts, own);
     set((e) => ({ ...e, ghosts: alive }));
     const different = alive.filter((g) => g.data.toLowerCase() !== call.data.toLowerCase() || g.value !== call.value);
     if (different.length > 0 && !(req.fn === "submit" && acceptLateReplace)) {
@@ -219,7 +221,7 @@ export async function startTx({ req, label, account, walletChainId, write, refre
   }
 
   // 4. A hash means the wallet broadcast it. If this attempt was superseded, record the late hash on the current one.
-  const applied = set((e) => (e.state.phase === "found" || e.state.phase === "confirmed" ? { ...e, lateHashes: [...e.lateHashes, hash] } : { ...e, state: { phase: "pending", hash, since: Date.now() } }));
+  const applied = set((e) => (e.state.phase === "found" || e.state.phase === "confirmed" ? { ...e, lateHashes: [...e.lateHashes, hash] } : { ...e, sent: [...(e.sent ?? []), hash], state: { phase: "pending", hash, since: Date.now() } }));
   if (!applied) {
     const current = registry.get(key);
     if (current) registry.set({ ...current, lateHashes: [...current.lateHashes, hash] });
@@ -393,9 +395,15 @@ export async function confirmNotInWallet(key: string, refresh: () => unknown): P
   await reconcile(key, refresh);
 }
 
-/** Removes a finished (or cleared) entry. */
+/**
+ * Hides a finished (or cleared) status. An entry that still carries unresolved earlier requests (ghosts) is NOT removed: only
+ * its status is hidden, so the earlier request's calldata, payee and warning keep constraining what may be sent (final review H3).
+ */
 export function dismiss(key: string) {
-  if (canStart(registry.get(key))) registry.remove(key);
+  const e = registry.get(key);
+  if (!e || !canStart(e)) return;
+  if ((e.ghosts?.length ?? 0) > 0) registry.update(key, e.attempt, (x) => ({ ...x, dismissed: true }));
+  else registry.remove(key);
 }
 
 /** The action part of the registry key for a milestone's requests (one per milestone per account). */

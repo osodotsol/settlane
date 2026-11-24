@@ -3,11 +3,10 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { formatEther } from "viem";
-import { publicClient } from "@/chain/client";
 import { CREATE_KEY, useTx } from "@/chain/write";
 import { useWalletActions } from "@/chain/wallet-actions";
 import { useWallet } from "@/chain/use-wallet";
-import { latestBlockTime } from "@/contract/read";
+import { readCreatePreflight } from "@/chain/preflight";
 import { toCreateArgs, type Draft, type FormErrors } from "@/domain/create-form";
 import { formatEth } from "@/domain/format";
 import { Button } from "../Button";
@@ -18,8 +17,9 @@ type Result = { ok: true; draft: Draft } | { ok: false; errors: FormErrors };
 /** The last step of Create: a summary, one confirmation, then the shared simulate, sign and receipt path. */
 export function CreateSubmit({ result, onAttempt, total, onCreated }: { result: Result; onAttempt: () => void; total: bigint; onCreated?: (request: { phase: string; startedAt: number; createdId?: bigint }) => void }) {
   const wallet = useWallet();
+  const [preflight, setPreflight] = useState(false);
   const tx = useTx(CREATE_KEY);
-  const busy = !tx.canStart;
+  const busy = !tx.canStart || preflight;
   const done = tx.entry?.state.phase === "confirmed" || tx.entry?.state.phase === "found";
   // the draft is cleared only once the chain shows the agreement exists (draft-archive.ts); every other outcome keeps it
   const phase = tx.entry?.state.phase;
@@ -38,7 +38,15 @@ export function CreateSubmit({ result, onAttempt, total, onCreated }: { result: 
     setConfirming(false);
     if (!result.ok || !wallet.address) return;
     setLocal(null);
-    const [balance, blockTime] = await Promise.all([publicClient.getBalance({ address: wallet.address }), latestBlockTime()]);
+    if (preflight) return;
+    setPreflight(true);
+    const pre = await readCreatePreflight(wallet.address).finally(() => setPreflight(false));
+    if (!pre.ok) {
+      // nothing was sent and nothing was asked of the wallet; the draft is untouched (final review M3)
+      setLocal("Sepolia could not be read just now (the balance or the latest block), so nothing was sent and your wallet was not asked. Your draft is kept. Try again in a moment.");
+      return;
+    }
+    const { balance, blockTime } = pre;
     if (balance < result.draft.total) {
       setLocal(`This account holds ${formatEth(balance)} ETH on Sepolia, but the agreement locks ${formatEther(result.draft.total)} ETH plus a small network fee. Get test ETH from a Sepolia faucet or lower the amounts.`);
       return;
