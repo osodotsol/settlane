@@ -5,7 +5,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useHistory, useOverview } from "@/chain/queries";
 import { useMounted, useWallet } from "@/chain/use-wallet";
 import { commit } from "@/domain/commitment";
-import { archiveIfCreated, readArchive, type ArchivedDraft } from "@/domain/draft-archive";
+import { archiveIfCreated, readArchive, readSubmitted, rememberSubmitted, sameDraft, type ArchivedDraft } from "@/domain/draft-archive";
 import { MAX_MILESTONES, UNIT_SECONDS, emptyForm, emptyMilestone, validateCreate, type FormErrors, type FormInput, type MilestoneInput, type Unit } from "@/domain/create-form";
 import { formatUtc } from "@/domain/format";
 import { Amount } from "../Amount";
@@ -86,11 +86,15 @@ function CreateForm({ restore }: { restore: boolean }) {
   const summaryRef = useRef<HTMLDivElement>(null);
   const session = () => (typeof window === "undefined" ? undefined : window.sessionStorage);
   const onCreated = (request: { phase: string; startedAt: number; createdId?: bigint }) => {
-    const a = archiveIfCreated(session(), request, form);
+    // archive the draft that was SUBMITTED (M7); clear the editor only if it still shows exactly that draft
+    const submitted = readSubmitted(session()) ?? form;
+    const a = archiveIfCreated(session(), request, submitted);
     if (!a) return;
     setArchived(a);
-    setForm(emptyForm());
-    setAttempts(0);
+    if (sameDraft(form, submitted)) {
+      setForm(emptyForm());
+      setAttempts(0);
+    }
   };
 
   // Keep the saved copy in sync (browser only).
@@ -244,7 +248,7 @@ function CreateForm({ restore }: { restore: boolean }) {
               <li>The exact deadlines are fixed when you press Create and sign, from the latest block&apos;s time. The contract stores them as given and never moves them, even if the transaction lands minutes later.</li>
             </ul>
           )}
-          <CreateSubmit result={result} onAttempt={() => setAttempts((n) => n + 1)} total={total} onCreated={onCreated} />
+          <CreateSubmit result={result} onAttempt={() => setAttempts((n) => n + 1)} total={total} onCreated={onCreated} onSubmit={() => rememberSubmitted(session(), form)} />
         </aside>
       </form>
     </>

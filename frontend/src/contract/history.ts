@@ -171,20 +171,28 @@ export function createHistory(opts: HistoryOptions) {
     const todo = wanted.flatMap((r) => chunkRanges(r.from, r.to, chunk));
     // 2. read every chunk; a chunk that fails becomes a gap (with the node's error), never an empty result
     const failed: Gap[] = [];
+    const unread: Gap[] = []; // suffixes a lagging node did not serve
     let unreadFrom: bigint | null = null; // the lowest block a lagging node did not serve yet (re-read next time)
     await pool(todo, 3, async ([from, to]) => {
       try {
         const r = await scanRange(from, to);
         applyRead(from, r.upper, r.events);
-        if (r.upper < to && (unreadFrom === null || r.upper + 1n < unreadFrom)) unreadFrom = r.upper + 1n;
+        if (r.upper < to) {
+          unread.push({ from: r.upper + 1n, to, error: "the node had not served these blocks yet" });
+          if (unreadFrom === null || r.upper + 1n < unreadFrom) unreadFrom = r.upper + 1n;
+        }
       } catch (error) {
         failed.push({ from, to, error: message(error) });
       }
     });
-    gaps = mergeRanges(failed).map((g) => ({ ...g, error: failed.find((f) => f.from >= g.from && f.to <= g.to)?.error ?? "unreadable" }));
     // scannedTo is the newest block read contiguously; blocks a lagging node did not serve are inside the next window
     const reached = unreadFrom !== null ? (unreadFrom as bigint) - 1n : latest;
     if (scannedTo === null || reached > scannedTo) scannedTo = reached;
+    // Residual fix M4: an unread suffix the NEXT window will not cover (e.g. an old gap retried on a lagging node) stays a gap,
+    // so it is read again and the history is never called complete without it.
+    const nextFrom = scannedTo - reorgWindow + 1n > opts.deployBlock ? scannedTo - reorgWindow + 1n : opts.deployBlock;
+    for (const u of unread) if (u.from < nextFrom) failed.push({ from: u.from, to: u.to < nextFrom ? u.to : nextFrom - 1n, error: u.error });
+    gaps = mergeRanges(failed).map((g) => ({ ...g, error: failed.find((f) => f.from >= g.from && f.to <= g.to)?.error ?? "unreadable" }));
     started = true;
     return view();
   }

@@ -20,16 +20,31 @@ type Entry = { value?: unknown; fetchedAt?: number; inflight?: Promise<unknown> 
 export const MAX_ENTRIES = 256;
 const entries = new Map<string, Entry>();
 
+/** Thrown when every slot has a read in flight: the bound holds, and the caller reports the server as busy (residual fix M6). */
+export class CacheFullError extends Error {
+  constructor() {
+    super("The server is busy reading Sepolia; try again in a moment.");
+    this.name = "CacheFullError";
+  }
+}
+
 function touch(key: string): Entry {
-  const entry = entries.get(key) ?? {};
+  const existing = entries.get(key);
+  if (!existing && entries.size >= MAX_ENTRIES) {
+    // admission: make room by evicting the least recently used settled entry; with every slot in flight, admit nothing
+    let evicted = false;
+    for (const [k, e] of entries) {
+      if (!e.inflight) {
+        entries.delete(k);
+        evicted = true;
+        break;
+      }
+    }
+    if (!evicted) throw new CacheFullError();
+  }
+  const entry = existing ?? {};
   entries.delete(key);
   entries.set(key, entry); // most recently used last
-  if (entries.size > MAX_ENTRIES) {
-    for (const [k, e] of entries) {
-      if (entries.size <= MAX_ENTRIES) break;
-      if (k !== key && !e.inflight) entries.delete(k);
-    }
-  }
   return entry;
 }
 

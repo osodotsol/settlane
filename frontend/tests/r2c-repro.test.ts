@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fakeLocks } from "./fake-locks";
 
 // R2-C independent review: concrete reproductions of transaction-safety defects in the R1 + R2-A + R2-B code. Each test
 // states the SAFE behavior; at 5963bba they fail (see docs/PROGRESS.md R2-C). Mocked chain and wallet, no network.
@@ -170,14 +171,7 @@ describe("R2-C reproductions", () => {
     const store = new Map<string, string>();
     const storage = () => ({ getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) });
     // one browser-wide lock manager shared by both tabs (navigator.locks), as the Web Locks API is
-    const held = new Set<string>();
-    const locks = () => ({
-      request: (name: string, cb: () => Promise<void>) => {
-        held.add(name);
-        return cb().finally(() => held.delete(name));
-      },
-      query: async () => ({ held: [...held].map((name) => ({ name })) }),
-    });
+    const { held, locks } = fakeLocks();
     let now = 10_000;
     const a = createRegistry(storage, () => now, "tab-a", locks);
     const b = createRegistry(storage, () => now, "tab-b", locks);

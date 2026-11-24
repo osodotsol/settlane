@@ -123,15 +123,30 @@ describe("the request runner", () => {
     expect(registry.get(mk(id, 0))!.state.phase).toBe("failed");
   });
 
-  it("'Check the chain' finds an action that took effect while the page was not watching", async () => {
+  it("'Check the chain' on a lost claim whose milestone is now Paid: released because the milestone is final, never reported as THIS claim", async () => {
+    // Residual fix M2b: the state does not say who was paid. Here the account's nonce never moved, so this request was never
+    // executed (another device or payee was): the page used to say "Done on-chain: this action took effect", which was false.
     const w = heldWallet();
     const key = mk(id, 0);
     void run(id, w.write);
     await until(() => registry.get(key)?.state.phase === "awaiting");
     stopWaiting(key);
-    chain.readContract.mockResolvedValueOnce([4, 1n, 0n, 0n, 0n, 0n, 0n, 1n] as never); // now Paid
-    await reconcile(key, () => undefined);
-    expect(registry.get(key)!.state.phase).toBe("found");
+    chain.readContract.mockResolvedValue([4, 1n, 0n, 0n, 0n, 0n, 0n, 1n] as never); // now Paid
+    try {
+      await reconcile(key, () => undefined);
+      // the wallet request is still attached in this tab (Stop waiting does not cancel it): it is open here, not "done"
+      expect(registry.get(key)!.state.phase).toBe("unknown");
+      expect(registry.get(key)!.recovery?.verdict.kind).toBe("open-here");
+      // after a reload (nothing attached any more) the final milestone releases it, by proof, with the reason stated
+      registry.set({ ...registry.get(key)!, live: false, state: { phase: "unknown", reason: "reloaded" } });
+      await reconcile(key, () => undefined);
+      const e = registry.get(key)!;
+      expect(e.state.phase).toBe("unknown");
+      expect(e.recovery?.verdict.kind).toBe("released");
+      expect(e.recovery?.verdict.kind === "released" && e.recovery.verdict.reason).toMatch(/already paid/);
+    } finally {
+      chain.readContract.mockResolvedValue([3, 1n, 0n, 0n, 0n, 0n, 0n, 1n] as never);
+    }
   });
 
   it("'Check the chain' releases a lost request only after the user confirms it is gone from the wallet, and never while something is pending", async () => {

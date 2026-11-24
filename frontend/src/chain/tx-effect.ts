@@ -78,7 +78,17 @@ export async function effectNow(action: TxAction, account: Address, before: Snap
     const evidence = sent.args[2] as bigint;
     return { done: after.revision > before.revision && after.evidence === evidence && after.state !== "funded" };
   }
-  if (action.fn !== "create" && before.kind === "milestone" && after.kind === "milestone") return { done: milestoneEffect(action.fn, before, after) };
+  if (action.fn !== "create" && before.kind === "milestone" && after.kind === "milestone") {
+    // Residual fix M2b. A claim or refund names a payee, which the milestone's state does not record: "Paid" or "Refunded" may
+    // be another request's payout (another device, another payee). It is never reported as THIS request; this request is then
+    // confirmed by its exact transaction (rule 2) or released because the milestone is final (rule 9).
+    if (action.fn === "claim" || action.fn === "refund") return { done: false };
+    // A review names a revision: the effect counts only when the milestone is still at that revision.
+    if ((action.fn === "approve" || action.fn === "reject") && (sent?.fn === "approve" || sent?.fn === "reject")) {
+      if (after.revision !== (sent.args[3] as bigint)) return { done: false };
+    }
+    return { done: milestoneEffect(action.fn, before, after) };
+  }
   return { done: false };
 }
 
@@ -86,8 +96,9 @@ export async function effectNow(action: TxAction, account: Address, before: Snap
  * Why the contract can PERMANENTLY no longer accept this milestone request, or undefined (R2-C rule 9). Only conditions that
  * can never revert: block time only grows, the revision only grows, and approved, paid and refunded are final states.
  */
-export function deadReason(action: TxAction, call: { data: Hex } | undefined, m: MilestoneSnap, blockTime: bigint): string | undefined {
-  if (action.fn === "create") return undefined;
+export function deadReason(action: TxAction, call: { data: Hex } | undefined, m: MilestoneSnap | undefined, blockTime: bigint): string | undefined {
+  if (action.fn === "create") return createDeadReason(call, blockTime);
+  if (!m) return undefined;
   const final = m.state === "paid" || m.state === "refunded";
   switch (action.fn) {
     case "submit":
@@ -108,6 +119,26 @@ export function deadReason(action: TxAction, call: { data: Hex } | undefined, m:
     case "refund":
       return final || m.state === "approved" ? `the milestone is already ${m.state}` : undefined;
   }
+}
+
+/**
+ * A create can never be mined successfully once the chain's time has reached the earliest delivery deadline in its recorded call:
+ * the contract requires every used `deliver_by` to be in the future (LIFECYCLE "Time", handlers.fe "deliver_by not in the
+ * future"). `blockTime` must come from a FINALIZED block, so no reorganization can bring an earlier time back. Without the
+ * recorded call nothing is known, and nothing is released.
+ */
+export function earliestDeliverBy(call: { data: Hex } | undefined): bigint | undefined {
+  const sent = callArgs(call);
+  if (sent?.fn !== "create") return undefined;
+  const n = Number(sent.args[3]);
+  const deliverBys = (sent.args[5] as readonly bigint[]).slice(0, n);
+  return deliverBys.length ? deliverBys.reduce((a, b) => (b < a ? b : a)) : undefined;
+}
+
+export function createDeadReason(call: { data: Hex } | undefined, finalizedTime: bigint): string | undefined {
+  const first = earliestDeliverBy(call);
+  if (first === undefined || finalizedTime < first) return undefined;
+  return "its earliest delivery deadline has passed in a finalized Sepolia block, and the contract refuses a create whose deadline is not in the future";
 }
 
 /** The search of an account's transactions by nonce needs the chain's history; it is bounded so a check stays quick. */

@@ -41,3 +41,32 @@ export function readArchive(session: Session | undefined): ArchivedDraft | null 
     return null;
   }
 }
+
+/**
+ * The draft exactly as it was when "Create and sign" was pressed (residual fix M7). The form stays editable while the wallet
+ * and the chain answer, so the archive must hold what was SUBMITTED, not what the form shows later; kept for the tab session so
+ * a reload does not lose it.
+ */
+export const SUBMITTED_KEY = "settlane:create-draft:submitted";
+
+export function rememberSubmitted(session: Session | undefined, form: FormInput): void {
+  try {
+    session?.setItem(SUBMITTED_KEY, JSON.stringify(form));
+  } catch {
+    /* storage unavailable: the current form is archived instead */
+  }
+}
+
+export function readSubmitted(session: Session | undefined): FormInput | null {
+  try {
+    const raw = session?.getItem(SUBMITTED_KEY);
+    if (!raw) return null;
+    const f = JSON.parse(raw) as FormInput;
+    return f && Array.isArray(f.milestones) ? f : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Is the editor still showing exactly the submitted draft (then it may be cleared; otherwise the user's edits are kept)? */
+export const sameDraft = (a: FormInput, b: FormInput) => JSON.stringify(a) === JSON.stringify(b);

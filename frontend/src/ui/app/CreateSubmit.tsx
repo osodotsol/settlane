@@ -15,7 +15,7 @@ import { ConfirmBar, TxPanel } from "./TxPanel";
 type Result = { ok: true; draft: Draft } | { ok: false; errors: FormErrors };
 
 /** The last step of Create: a summary, one confirmation, then the shared simulate, sign and receipt path. */
-export function CreateSubmit({ result, onAttempt, total, onCreated }: { result: Result; onAttempt: () => void; total: bigint; onCreated?: (request: { phase: string; startedAt: number; createdId?: bigint }) => void }) {
+export function CreateSubmit({ result, onAttempt, total, onCreated, onSubmit }: { result: Result; onAttempt: () => void; total: bigint; onCreated?: (request: { phase: string; startedAt: number; createdId?: bigint }) => void; onSubmit?: () => void }) {
   const wallet = useWallet();
   const [preflight, setPreflight] = useState(false);
   const tx = useTx(CREATE_KEY);
@@ -52,6 +52,7 @@ export function CreateSubmit({ result, onAttempt, total, onCreated }: { result: 
       return;
     }
     const { args, value } = toCreateArgs(result.draft, blockTime);
+    onSubmit?.(); // the exact draft being sent (M7)
     tx.start({ fn: "create", args, value }, "Create and fund");
   };
 

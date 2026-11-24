@@ -225,7 +225,7 @@ type Storage = { getItem(k: string): string | null; setItem(k: string, v: string
 
 /** The part of the Web Locks API the registry uses (navigator.locks), injectable for tests. */
 export type Locks = {
-  request(name: string, cb: () => Promise<void>): Promise<unknown>;
+  request(name: string, options: { ifAvailable?: boolean }, cb: (lock: unknown) => Promise<void>): Promise<unknown>;
   query(): Promise<{ held?: { name?: string }[] }>;
 };
 
@@ -296,23 +296,58 @@ export function createRegistry(storage: () => Storage | undefined, now: () => nu
 
   // Web Locks (R2-C): a tab holds `lockName(key)` for as long as it holds a live wallet request. The browser releases it when
   // the tab closes, reloads or crashes, and it is not affected by timer throttling in hidden tabs.
+  // Since the residual-risk fixes (H1) the lock is taken BEFORE a request is admitted (`claim`), with `ifAvailable`: a second
+  // tab of the same browser cannot start the same action while the first is still checking it with the contract.
   const mineLocked = new Map<string, () => void>();
-  const syncLocks = () => {
+  /** Keys claimed by this tab whose entry is not yet live (between `claim` and `set`): never released in that interval. */
+  const reserved = new Set<string>();
+  const acquire = (key: string, waitIfHeld: boolean): Promise<boolean> => {
     const l = locks?.();
-    if (!l) return;
+    if (!l) return Promise.resolve(true); // no Web Locks in this browser: the heartbeat is the only cross-tab signal
+    if (mineLocked.has(key)) return Promise.resolve(true);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    return new Promise<boolean>((resolve) => {
+      l.request(lockName(key), waitIfHeld ? {} : { ifAvailable: true }, (lock) => {
+        if (!lock) {
+          resolve(false);
+          return Promise.resolve();
+        }
+        mineLocked.set(key, release);
+        resolve(true);
+        return held;
+      }).catch(() => {
+        mineLocked.delete(key);
+        resolve(false);
+      });
+    });
+  };
+  const syncLocks = () => {
+    if (!locks?.()) return;
     const live = new Set(liveHere().map((e) => e.key));
     for (const key of live) {
-      if (mineLocked.has(key)) continue;
-      let release!: () => void;
-      const held = new Promise<void>((r) => (release = r));
-      mineLocked.set(key, release);
-      l.request(lockName(key), () => held).catch(() => mineLocked.delete(key));
+      reserved.delete(key);
+      if (!mineLocked.has(key)) void acquire(key, true); // e.g. a pending transaction followed again after "Check the chain"
     }
     for (const [key, release] of mineLocked) {
-      if (live.has(key)) continue;
+      if (live.has(key) || reserved.has(key)) continue;
       release();
       mineLocked.delete(key);
     }
+  };
+  /**
+   * Reserves `key` for a new request in THIS tab: true when no other tab of this browser holds it. Call before admitting a
+   * request; on true, `set` a live entry next (or `unclaim`).
+   */
+  const claim = async (key: string): Promise<boolean> => {
+    reserved.add(key);
+    const ok = await acquire(key, false);
+    if (!ok) reserved.delete(key);
+    return ok;
+  };
+  const unclaim = (key: string) => {
+    reserved.delete(key);
+    syncLocks();
   };
   listeners.add(syncLocks);
   /** Is this request still open in ANOTHER tab? Web Lock first; the heartbeat only where locks are unavailable or say no. */
@@ -332,6 +367,8 @@ export function createRegistry(storage: () => Storage | undefined, now: () => nu
 
   return {
     tabId,
+    claim,
+    unclaim,
     syncFromStorage,
     heartbeat,
     openElsewhere,
@@ -395,7 +432,7 @@ export function tabIdentity(session: { getItem(k: string): string | null; setIte
   }
 }
 
-const browserLocks = (): Locks | undefined => (typeof navigator !== "undefined" && "locks" in navigator ? (navigator.locks as unknown as Locks) : undefined);
+const browserLocks = (): Locks | undefined => (typeof navigator !== "undefined" && "locks" in navigator && navigator.locks ? (navigator.locks as unknown as Locks) : undefined);
 
 export const registry: Registry = createRegistry(browserStorage, Date.now, tabIdentity(typeof window === "undefined" ? undefined : window.sessionStorage), browserLocks);
 

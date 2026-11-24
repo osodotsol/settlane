@@ -7,12 +7,12 @@ import { sepolia } from "wagmi/chains";
 import { publicClient } from "@/chain/client";
 import { CHAIN, SETTLANE_ADDRESS } from "@/config/chain";
 import { settlaneAbi } from "@/contract/abi";
-import { describeTxError, walletErrorKind } from "./errors";
+import { describeTxError, walletErrorKind, type TxProblem } from "./errors";
 import { checkAddress } from "@/domain/address";
 import { gasWithMargin } from "./gas";
 import { useRefreshChainData } from "./queries";
 import { deadReason, effectNow, isSameCall, readSnapshot, searchAccountTxs, type Snapshot, type TxAction } from "./tx-effect";
-import { assessRecovery, releases, type RecoveryFacts } from "./tx-recovery";
+import { assessRecovery, releases, type RecoveryFacts, type Verdict } from "./tx-recovery";
 import { actionKey, baseOf, blockReason, canStart, isTerminal, registry, requestKey, type Ghost, type TxEntry } from "./tx-registry";
 
 // Every write goes through one path: pin the network, SIMULATE the exact call against the contract with the
@@ -127,12 +127,57 @@ async function liveGhosts(action: TxAction, account: Address, ghosts: Ghost[], m
  * finds the action already registered and cannot start it again. The promise outlives the component: it
  * keeps updating the registry when the user navigates away, and applies a late wallet answer.
  */
+// Requests being admitted in this tab (between the click and the live entry): a second click finds the key here (H1).
+const starting = new Set<string>();
+
+// Refusals that must NOT be written to the shared registry: the action belongs to another tab, whose stored record a write from
+// this tab could overwrite. Shown in this tab only, never stored.
+const refusals = new Map<string, TxProblem>();
+const refusalListeners = new Set<() => void>();
+let refusalSnapshot: ReadonlyMap<string, TxProblem> = new Map();
+const setRefusal = (key: string, p: TxProblem | undefined) => {
+  if (p) refusals.set(key, p);
+  else refusals.delete(key);
+  refusalSnapshot = new Map(refusals);
+  refusalListeners.forEach((l) => l());
+};
+const refusalStore = {
+  subscribe: (l: () => void) => {
+    refusalListeners.add(l);
+    return () => refusalListeners.delete(l);
+  },
+  snapshot: () => refusalSnapshot,
+};
+const NO_REFUSALS: ReadonlyMap<string, TxProblem> = new Map();
+export const IN_ANOTHER_TAB: TxProblem = {
+  message: "This action is already being requested in another tab of this site.",
+  recovery: "Finish or reject it there (or in MetaMask). Nothing was sent from this tab.",
+};
+
 export async function startTx({ req, label, account, walletChainId, write, refresh, acceptLateReplace }: StartParams): Promise<void> {
   const action = actionOf(req);
   // one record per action PER ACCOUNT on this chain and contract (R2-B): another account's request never blocks this one
   const key = requestKey(account, actionKey(action));
-  const previous = registry.get(key);
-  if (!canStart(previous)) return;
+  if (starting.has(key) || !canStart(registry.get(key))) return;
+  // Cross-tab admission (residual-risk fix H1): this tab must hold the action's Web Lock BEFORE the request is admitted, so two
+  // tabs can never both be checking or asking the wallet for the same action.
+  starting.add(key);
+  let claimed: boolean;
+  try {
+    claimed = await registry.claim(key);
+  } finally {
+    starting.delete(key);
+  }
+  if (!claimed) {
+    setRefusal(key, IN_ANOTHER_TAB);
+    return;
+  }
+  setRefusal(key, undefined);
+  const previous = registry.get(key); // read again: another tab's record may have arrived while the lock was requested
+  if (!canStart(previous)) {
+    registry.unclaim(key);
+    return;
+  }
   const attempt = (previous?.attempt ?? 0) + 1;
   // An overridden earlier request (its outcome never proven) becomes a GHOST of the new attempt: it is remembered, stored,
   // and it constrains what may be sent until the chain shows it can no longer take effect (R2-C).
@@ -308,9 +353,19 @@ export async function reconcile(key: string, refresh: () => unknown): Promise<vo
   const at = Date.now();
   const record = (patch: Partial<TxEntry>) => registry.update(key, e.attempt, (x) => (x.state.phase === "unknown" ? { ...x, ...patch } : x));
   let facts: RecoveryFacts;
+  // A missing receipt or transaction is a fact ("not found"); any other failure means the chain could not be read.
+  const notFound = (err: unknown) => /not found|could not be found/i.test(err instanceof Error ? err.message : String(err));
+  // Rule 1 first and on its own (residual fix M2a): a receipt for the request's own hash settles it, whatever else fails to read.
+  if (hash) {
+    const own = await publicClient.getTransactionReceipt({ hash }).catch(() => null);
+    if (own) {
+      const verdict: Verdict = { kind: own.status === "success" ? "confirmed" : "reverted", hash };
+      registry.update(key, e.attempt, (x) => ({ ...x, live: false, recovery: { verdict, at }, state: verdict.kind === "confirmed" ? { phase: "confirmed", hash, blockNumber: own.blockNumber, createdId: x.action.fn === "create" ? createdAgreementId(own) : undefined } : { phase: "reverted", hash } }));
+      await refresh();
+      return;
+    }
+  }
   try {
-    // A missing receipt or transaction is a fact ("not found"); any other failure means the chain could not be read.
-    const notFound = (err: unknown) => /not found|could not be found/i.test(err instanceof Error ? err.message : String(err));
     const [receipt, tx, latestNonce, pendingNonce] = await Promise.all([
       hash ? publicClient.getTransactionReceipt({ hash }).catch((err) => (notFound(err) ? null : Promise.reject(err))) : null,
       hash ? publicClient.getTransaction({ hash }).catch((err) => (notFound(err) ? null : Promise.reject(err))) : null,
@@ -326,7 +381,12 @@ export async function reconcile(key: string, refresh: () => unknown): Promise<vo
     let consumedBy: RecoveryFacts["consumedBy"];
     if (hasBaseline && e.call && e.blockBefore !== undefined && latestNonce > e.nonceBefore!) {
       const search = await searchAccountTxs(e.account, e.call, e.nonceBefore!, latestNonce, BigInt(e.blockBefore) - 2n).catch(() => null);
-      if (search?.match) {
+      // A match under ANOTHER hash is this request only when it used this request's own nonce (a wallet speed-up). With the
+      // original hash known and its nonce known, an identical call at another nonce is a different request (residual fix H2):
+      // it never settles this one, whose own transaction may still be mined.
+      const ownNonce = txNonce;
+      const isThis = search?.match && (!hash || search.match.hash.toLowerCase() === hash.toLowerCase() || ownNonce === undefined || Number(search.match.nonce) === ownNonce);
+      if (search?.match && isThis) {
         const r = await publicClient.getTransactionReceipt({ hash: search.match.hash });
         matched = { hash: search.match.hash, status: r.status === "success" ? "success" : "reverted", blockNumber: r.blockNumber };
       }
@@ -342,6 +402,10 @@ export async function reconcile(key: string, refresh: () => unknown): Promise<vo
     if (e.action.fn !== "create") {
       const [snap, block] = await Promise.all([readSnapshot(e.action), publicClient.getBlock({ blockTag: "latest" })]);
       if (snap.kind === "milestone") dead = deadReason(e.action, e.call, snap, block.timestamp);
+    } else if (e.call) {
+      // a create held without proof is released once a FINALIZED block's time reaches its earliest deadline (residual fix)
+      const finalized = await publicClient.getBlock({ blockTag: "finalized" });
+      dead = deadReason(e.action, e.call, undefined, finalized.timestamp);
     }
     facts = {
       live: e.live,
@@ -424,6 +488,7 @@ export function useTx(base: string) {
   const { address, chainId } = useConnection();
   const key = address ? requestKey(address, base) : `disconnected|${base}`;
   const all = useSyncExternalStore(registry.subscribe, registry.snapshot, () => NO_ENTRIES);
+  const refusal = useSyncExternalStore(refusalStore.subscribe, refusalStore.snapshot, () => NO_REFUSALS).get(key);
   const entry = all.get(key);
   // other accounts' open requests for the same action in this browser: shown, never blocking (R2-B)
   const others = [...all.values()].filter((e) => e.key !== key && baseOf(e.key) === base && !isTerminal(e.state));
@@ -440,12 +505,17 @@ export function useTx(base: string) {
     key,
     entry,
     others,
+    /** This tab refused to start because another tab holds the action (not stored). */
+    refusal,
     start,
     canStart: canStart(entry),
     blockReason: blockReason(entry),
     stopWaiting: () => stopWaiting(key),
     reconcile: () => reconcile(key, refresh),
     confirmNotInWallet: () => confirmNotInWallet(key, refresh),
-    dismiss: () => dismiss(key),
+    dismiss: () => {
+      setRefusal(key, undefined);
+      dismiss(key);
+    },
   };
 }

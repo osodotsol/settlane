@@ -7,6 +7,7 @@ import { sepolia } from "wagmi/chains";
 import { formatElapsed, useNow } from "@/chain/use-now";
 import { describeTrace, traceStore } from "@/chain/wallet-trace";
 import type { TxEntry } from "@/chain/tx-registry";
+import { earliestDeliverBy } from "@/chain/tx-effect";
 import type { useTx } from "@/chain/write";
 import { txUrl } from "@/config/chain";
 import { formatUtc, shortHex } from "@/domain/format";
@@ -81,11 +82,18 @@ export function TxPanel({ tx, onSuccess }: { tx: ReturnType<typeof useTx>; onSuc
   const { chainId } = useConnection();
   const open = entry !== undefined && (entry.state.phase === "awaiting" || entry.state.phase === "pending" || entry.state.phase === "checking");
   const now = useNow(open);
-  if (!entry || entry.dismissed) return <OtherAccounts others={others} />;
+  const refusal = tx.refusal ? (
+    <div role="alert" className="mt-4 rounded-xl border border-submitted bg-surface px-4 py-3 text-sm" data-refused-other-tab>
+      <p className="font-semibold text-ink">{tx.refusal.message}</p>
+      <p className="mt-1 text-ink-2">{tx.refusal.recovery}</p>
+    </div>
+  ) : null;
+  if (!entry || entry.dismissed) return <>{refusal}<OtherAccounts others={others} /></>;
   const s = entry.state;
   const box = "mt-4 rounded-xl border px-4 py-3 text-sm";
   const notes = (
     <>
+      {refusal}
       {(entry.ghosts?.length ?? 0) > 0 && (
         <p className="mt-2 text-ink-2" data-previous-unproven>
           An earlier request for this action (started {formatUtc(BigInt(Math.floor(entry.ghosts![0]!.startedAt / 1000)))}) was never proven closed. If MetaMask still sends it, it is a separate transaction this page cannot stop; until the chain shows it can no longer take effect, only the same request can be sent again.
@@ -186,6 +194,7 @@ export function TxPanel({ tx, onSuccess }: { tx: ReturnType<typeof useTx>; onSuc
       }[s.reason];
       const v = entry.recovery?.verdict;
       const who = shortHex(entry.account);
+      const releaseAt = entry.action.fn === "create" ? earliestDeliverBy(entry.call) : undefined;
       const said: Record<string, string> = {
         "open-here": "MetaMask still has this request open from this tab. Approve or reject it there; this page follows the answer.",
         "open-elsewhere": "Another tab of this site is still waiting for MetaMask on this action. Finish it in that tab or in MetaMask.",
@@ -196,7 +205,7 @@ export function TxPanel({ tx, onSuccess }: { tx: ReturnType<typeof useTx>; onSuc
           entry.action.fn === "submit"
             ? "You said the request is no longer in MetaMask. That is your decision, not proof: the outcome stays unknown. You may submit the SAME evidence again; if the old request is still approved later, it only repeats it (the revision goes up). Different evidence needs your explicit acceptance that a late old request would replace it. No ETH moves on a submission."
             : "You said the request is no longer in MetaMask. That is your decision, not proof: the outcome stays unknown. You may send the SAME request again (same payee or decision): if the old one is still approved later, the contract refuses the duplicate, so it can cost a network fee but cannot move ETH twice. A different request stays blocked until the chain shows the old one can no longer take effect.",
-        "create-held": `The chain shows no agreement with these terms from ${who} and no transaction of this request, but the request may still be waiting in MetaMask, and approving it later would fund a second agreement. A new create from ${who} stays blocked until the chain settles it; time passing does not. Open MetaMask: if the request is there, approve it (Check the chain then finds the agreement) or reject it. If it was signed and fails or succeeds, Check the chain finds that transaction too. This page cannot cancel a request in MetaMask, and it cannot see one you rejected after the page was reloaded. Your draft is kept.`,
+        "create-held": `The chain shows no agreement with these terms from ${who} and no transaction of this request, but the request may still be waiting in MetaMask, and approving it later would fund a second agreement. A new create from ${who} stays blocked until the chain settles it; time passing does not. Open MetaMask: if the request is there, approve it (Check the chain then finds the agreement) or reject it. If it was signed and fails or succeeds, Check the chain finds that transaction too. This page cannot cancel a request in MetaMask, and it cannot see one you rejected after the page was reloaded. ${releaseAt !== undefined ? `It is released by proof once a finalized Sepolia block is past its earliest delivery deadline (${formatUtc(releaseAt)}): the contract then refuses it. ` : ""}Your draft is kept.`,
       };
       return (
         <div role="alert" className={`${box} border-submitted bg-surface`}>

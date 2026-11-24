@@ -78,6 +78,9 @@ export function describeHistory(status: HistoryStatus | undefined, coverage?: Co
   if (status.conflicts.length > 0) reasons.push(`The recorded history and the chain disagree: ${status.conflicts[0]}.`);
   if (coverage && coverage.missing.length > 0) reasons.push(`Missing from the history: ${coverage.missing.join(", ")}. The contract's state shows they happened; they may still be loading.`);
   if (coverage && coverage.extra.length > 0) reasons.push(`The history holds more events than the contract's state allows (${coverage.extra.join(", ")}).`);
+  // The engine's own verdict comes first: before the first live read (only the snapshot is held) nothing may be called complete
+  // (residual-risk fix M5a), even if no error has been seen yet.
+  if (reasons.length === 0 && !status.complete) reasons.push("The newest blocks have not been read yet; the events shown may be incomplete.");
   if (reasons.length === 0) {
     const through = status.snapshot.used ? `Recorded history verified through block ${status.snapshot.lastVerifiedBlock}, then read live` : "Read live from the chain";
     return { level: "complete", title: "History complete", detail: `${through}. The events match the contract's state.` };
