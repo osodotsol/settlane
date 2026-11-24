@@ -273,7 +273,7 @@ export default async function Home() {
       </section>
 
       {/* ---- How it works (scroll story) ---- */}
-      <section id="how-it-works" aria-labelledby="how" className="scroll-mt-24 border-b border-line">
+      <section id="how-it-works" aria-labelledby="how" className="border-b border-line">
         <Container className="py-20 md:py-28">
           <SectionHead id="how" label="How it works" title="Fund. Submit. Verify. Settle." lead="Every milestone moves through the same few states, one rule at a time, and ends exactly one way: paid to the provider or refunded to the client." />
           <div className="mt-14">
@@ -310,7 +310,7 @@ export default async function Home() {
       </section>
 
       {/* ---- Real settlement evidence ---- */}
-      <section id="evidence" aria-labelledby="proof" className="scroll-mt-24 border-b border-line">
+      <section id="evidence" aria-labelledby="proof" className="border-b border-line">
         <Container className="py-20 md:py-28">
           <SectionHead id="proof" label="Real settlement evidence" title="Paid and refunded, on Sepolia." lead="Every agreement, event and figure here is read from the chain, with no wallet and no account. Each transaction links to Etherscan." />
           <div className="reveal mt-12">

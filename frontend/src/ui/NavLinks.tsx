@@ -30,7 +30,7 @@ export function NavLinks({ compact = false }: { compact?: boolean }) {
             <Link
               href={l.href}
               aria-current={current ? "page" : undefined}
-              className={`inline-flex h-11 items-center whitespace-nowrap rounded-md ${compact ? "px-2" : "px-3"} ${
+              className={`inline-flex h-11 items-center whitespace-nowrap rounded-md ${compact ? "px-1.5 text-[0.8125rem] min-[360px]:px-2 min-[360px]:text-sm" : "px-3"} ${
                 current ? "font-medium text-ink" : "text-ink-2 hover:text-ink"
               } press`}
             >

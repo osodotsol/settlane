@@ -58,7 +58,7 @@ async function visit(page: import("@playwright/test").Page, path: string) {
     await page.waitForTimeout(300);
   }
 }
-const WIDTHS = [360, 390, 768, 1024, 1440];
+const WIDTHS = [320, 360, 390, 430, 768, 1024, 1440];
 
 test("agreement 1: paid in full, exact wei, history in chain order", async ({ page }) => {
   const res = await page.goto("/agreements/1");
@@ -170,7 +170,7 @@ for (const scheme of ["light", "dark"] as const) {
       for (const width of WIDTHS) {
         await page.setViewportSize({ width, height: 900 });
         // application pages read the chain in the browser (slower): three representative widths
-        for (const path of PAGES.filter((p) => !p.startsWith("/app") || [360, 768, 1440].includes(width))) {
+        for (const path of PAGES.filter((p) => !p.startsWith("/app") || [320, 390, 768, 1440].includes(width))) {
           await visit(page, path);
           const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
           expect(overflow, `${path} at ${width}px`).toBeLessThanOrEqual(0);
@@ -385,6 +385,57 @@ test.describe("public site structure", () => {
     await page.getByText("View deadline details").click();
     await expect(page.locator("figure").getByText("Deadline lanes")).toBeVisible();
   });
+});
+
+test.describe("release acceptance (2026-11-24)", () => {
+  test.use({ reducedMotion: "reduce" });
+
+  test("every external link on the public pages opens in a new tab and says so", async ({ page }) => {
+    for (const path of ["/", "/explorer", "/agreements/1", "/agreements/2", "/contract"]) {
+      await page.goto(path);
+      const bad = await page.locator('a[href^="http"]').evaluateAll((as) =>
+        // the accessible name says it: visible or screen-reader text, or the aria-label of an icon link
+        as.filter((a) => a.getAttribute("target") !== "_blank" || !/new tab/i.test(a.getAttribute("aria-label") ?? a.textContent ?? "")).map((a) => a.getAttribute("href")),
+      );
+      expect(bad, path).toEqual([]);
+    }
+  });
+
+  test("How It Works lands with its heading just below the sticky header", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/explorer");
+    await page.getByRole("navigation", { name: "Main", exact: true }).getByRole("link", { name: "How It Works" }).click();
+    await page.waitForURL(/#how-it-works$/);
+    const header = (await page.locator("header").first().boundingBox())!;
+    // the section stops at the page's one header clearance (scroll-padding-top, sized for the phone header with its nav
+    // row), not below it as well: a section's own scroll margin used to add 96 px more (top at 216 px)
+    const clearance = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop));
+    await expect.poll(async () => (await page.locator("#how-it-works").boundingBox())!.y).toBeLessThanOrEqual(clearance + 4);
+    const heading = (await page.locator("#how").boundingBox())!;
+    expect(heading.y).toBeGreaterThanOrEqual(header.height);
+    expect(heading.y).toBeLessThan(900);
+  });
+
+  for (const width of [320, 390]) {
+    test(`at ${width} px the compact navigation fits and the contract's copy buttons keep a full target`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto("/contract");
+      const nav = page.getByRole("navigation", { name: "Main (compact)" });
+      for (const name of ["Home", "How It Works", "Explorer", "Developers"]) {
+        const box = (await nav.getByRole("link", { name }).boundingBox())!;
+        expect(box.x + box.width, name).toBeLessThanOrEqual(width);
+        expect(box.height, name).toBeGreaterThanOrEqual(40);
+      }
+      for (const name of ["Copy pinned runtime hash", "Copy deployed runtime hash"]) {
+        const box = (await page.getByRole("button", { name }).boundingBox())!;
+        expect(box.width, name).toBeGreaterThanOrEqual(24);
+        expect(box.height, name).toBeGreaterThanOrEqual(24);
+      }
+      await page.goto("/");
+      const play = (await page.locator("[data-replay]").getByRole("button", { name: /Play|Pause/ }).boundingBox())!;
+      expect(play.x + play.width, "the replay's Play button stays on screen").toBeLessThanOrEqual(width);
+    });
+  }
 });
 
 test.describe("public site with motion", () => {

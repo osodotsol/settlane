@@ -124,7 +124,7 @@ export default async function ContractPage() {
         </div>
       </section>
 
-      <section id="tests" aria-labelledby="verify" className="mt-20 scroll-mt-24">
+      <section id="tests" aria-labelledby="verify" className="mt-20">
         <h2 id="verify" className="text-title reveal">Verify it yourself</h2>
         <p className="reveal mt-1 measure text-sm text-ink-3">
           Three commands from a checkout of the repository. They rebuild the contract with {FE_VERSION}, compare it with the pinned hashes, and compare the
@@ -221,7 +221,7 @@ export default async function ContractPage() {
         </p>
       </section>
 
-      <section id="limitations" aria-labelledby="limits" className="mt-20 scroll-mt-24">
+      <section id="limitations" aria-labelledby="limits" className="mt-20">
         <h2 id="limits" className="text-title reveal">Security &amp; limitations</h2>
         <p className="reveal mt-1 measure text-sm text-ink-3">Verified against the contract and its tests. Read these before funding an agreement or choosing a verifier.</p>
         <ol className="card reveal-stagger mt-6 divide-y divide-line px-6 sm:px-8">
@@ -237,8 +237,8 @@ export default async function ContractPage() {
         </p>
         <p className="mt-3 text-sm text-ink-3">
           Source, tests and the full security model:{" "}
-          <a href={REPOSITORY} className="draw-link text-ink-2 hover:text-ink">github.com/osodotsol/settlane</a> · Continuous integration:{" "}
-          <a href={CI_URL} className="draw-link text-ink-2 hover:text-ink">GitHub Actions</a>
+          <a href={REPOSITORY} target="_blank" rel="noreferrer" className="draw-link text-ink-2 hover:text-ink">github.com/osodotsol/settlane<span className="sr-only"> (opens in a new tab)</span></a> · Continuous integration:{" "}
+          <a href={CI_URL} target="_blank" rel="noreferrer" className="draw-link text-ink-2 hover:text-ink">GitHub Actions<span className="sr-only"> (opens in a new tab)</span></a>
         </p>
       </section>
     </Container>

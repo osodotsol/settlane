@@ -128,7 +128,7 @@ export function ReplayPanel({ stories }: { stories: ReplayStory[] }) {
             <span className="text-ink">{pad(step + 1)}</span> / {pad(n)}
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {stories.length > 1 && (
             <div role="group" aria-label="Choose an agreement" className="relative flex rounded-full border border-line p-1">
               <span

@@ -18,7 +18,7 @@ export function CopyButton({ value, label }: { value: string; label: string }) {
             /* clipboard unavailable: the full value stays selectable in the accessible name */
           }
         }}
-        className="inline-flex size-8 items-center justify-center rounded-md text-ink-3 hover:bg-sunken hover:text-ink"
+        className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-ink-3 hover:bg-sunken hover:text-ink"
         aria-label={`Copy ${label}`}
       >
         {copied ? <Check aria-hidden size={15} /> : <Copy aria-hidden size={15} />}
