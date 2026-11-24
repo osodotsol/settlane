@@ -272,6 +272,91 @@ test("deadlines: no refund before the deadline, no submission after it, and the 
   await expect(panel(page)).toHaveCount(0); // a second refund cannot be pressed
 });
 
+// ---- Create form initialization (input-loss race) ----
+// The form must never replace what the user has typed with a draft loaded later. The init script seeds a saved draft
+// (as a previous visit in this tab would), then types into Provider at the first moment React has hydrated the field
+// (its props are attached), before any later initialization can run. Deterministic: no timing guess in the test.
+const savedDraft = (provider: string, spec: string) => ({
+  provider,
+  verifier: "",
+  review: "1",
+  reviewUnit: "days",
+  milestones: [{ amount: "0.07", every: "3", unit: "days", spec }],
+});
+
+async function typeAtHydration(page: Page, seed: object, typed: string) {
+  await page.addInitScript(
+    ({ seed, typed }) => {
+      if (sessionStorage.getItem("e2e:seeded")) return; // first load only; a reload must not seed or type again
+      sessionStorage.setItem("e2e:seeded", "1");
+      sessionStorage.setItem("settlane:create-draft", JSON.stringify(seed));
+      const w = window as unknown as { __typedEarly?: boolean; __specWhenTyped?: string };
+      const ch = new MessageChannel();
+      const tick = () => {
+        const el = document.querySelector<HTMLInputElement>('input[id$="-provider"]');
+        if (el && Object.keys(el).some((k) => k.startsWith("__reactProps$"))) {
+          // what the form showed when the user typed: the empty form, or the saved draft if it was already restored
+          w.__specWhenTyped = document.querySelector<HTMLTextAreaElement>('textarea[id$="-s0"]')?.value ?? "";
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, typed);
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          w.__typedEarly = true;
+          return;
+        }
+        ch.port2.postMessage(0);
+      };
+      ch.port1.onmessage = tick;
+      tick();
+    },
+    { seed, typed },
+  );
+}
+
+test("create form: typing at the first hydrated moment is never overwritten by a later draft initialization", async ({ page }) => {
+  await installWallet(page, { rpc: ANVIL, account: CLIENT, authorized: false });
+  await typeAtHydration(page, savedDraft(VERIFIER, "an older saved draft"), PROVIDER);
+  await page.goto("/app/create");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __typedEarly?: boolean }).__typedEarly === true)).toBe(true);
+  await expect(page.getByRole("button", { name: "Check draft" })).toBeVisible();
+  await page.waitForTimeout(500); // well past any initialization effect
+  // The form ends exactly as the user saw it when typing, plus what was typed: the typed Provider always stays, and
+  // the other fields keep what was on screen then (empty, or the saved draft if it was already shown). Initialization
+  // never replaces typed text, and a draft the user never saw is never mixed in.
+  const seen = await page.evaluate(() => (window as unknown as { __specWhenTyped?: string }).__specWhenTyped);
+  expect(["", "an older saved draft"]).toContain(seen);
+  await expect(page.getByLabel("Provider", { exact: true })).toHaveValue(PROVIDER);
+  await expect(page.getByLabel("Specification")).toHaveValue(seen!);
+  await expect(page.getByLabel("Amount (ETH)")).toHaveValue(seen === "" ? "" : "0.07");
+  // fast typing after that continues on the same draft, and a reload restores exactly it
+  await page.getByLabel("Specification").fill("typed after the early input");
+  await page.reload();
+  await expect(page.getByLabel("Provider", { exact: true })).toHaveValue(PROVIDER);
+  await expect(page.getByLabel("Specification")).toHaveValue("typed after the early input");
+  expect(await sentTransactions(page)).toBe(0);
+});
+
+test("create form: with nothing typed, the saved draft is restored, and it survives connecting and switching accounts", async ({ page }) => {
+  await installWallet(page, { rpc: ANVIL, account: CLIENT, authorized: false });
+  await page.addInitScript((seed) => {
+    if (sessionStorage.getItem("e2e:seeded")) return;
+    sessionStorage.setItem("e2e:seeded", "1");
+    sessionStorage.setItem("settlane:create-draft", JSON.stringify(seed));
+  }, savedDraft(PROVIDER, "restored from this tab"));
+  await page.goto("/app/create");
+  await expect(page.getByLabel("Provider", { exact: true })).toHaveValue(PROVIDER);
+  await expect(page.getByLabel("Specification")).toHaveValue("restored from this tab");
+  await expect(page.getByLabel("Amount (ETH)")).toHaveValue("0.07");
+  await page.getByRole("button", { name: "Connect wallet to sign" }).click();
+  await expect(page.getByRole("button", { name: /^Connected as/ })).toBeVisible();
+  await expect(page.getByLabel("Specification")).toHaveValue("restored from this tab");
+  await switchAccount(page, STRANGER);
+  await expect(page.getByLabel("Provider", { exact: true })).toHaveValue(PROVIDER);
+  await expect(page.getByLabel("Amount (ETH)")).toHaveValue("0.07");
+  // a reload keeps the same draft (restored once, then kept in sync)
+  await page.reload();
+  await expect(page.getByLabel("Specification")).toHaveValue("restored from this tab");
+  expect(await sentTransactions(page)).toBe(0);
+});
+
 test("a draft made without a wallet survives connecting, is re-checked against the account, and is blocked on another network", async ({ page }) => {
   await installWallet(page, { rpc: ANVIL, account: CLIENT, authorized: false });
   await page.goto("/app/create");

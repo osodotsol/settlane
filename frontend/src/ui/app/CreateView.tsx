@@ -1,12 +1,13 @@
 "use client";
 
 import { Plus, X } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useHistory, useOverview } from "@/chain/queries";
-import { useMounted, useWallet } from "@/chain/use-wallet";
+import { useWallet } from "@/chain/use-wallet";
 import { commit } from "@/domain/commitment";
 import { archiveIfCreated, readArchive, readSubmitted, rememberSubmitted, sameDraft, type ArchivedDraft } from "@/domain/draft-archive";
 import { MAX_MILESTONES, UNIT_SECONDS, emptyForm, emptyMilestone, validateCreate, type FormErrors, type FormInput, type MilestoneInput, type Unit } from "@/domain/create-form";
+import { initialDraft, typedDraft, type FieldValues } from "@/domain/draft-init";
 import { formatUtc } from "@/domain/format";
 import { Amount } from "../Amount";
 import { Button } from "../Button";
@@ -31,6 +32,24 @@ function loadDraft(): FormInput {
   } catch {
     return emptyForm();
   }
+}
+
+/** The values in the first milestone's fields and the parties' fields, read from the page (null without them). */
+function readFields(uid: string): FieldValues | null {
+  const get = (id: string) => document.getElementById(id) as HTMLInputElement | HTMLTextAreaElement | null;
+  const unitOf = (id: string) => (get(id)?.parentElement?.querySelector("select") as HTMLSelectElement | null)?.value ?? "";
+  const provider = get(`${uid}-provider`);
+  if (!provider) return null;
+  return {
+    provider: provider.value,
+    verifier: get(`${uid}-verifier`)?.value ?? "",
+    review: get(`${uid}-review`)?.value ?? "",
+    reviewUnit: unitOf(`${uid}-review`),
+    amount: get(`${uid}-a0`)?.value ?? "",
+    every: get(`${uid}-d0`)?.value ?? "",
+    unit: unitOf(`${uid}-d0`),
+    spec: get(`${uid}-s0`)?.value ?? "",
+  };
 }
 
 function Field({ label, hint, error, children, htmlFor }: { label: string; hint?: string; error?: string; children: React.ReactNode; htmlFor: string }) {
@@ -69,18 +88,45 @@ function errorList(e: FormErrors, uid: string): [string, string][] {
   return out;
 }
 
-/** Renders the empty form on the server, then remounts once in the browser with the saved draft (no hydration mismatch). */
+/**
+ * One form, never remounted. It renders the empty form on the server and on the first browser render (no hydration
+ * mismatch), then restores this tab's saved draft once, in an effect, ONLY if nothing has been typed yet. It used to
+ * remount with a new key once mounted, which threw away anything typed into the first copy (input-loss race).
+ */
 export function CreateView() {
-  const mounted = useMounted();
-  return <CreateForm key={mounted ? "browser" : "server"} restore={mounted} />;
+  return <CreateForm />;
 }
 
-function CreateForm({ restore }: { restore: boolean }) {
+function CreateForm() {
   const uid = useId();
   const wallet = useWallet();
   const overview = useOverview();
   useHistory(); // warm the event history while the form is filled in
-  const [form, setForm] = useState<FormInput>(() => (restore ? loadDraft() : emptyForm()));
+  const [form, setFormState] = useState<FormInput>(emptyForm);
+  // Set by every change to the draft (typing, adding or clearing). Initialization never overrides an edited draft.
+  const edited = useRef(false);
+  const setForm: typeof setFormState = (next) => {
+    edited.current = true;
+    setFormState(next);
+  };
+  // False until the saved draft has been considered; the draft is not written back before that, so the empty first
+  // render can never overwrite the saved copy.
+  const [restore, setRestore] = useState(false);
+  // Runs in the hydration commit, before paint. Text typed into the fields before React could see it (before or
+  // during hydration) is read from the fields themselves and kept; only an untouched form takes the saved draft.
+  useLayoutEffect(() => {
+    const decision = initialDraft(typedDraft(readFields(uid)), edited.current, loadDraft);
+    if (decision.kind === "typed") {
+      edited.current = true;
+      setFormState(decision.form);
+    } else if (decision.kind === "restore") {
+      // checked again when the update applies: an edit made before that render still wins
+      setFormState((current) => (edited.current ? current : decision.form));
+    }
+    setRestore(true);
+    // once, on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [attempts, setAttempts] = useState(0);
   const [archived, setArchived] = useState<ArchivedDraft | null>(null);
   const summaryRef = useRef<HTMLDivElement>(null);

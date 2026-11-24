@@ -147,3 +147,15 @@
     - Sepolia 30/30, Anvil 5/5, hanging RPC 3/3.
     - Simulated-wallet app: 23/24 on the first run, then 24/24 twice.
   - The app failure was "a draft made without a wallet survives connecting". It is timing-dependent and pre-existing: `CreateView.tsx:75` remounts the form once mounted, so input typed before that is lost. The test filled Provider in that window. Not changed here (create form out of scope).
+- 2026-11-24 (create-form input-loss race fixed, after `ef30a0b`; frontend only).
+  - **Root cause.** `CreateView` rendered a "server" copy of the form, then remounted it with a new key once the `useMounted` store flipped after hydration. The first copy never saved, so anything typed into it was thrown away and replaced by the tab's saved draft (or an empty form).
+  - **Fix.** One form, never remounted. It renders empty on the server and the first client render, then initializes once in a layout effect during the hydration commit:
+    - It first reads the fields themselves. Text typed before React could see it (before or during hydration, when no change event reaches the form) is adopted.
+    - Otherwise an edit already in state is kept.
+    - Only an untouched form restores the saved draft. Two drafts are never mixed.
+    - Nothing is written to sessionStorage until initialization has decided, so the empty first render cannot erase the saved copy.
+    - The logic is in `src/domain/draft-init.ts`.
+  - The post-create archive (M7), wallet connect and switch behaviour, signing and recovery are unchanged.
+  - **Regression evidence.** New browser test "create form: typing at the first hydrated moment…": an init script seeds a saved draft and types into Provider the moment React attaches its props. It fails 10/10 on `ef30a0b`'s `CreateView.tsx` (the typed address is replaced by the saved one) and passes 40/40 with the fix. Its exact assertion: the form ends as the user saw it plus what was typed.
+  - A second new test covers restoring the saved draft with nothing typed, across connect, account switch and reload.
+  - 6 unit tests in `tests/draft-init.test.ts`.
