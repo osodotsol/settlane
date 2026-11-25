@@ -99,7 +99,7 @@ export default async function ContractPage() {
           <div style={idx(2)} className="border-b border-line py-5 [&:nth-last-child(-n+2)]:md:border-b-0 last:border-b-0">
             <dt className="text-sm text-ink-3">Deployment transaction</dt>
             <dd className="mt-1">
-              <a href={txUrl(DEPLOY_TX)} target="_blank" rel="noreferrer" className="draw-link text-data">{shortHex(DEPLOY_TX, 10, 8)}</a>{" "}
+              <a href={txUrl(DEPLOY_TX)} target="_blank" rel="noreferrer" className="draw-link text-data">{shortHex(DEPLOY_TX, 10, 8)}<span className="sr-only"> (transaction on Sepolia Etherscan, opens in a new tab)</span></a>{" "}
               <span className="text-sm text-ink-3">block {DEPLOY_BLOCK.toString()}</span>
             </dd>
           </div>

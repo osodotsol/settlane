@@ -5,6 +5,7 @@ __pycache__/
 # the repository; these patterns are a second line of defence.
 .env
 .env.*
+!.env.example
 keystores/
 *.keystore
 *.pw
